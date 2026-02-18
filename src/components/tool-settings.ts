@@ -123,6 +123,65 @@ export class ToolSettings extends LitElement {
       height: 24px;
       background: #555;
     }
+
+    .stamp-row {
+      display: flex;
+      gap: 4px;
+      overflow-x: auto;
+      max-width: 400px;
+      padding: 2px 0;
+      align-items: center;
+    }
+
+    .stamp-thumb-wrap {
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .stamp-thumb {
+      width: 32px;
+      height: 32px;
+      border-radius: 4px;
+      border: 2px solid transparent;
+      object-fit: contain;
+      background: #222;
+      cursor: pointer;
+      display: block;
+    }
+
+    .stamp-thumb:hover {
+      border-color: #888;
+    }
+
+    .stamp-thumb.active {
+      border-color: #5b8cf7;
+    }
+
+    .stamp-delete {
+      display: none;
+      position: absolute;
+      top: -4px;
+      right: -4px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #555;
+      color: #ddd;
+      border: none;
+      font-size: 9px;
+      line-height: 14px;
+      text-align: center;
+      cursor: pointer;
+      padding: 0;
+    }
+
+    .stamp-thumb-wrap:hover .stamp-delete {
+      display: block;
+    }
+
+    .stamp-delete:hover {
+      background: #e55;
+    }
   `;
 
   @state() private _recentStamps: StampEntry[] = [];
@@ -141,6 +200,14 @@ export class ToolSettings extends LitElement {
   override connectedCallback() {
     super.connectedCallback();
     this._loadStamps();
+  }
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    for (const url of this._thumbUrls.values()) {
+      URL.revokeObjectURL(url);
+    }
+    this._thumbUrls.clear();
   }
 
   private async _loadStamps() {
@@ -184,13 +251,15 @@ export class ToolSettings extends LitElement {
       const file = input.files?.[0];
       if (!file) return;
       const entry = await addStamp(file);
+      await this._loadStamps();
+      const url = this._thumbUrls.get(entry.id);
+      if (!url) return;
       const img = new Image();
       img.onload = () => {
         this.ctx.setStampImage(img);
         this._activeStampId = entry.id;
       };
-      img.src = URL.createObjectURL(file);
-      await this._loadStamps();
+      img.src = url;
     };
     input.click();
   }
@@ -203,7 +272,7 @@ export class ToolSettings extends LitElement {
       this.ctx.setStampImage(img);
       this._activeStampId = entry.id;
     };
-    img.src = URL.createObjectURL(entry.blob);
+    img.src = url;
   }
 
   private async _deleteStamp(entry: StampEntry, e: Event) {
@@ -288,6 +357,29 @@ export class ToolSettings extends LitElement {
         ? html`
             <div class="separator"></div>
             <div class="section">
+              ${this._recentStamps.length > 0
+                ? html`
+                    <div class="stamp-row">
+                      ${this._recentStamps.map(
+                        (s) => html`
+                          <div class="stamp-thumb-wrap">
+                            <img
+                              class="stamp-thumb ${this._activeStampId === s.id ? 'active' : ''}"
+                              src=${this._thumbUrls.get(s.id) ?? ''}
+                              alt="stamp"
+                              @click=${() => this._selectStamp(s)}
+                            />
+                            <button
+                              class="stamp-delete"
+                              @click=${(e: Event) => this._deleteStamp(s, e)}
+                              title="Remove stamp"
+                            >&times;</button>
+                          </div>
+                        `,
+                      )}
+                    </div>
+                  `
+                : ''}
               <button class="stamp-btn" @click=${this._uploadStamp}>Upload Image</button>
               ${stampImage
                 ? html`<img class="stamp-preview" .src=${stampImage.src} alt="stamp" />`
