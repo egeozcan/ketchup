@@ -55,6 +55,9 @@ export class DrawingApp extends LitElement {
     return {
       state: this._state,
       setTool: (tool: ToolType) => {
+        if (this._state.activeTool !== tool) {
+          this.canvas?.clearSelection();
+        }
         this._state = { ...this._state, activeTool: tool };
       },
       setStrokeColor: (color: string) => {
@@ -108,6 +111,23 @@ export class DrawingApp extends LitElement {
     } else if (ctrl && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
       e.preventDefault();
       this.canvas?.redo();
+    } else if (ctrl && e.key === 'c') {
+      e.preventDefault();
+      this.canvas?.copySelection();
+    } else if (ctrl && e.key === 'x') {
+      e.preventDefault();
+      this.canvas?.cutSelection();
+    } else if (ctrl && e.key === 'v') {
+      e.preventDefault();
+      this.canvas?.pasteSelection();
+    } else if (
+      (e.key === 'Delete' || e.key === 'Backspace') &&
+      this._state.activeTool === 'select'
+    ) {
+      e.preventDefault();
+      this.canvas?.deleteSelection();
+    } else if (e.key === 'Escape') {
+      this.canvas?.clearSelection();
     }
   };
 
