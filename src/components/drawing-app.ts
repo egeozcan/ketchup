@@ -7,6 +7,7 @@ import type { DrawingCanvas } from './drawing-canvas.js';
 import './app-toolbar.js';
 import './tool-settings.js';
 import './drawing-canvas.js';
+import './layers-panel.js';
 
 let _layerCounter = 0;
 
@@ -248,6 +249,11 @@ export class DrawingApp extends LitElement {
     this.removeEventListener('keydown', this._onKeyDown);
   }
 
+  private _onCommitOpacity(e: CustomEvent) {
+    const { layerId, before, after } = e.detail;
+    this.canvas?.pushLayerOperation({ type: 'opacity', layerId, before, after });
+  }
+
   private _onKeyDown = (e: KeyboardEvent) => {
     const ctrl = e.ctrlKey || e.metaKey;
     if (ctrl && e.key === 'z' && !e.shiftKey) {
@@ -285,6 +291,7 @@ export class DrawingApp extends LitElement {
           @history-change=${this._onHistoryChange}
           @layer-undo=${this._onLayerUndo}
         ></drawing-canvas>
+        <layers-panel @commit-opacity=${this._onCommitOpacity}></layers-panel>
       </div>
     `;
   }
