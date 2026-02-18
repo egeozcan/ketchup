@@ -52,6 +52,8 @@ export class DrawingCanvas extends LitElement {
   @query('#main') mainCanvas!: HTMLCanvasElement;
   @query('#preview') previewCanvas!: HTMLCanvasElement;
 
+  private _checkerboardPattern: CanvasPattern | null = null;
+  private _resizeObserver: ResizeObserver | null = null;
   private _drawing = false;
   private _lastPoint: Point | null = null;
   private _startPoint: Point | null = null;
@@ -86,7 +88,9 @@ export class DrawingCanvas extends LitElement {
     const displayCtx = this.mainCanvas.getContext('2d')!;
     displayCtx.clearRect(0, 0, this._width, this._height);
     // Draw checkerboard
-    this._drawCheckerboard(displayCtx);
+    const pattern = this._getCheckerboardPattern(displayCtx);
+    displayCtx.fillStyle = pattern;
+    displayCtx.fillRect(0, 0, this._width, this._height);
     // Composite layers bottom-to-top
     const layers = this._ctx.value?.state.layers ?? [];
     for (const layer of layers) {
@@ -97,24 +101,26 @@ export class DrawingCanvas extends LitElement {
     }
   }
 
-  private _drawCheckerboard(ctx: CanvasRenderingContext2D) {
-    const size = 10;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, this._width, this._height);
-    ctx.fillStyle = '#e0e0e0';
-    for (let y = 0; y < this._height; y += size) {
-      for (let x = 0; x < this._width; x += size) {
-        if ((Math.floor(x / size) + Math.floor(y / size)) % 2 === 1) {
-          ctx.fillRect(x, y, size, size);
-        }
-      }
+  private _getCheckerboardPattern(ctx: CanvasRenderingContext2D): CanvasPattern {
+    if (!this._checkerboardPattern) {
+      const tile = document.createElement('canvas');
+      tile.width = 20;
+      tile.height = 20;
+      const tileCtx = tile.getContext('2d')!;
+      tileCtx.fillStyle = '#ffffff';
+      tileCtx.fillRect(0, 0, 20, 20);
+      tileCtx.fillStyle = '#e0e0e0';
+      tileCtx.fillRect(10, 0, 10, 10);
+      tileCtx.fillRect(0, 10, 10, 10);
+      this._checkerboardPattern = ctx.createPattern(tile, 'repeat')!;
     }
+    return this._checkerboardPattern;
   }
 
   override firstUpdated() {
     this._resizeToFit();
-    const ro = new ResizeObserver(() => this._resizeToFit());
-    ro.observe(this);
+    this._resizeObserver = new ResizeObserver(() => this._resizeToFit());
+    this._resizeObserver.observe(this);
     // Initialize first layer with white background
     const layerCtx = this._getActiveLayerCtx();
     if (layerCtx) {
@@ -787,6 +793,8 @@ export class DrawingCanvas extends LitElement {
 
   override disconnectedCallback() {
     super.disconnectedCallback();
+    this._resizeObserver?.disconnect();
+    this._resizeObserver = null;
     this._stopSelectionAnimation();
   }
 

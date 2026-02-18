@@ -145,16 +145,16 @@ export class DrawingApp extends LitElement {
         const layer = this._state.layers.find(l => l.id === id);
         if (!layer || layer.visible === visible) return;
         const before = layer.visible;
-        layer.visible = visible;
-        this._state = { ...this._state, layers: [...this._state.layers] };
+        const newLayers = this._state.layers.map(l => l.id === id ? { ...l, visible } : l);
+        this._state = { ...this._state, layers: newLayers };
         this.canvas?.pushLayerOperation({ type: 'visibility', layerId: id, before, after: visible });
         this.canvas?.composite();
       },
       setLayerOpacity: (id: string, opacity: number) => {
         const layer = this._state.layers.find(l => l.id === id);
         if (!layer) return;
-        layer.opacity = opacity;
-        this._state = { ...this._state, layers: [...this._state.layers] };
+        const newLayers = this._state.layers.map(l => l.id === id ? { ...l, opacity } : l);
+        this._state = { ...this._state, layers: newLayers };
         this.canvas?.composite();
       },
       reorderLayer: (id: string, newIndex: number) => {
@@ -171,8 +171,8 @@ export class DrawingApp extends LitElement {
         const layer = this._state.layers.find(l => l.id === id);
         if (!layer || layer.name === name) return;
         const before = layer.name;
-        layer.name = name;
-        this._state = { ...this._state, layers: [...this._state.layers] };
+        const newLayers = this._state.layers.map(l => l.id === id ? { ...l, name } : l);
+        this._state = { ...this._state, layers: newLayers };
         this.canvas?.pushLayerOperation({ type: 'rename', layerId: id, before, after: name });
       },
       toggleLayersPanel: () => {
