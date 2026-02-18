@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
-import { consume } from '@lit/context';
+import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 
 const presetColors = [
@@ -124,8 +124,14 @@ export class ToolSettings extends LitElement {
     }
   `;
 
-  @consume({ context: drawingContext, subscribe: true })
-  ctx!: DrawingContextValue;
+  private _ctx = new ContextConsumer(this, {
+    context: drawingContext,
+    subscribe: true,
+  });
+
+  private get ctx(): DrawingContextValue {
+    return this._ctx.value!;
+  }
 
   private _onStrokeColor(e: Event) {
     this.ctx.setStrokeColor((e.target as HTMLInputElement).value);
@@ -163,6 +169,7 @@ export class ToolSettings extends LitElement {
   }
 
   override render() {
+    if (!this._ctx.value) return html``;
     const { strokeColor, fillColor, useFill, brushSize, activeTool, stampImage } = this.ctx.state;
 
     return html`
