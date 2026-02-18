@@ -117,6 +117,7 @@ export class LayersPanel extends LitElement {
 
     /* ── Layer row ─────────────────────────────── */
     .layer-row {
+      position: relative;
       display: flex;
       flex-direction: column;
       padding: 6px 8px;
@@ -124,6 +125,30 @@ export class LayersPanel extends LitElement {
       border-bottom: 1px solid #333;
       cursor: pointer;
       transition: background 0.1s ease;
+    }
+
+    .layer-row.dragging {
+      opacity: 0.4;
+    }
+
+    .layer-row.drop-above::before {
+      content: '';
+      position: absolute;
+      top: -1px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: #5b8cf7;
+    }
+
+    .layer-row.drop-below::after {
+      content: '';
+      position: absolute;
+      bottom: -1px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: #5b8cf7;
     }
 
     .layer-row:hover {
@@ -306,6 +331,9 @@ export class LayersPanel extends LitElement {
   /** The layer id currently in rename mode */
   @state() private _editingLayerId: string | null = null;
 
+  /** The layer id currently being dragged */
+  @state() private _draggedLayerId: string | null = null;
+
   /** Track opacity value before drag for undo */
   private _opacityBefore: number | null = null;
 
@@ -371,6 +399,114 @@ export class LayersPanel extends LitElement {
     if (idx > 0) {
       this.ctx.reorderLayer(layer.id, idx - 1);
     }
+  }
+
+  // ── Drag-and-drop reorder ─────────────────
+
+  private _onDragStart(layer: Layer, e: DragEvent) {
+    this._draggedLayerId = layer.id;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', layer.id);
+    }
+  }
+
+  private _onDragOver(e: DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'move';
+    }
+    const row = (e.target as HTMLElement).closest('.layer-row') as HTMLElement | null;
+    if (!row) return;
+
+    // Clear existing indicators on all rows
+    this._clearDropIndicators();
+
+    // Determine if cursor is in top or bottom half of row
+    const rect = row.getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    if (e.clientY < midY) {
+      row.classList.add('drop-above');
+    } else {
+      row.classList.add('drop-below');
+    }
+  }
+
+  private _onDragLeave(e: DragEvent) {
+    const row = (e.target as HTMLElement).closest('.layer-row') as HTMLElement | null;
+    if (row) {
+      row.classList.remove('drop-above', 'drop-below');
+    }
+  }
+
+  private _onDrop(e: DragEvent) {
+    e.preventDefault();
+    const draggedId = this._draggedLayerId;
+    if (!draggedId) return;
+
+    const row = (e.target as HTMLElement).closest('.layer-row') as HTMLElement | null;
+    if (!row) return;
+
+    const targetId = row.dataset.layerId;
+    if (!targetId || targetId === draggedId) {
+      this._clearDragState();
+      return;
+    }
+
+    const layers = this.ctx.state.layers;
+
+    // Determine if dropping above or below the target in the visual list
+    const rect = row.getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    const dropAbove = e.clientY < midY;
+
+    // The visual list is reversed: visual index 0 = array index (layers.length - 1)
+    const targetArrayIdx = layers.findIndex(l => l.id === targetId);
+    if (targetArrayIdx === -1) {
+      this._clearDragState();
+      return;
+    }
+
+    // "Above" in the visual list (higher z-index) = higher array index
+    // "Below" in the visual list (lower z-index) = lower array index
+    let newArrayIdx: number;
+    if (dropAbove) {
+      // Drop above target in visual list = place after target in array
+      newArrayIdx = targetArrayIdx + 1;
+    } else {
+      // Drop below target in visual list = place before target in array
+      newArrayIdx = targetArrayIdx;
+    }
+
+    // Adjust: if dragged item was before the target in the array,
+    // removing it shifts indices down by one
+    const draggedArrayIdx = layers.findIndex(l => l.id === draggedId);
+    if (draggedArrayIdx < newArrayIdx) {
+      newArrayIdx -= 1;
+    }
+
+    // Clamp to valid range
+    newArrayIdx = Math.max(0, Math.min(layers.length - 1, newArrayIdx));
+
+    if (draggedArrayIdx !== newArrayIdx) {
+      this.ctx.reorderLayer(draggedId, newArrayIdx);
+    }
+
+    this._clearDragState();
+  }
+
+  private _onDragEnd() {
+    this._clearDragState();
+  }
+
+  private _clearDropIndicators() {
+    const rows = this.shadowRoot?.querySelectorAll('.layer-row');
+    rows?.forEach(row => row.classList.remove('drop-above', 'drop-below'));
+  }
+
+  private _clearDragState() {
+    this._draggedLayerId = null;
+    this._clearDropIndicators();
   }
 
   // ── Opacity ────────────────────────────────
@@ -472,8 +608,15 @@ export class LayersPanel extends LitElement {
 
     return html`
       <div
-        class="layer-row ${isActive ? 'active' : ''}"
+        class="layer-row ${isActive ? 'active' : ''} ${this._draggedLayerId === layer.id ? 'dragging' : ''}"
+        data-layer-id=${layer.id}
+        draggable="true"
         @click=${() => this._selectLayer(layer.id)}
+        @dragstart=${(e: DragEvent) => this._onDragStart(layer, e)}
+        @dragover=${(e: DragEvent) => this._onDragOver(e)}
+        @dragleave=${(e: DragEvent) => this._onDragLeave(e)}
+        @drop=${(e: DragEvent) => this._onDrop(e)}
+        @dragend=${() => this._onDragEnd()}
       >
         <div class="layer-row-main">
           <button
