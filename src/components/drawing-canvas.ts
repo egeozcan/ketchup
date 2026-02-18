@@ -1,5 +1,5 @@
 import { LitElement, html, css } from 'lit';
-import { customElement, query, state } from 'lit/decorators.js';
+import { customElement, query } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { Point } from '../types.js';
@@ -48,7 +48,7 @@ export class DrawingCanvas extends LitElement {
   @query('#main') mainCanvas!: HTMLCanvasElement;
   @query('#preview') previewCanvas!: HTMLCanvasElement;
 
-  @state() private _drawing = false;
+  private _drawing = false;
   private _lastPoint: Point | null = null;
   private _startPoint: Point | null = null;
   private _width = 800;
@@ -67,27 +67,31 @@ export class DrawingCanvas extends LitElement {
 
   private _resizeToFit() {
     const rect = this.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      // Save current content
-      const mainCtx = this.mainCanvas?.getContext('2d');
-      let savedData: ImageData | null = null;
-      if (mainCtx && this.mainCanvas.width > 0 && this.mainCanvas.height > 0) {
-        savedData = mainCtx.getImageData(0, 0, this.mainCanvas.width, this.mainCanvas.height);
-      }
+    if (rect.width <= 0 || rect.height <= 0) return;
 
-      this._width = Math.floor(rect.width);
-      this._height = Math.floor(rect.height);
-      this.mainCanvas.width = this._width;
-      this.mainCanvas.height = this._height;
-      this.previewCanvas.width = this._width;
-      this.previewCanvas.height = this._height;
+    const newWidth = Math.floor(rect.width);
+    const newHeight = Math.floor(rect.height);
+    if (this.mainCanvas.width === newWidth && this.mainCanvas.height === newHeight) return;
 
-      // Restore content
-      if (savedData && mainCtx) {
-        mainCtx.fillStyle = '#ffffff';
-        mainCtx.fillRect(0, 0, this._width, this._height);
-        mainCtx.putImageData(savedData, 0, 0);
-      }
+    // Save current content
+    const mainCtx = this.mainCanvas.getContext('2d')!;
+    let savedData: ImageData | null = null;
+    if (this.mainCanvas.width > 0 && this.mainCanvas.height > 0) {
+      savedData = mainCtx.getImageData(0, 0, this.mainCanvas.width, this.mainCanvas.height);
+    }
+
+    this._width = newWidth;
+    this._height = newHeight;
+    this.mainCanvas.width = newWidth;
+    this.mainCanvas.height = newHeight;
+    this.previewCanvas.width = newWidth;
+    this.previewCanvas.height = newHeight;
+
+    // Restore content
+    if (savedData) {
+      mainCtx.fillStyle = '#ffffff';
+      mainCtx.fillRect(0, 0, newWidth, newHeight);
+      mainCtx.putImageData(savedData, 0, 0);
     }
   }
 
@@ -274,8 +278,6 @@ export class DrawingCanvas extends LitElement {
     return html`
       <canvas
         id="main"
-        width=${this._width}
-        height=${this._height}
         @pointerdown=${this._onPointerDown}
         @pointermove=${this._onPointerMove}
         @pointerup=${this._onPointerUp}
@@ -283,8 +285,6 @@ export class DrawingCanvas extends LitElement {
       ></canvas>
       <canvas
         id="preview"
-        width=${this._width}
-        height=${this._height}
         style="position:absolute;top:0;left:0;pointer-events:none;"
       ></canvas>
     `;
