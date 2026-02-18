@@ -1,7 +1,8 @@
 import { LitElement, html, css } from 'lit';
-import { customElement } from 'lit/decorators.js';
+import { customElement, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
+import { getRecentStamps, addStamp, deleteStamp, type StampEntry } from '../stamp-store.js';
 
 const presetColors = [
   '#000000', '#ffffff', '#ff0000', '#ff6600', '#ffcc00',
@@ -124,6 +125,10 @@ export class ToolSettings extends LitElement {
     }
   `;
 
+  @state() private _recentStamps: StampEntry[] = [];
+  @state() private _activeStampId: string | null = null;
+  private _thumbUrls = new Map<string, string>();
+
   private _ctx = new ContextConsumer(this, {
     context: drawingContext,
     subscribe: true,
@@ -131,6 +136,28 @@ export class ToolSettings extends LitElement {
 
   private get ctx(): DrawingContextValue {
     return this._ctx.value!;
+  }
+
+  override connectedCallback() {
+    super.connectedCallback();
+    this._loadStamps();
+  }
+
+  private async _loadStamps() {
+    this._recentStamps = await getRecentStamps();
+    // Revoke old URLs
+    for (const [id, url] of this._thumbUrls) {
+      if (!this._recentStamps.some((s) => s.id === id)) {
+        URL.revokeObjectURL(url);
+        this._thumbUrls.delete(id);
+      }
+    }
+    // Create new URLs
+    for (const s of this._recentStamps) {
+      if (!this._thumbUrls.has(s.id)) {
+        this._thumbUrls.set(s.id, URL.createObjectURL(s.blob));
+      }
+    }
   }
 
   private _onStrokeColor(e: Event) {
@@ -153,14 +180,40 @@ export class ToolSettings extends LitElement {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
-    input.onchange = () => {
+    input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;
+      const entry = await addStamp(file);
       const img = new Image();
-      img.onload = () => this.ctx.setStampImage(img);
+      img.onload = () => {
+        this.ctx.setStampImage(img);
+        this._activeStampId = entry.id;
+      };
       img.src = URL.createObjectURL(file);
+      await this._loadStamps();
     };
     input.click();
+  }
+
+  private _selectStamp(entry: StampEntry) {
+    const url = this._thumbUrls.get(entry.id);
+    if (!url) return;
+    const img = new Image();
+    img.onload = () => {
+      this.ctx.setStampImage(img);
+      this._activeStampId = entry.id;
+    };
+    img.src = URL.createObjectURL(entry.blob);
+  }
+
+  private async _deleteStamp(entry: StampEntry, e: Event) {
+    e.stopPropagation();
+    await deleteStamp(entry.id);
+    if (this._activeStampId === entry.id) {
+      this._activeStampId = null;
+      this.ctx.setStampImage(null);
+    }
+    await this._loadStamps();
   }
 
   private _showsShapeOptions(): boolean {
