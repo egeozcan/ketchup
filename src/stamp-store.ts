@@ -1,5 +1,3 @@
-// src/stamp-store.ts
-
 export interface StampEntry {
   id: string;
   blob: Blob;
@@ -11,7 +9,10 @@ const STORE_NAME = 'stamps';
 const DB_VERSION = 1;
 const MAX_STAMPS = 20;
 
-function openDB(): Promise<IDBDatabase> {
+let cachedDB: IDBDatabase | null = null;
+
+async function openDB(): Promise<IDBDatabase> {
+  if (cachedDB) return cachedDB;
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
@@ -21,7 +22,10 @@ function openDB(): Promise<IDBDatabase> {
         store.createIndex('createdAt', 'createdAt');
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      cachedDB = req.result;
+      resolve(cachedDB);
+    };
     req.onerror = () => reject(req.error);
   });
 }
@@ -67,9 +71,8 @@ export async function addStamp(blob: Blob): Promise<StampEntry> {
   const all = await getRecentStamps(MAX_STAMPS + 10);
   if (all.length > MAX_STAMPS) {
     const toDelete = all.slice(MAX_STAMPS);
-    const db2 = await openDB();
     await new Promise<void>((resolve, reject) => {
-      const tx = db2.transaction(STORE_NAME, 'readwrite');
+      const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
       for (const old of toDelete) {
         store.delete(old.id);

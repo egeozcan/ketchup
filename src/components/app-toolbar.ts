@@ -22,7 +22,10 @@ export class AppToolbar extends LitElement {
       gap: 4px;
       width: 52px;
       box-sizing: border-box;
+      overflow-x: hidden;
       overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: #555 transparent;
     }
 
     .group {
@@ -137,6 +140,9 @@ export class AppToolbar extends LitElement {
           @click=${() => this.ctx.redo()}
         >
           ${actionIcons.redo}
+        </button>
+        <button title="Save" @click=${() => this.ctx.saveCanvas()}>
+          ${actionIcons.save}
         </button>
         <button title="Clear canvas" @click=${() => this.ctx.clearCanvas()}>
           ${actionIcons.clear}

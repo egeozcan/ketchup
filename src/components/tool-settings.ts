@@ -18,19 +18,19 @@ export class ToolSettings extends LitElement {
       display: flex;
       align-items: center;
       background: #333;
-      padding: 6px 16px;
-      gap: 16px;
+      padding: 0.375rem 1rem;
+      gap: 1rem;
       color: #ddd;
       font-family: system-ui, sans-serif;
-      font-size: 13px;
+      font-size: 0.8125rem;
       flex-wrap: wrap;
-      min-height: 44px;
+      min-height: 2.75rem;
     }
 
     .section {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 0.5rem;
     }
 
     label {
@@ -41,15 +41,15 @@ export class ToolSettings extends LitElement {
     .color-grid {
       display: flex;
       flex-wrap: wrap;
-      gap: 3px;
-      max-width: 200px;
+      gap: 0.1875rem;
+      max-width: 12.5rem;
     }
 
     .color-swatch {
-      width: 18px;
-      height: 18px;
-      border-radius: 3px;
-      border: 2px solid transparent;
+      width: 1.125rem;
+      height: 1.125rem;
+      border-radius: 0.1875rem;
+      border: 0.125rem solid transparent;
       cursor: pointer;
       padding: 0;
       box-sizing: border-box;
@@ -64,29 +64,29 @@ export class ToolSettings extends LitElement {
     }
 
     input[type="color"] {
-      width: 28px;
-      height: 28px;
+      width: 1.75rem;
+      height: 1.75rem;
       border: none;
-      border-radius: 4px;
+      border-radius: 0.25rem;
       padding: 0;
       cursor: pointer;
       background: none;
     }
 
     input[type="range"] {
-      width: 100px;
+      width: 6.25rem;
       accent-color: #5b8cf7;
     }
 
     .size-value {
-      min-width: 24px;
+      min-width: 1.5rem;
       text-align: center;
     }
 
     .checkbox-label {
       display: flex;
       align-items: center;
-      gap: 4px;
+      gap: 0.25rem;
       cursor: pointer;
       color: #aaa;
     }
@@ -99,10 +99,10 @@ export class ToolSettings extends LitElement {
       background: #5b8cf7;
       color: white;
       border: none;
-      border-radius: 4px;
-      padding: 4px 10px;
+      border-radius: 0.25rem;
+      padding: 0.25rem 0.625rem;
       cursor: pointer;
-      font-size: 12px;
+      font-size: 0.75rem;
     }
 
     .stamp-btn:hover {
@@ -110,39 +110,47 @@ export class ToolSettings extends LitElement {
     }
 
     .stamp-preview {
-      width: 28px;
-      height: 28px;
-      border-radius: 4px;
-      border: 1px solid #555;
+      width: 1.75rem;
+      height: 1.75rem;
+      border-radius: 0.25rem;
+      border: 0.0625rem solid #555;
       object-fit: contain;
       background: #222;
     }
 
     .separator {
-      width: 1px;
-      height: 24px;
+      width: 0.0625rem;
+      height: 1.5rem;
       background: #555;
     }
 
     .stamp-row {
       display: flex;
-      gap: 4px;
+      gap: 0.25rem;
       overflow-x: auto;
-      max-width: 400px;
-      padding: 2px 0;
+      overflow-y: hidden;
+      max-width: 25rem;
+      padding: 0.125rem 0;
       align-items: center;
+      scrollbar-width: none;
+    }
+
+    .stamp-row::-webkit-scrollbar {
+      display: none;
     }
 
     .stamp-thumb-wrap {
       position: relative;
       flex-shrink: 0;
+      overflow: hidden;
+      border-radius: 0.25rem;
     }
 
     .stamp-thumb {
-      width: 32px;
-      height: 32px;
-      border-radius: 4px;
-      border: 2px solid transparent;
+      width: 2.75rem;
+      height: 2.75rem;
+      border-radius: 0.25rem;
+      border: 0.125rem solid transparent;
       object-fit: contain;
       background: #222;
       cursor: pointer;
@@ -160,16 +168,16 @@ export class ToolSettings extends LitElement {
     .stamp-delete {
       display: none;
       position: absolute;
-      top: -4px;
-      right: -4px;
-      width: 14px;
-      height: 14px;
+      top: 0.0625rem;
+      right: 0.0625rem;
+      width: 0.875rem;
+      height: 0.875rem;
       border-radius: 50%;
       background: #555;
       color: #ddd;
       border: none;
-      font-size: 9px;
-      line-height: 14px;
+      font-size: 0.5625rem;
+      line-height: 0.875rem;
       text-align: center;
       cursor: pointer;
       padding: 0;
@@ -372,7 +380,6 @@ export class ToolSettings extends LitElement {
                             <button
                               class="stamp-delete"
                               @click=${(e: Event) => this._deleteStamp(s, e)}
-                              title="Remove stamp"
                             >&times;</button>
                           </div>
                         `,

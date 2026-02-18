@@ -30,9 +30,12 @@ export class DrawingCanvas extends LitElement {
 
     canvas {
       display: block;
-      background: white;
       cursor: crosshair;
       touch-action: none;
+    }
+
+    #main {
+      background: white;
     }
   `;
 
@@ -150,6 +153,13 @@ export class DrawingCanvas extends LitElement {
     c.fillStyle = '#ffffff';
     c.fillRect(0, 0, this._width, this._height);
     this._pushHistory();
+  }
+
+  public saveCanvas() {
+    const link = document.createElement('a');
+    link.download = 'drawing.png';
+    link.href = this.mainCanvas.toDataURL('image/png');
+    link.click();
   }
 
   // --- Pointer events ---

@@ -12,6 +12,7 @@ export interface DrawingContextValue {
   undo: () => void;
   redo: () => void;
   clearCanvas: () => void;
+  saveCanvas: () => void;
   canUndo: boolean;
   canRedo: boolean;
 }

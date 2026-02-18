@@ -75,6 +75,7 @@ export class DrawingApp extends LitElement {
       undo: () => this.canvas?.undo(),
       redo: () => this.canvas?.redo(),
       clearCanvas: () => this.canvas?.clearCanvas(),
+      saveCanvas: () => this.canvas?.saveCanvas(),
       canUndo: this._canUndo,
       canRedo: this._canRedo,
     };
