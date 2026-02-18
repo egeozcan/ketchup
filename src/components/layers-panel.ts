@@ -196,6 +196,15 @@ export class LayersPanel extends LitElement {
       height: 14px;
     }
 
+    /* ── Layer thumbnail ──────────────────────── */
+    .layer-thumb {
+      width: 48px;
+      height: 36px;
+      border-radius: 3px;
+      border: 1px solid #555;
+      flex-shrink: 0;
+    }
+
     /* ── Layer name ─────────────────────────────── */
     .layer-name {
       flex: 1;
@@ -627,6 +636,8 @@ export class LayersPanel extends LitElement {
             ${layer.visible ? this._eyeOpen : this._eyeClosed}
           </button>
 
+          <canvas class="layer-thumb" width="48" height="36"></canvas>
+
           ${isEditing
             ? html`<input
                 class="layer-name-input"
@@ -693,6 +704,44 @@ export class LayersPanel extends LitElement {
       }
     });
     return nothing;
+  }
+
+  // ── Thumbnails ──────────────────────────────
+
+  override updated() {
+    this._updateThumbnails();
+  }
+
+  private _updateThumbnails() {
+    const layers = this._ctx.value?.state.layers ?? [];
+    const thumbnails = this.shadowRoot?.querySelectorAll<HTMLCanvasElement>('.layer-thumb');
+    if (!thumbnails) return;
+
+    const reversed = [...layers].reverse();
+    thumbnails.forEach((thumb, i) => {
+      const layer = reversed[i];
+      if (!layer) return;
+      const ctx = thumb.getContext('2d')!;
+      ctx.clearRect(0, 0, thumb.width, thumb.height);
+      // Mini checkerboard to show transparency
+      this._drawMiniCheckerboard(ctx, thumb.width, thumb.height);
+      // Scale layer content to thumbnail
+      if (layer.visible) {
+        ctx.globalAlpha = layer.opacity;
+      }
+      ctx.drawImage(layer.canvas, 0, 0, thumb.width, thumb.height);
+      ctx.globalAlpha = 1.0;
+    });
+  }
+
+  private _drawMiniCheckerboard(ctx: CanvasRenderingContext2D, w: number, h: number) {
+    const size = 4;
+    for (let y = 0; y < h; y += size) {
+      for (let x = 0; x < w; x += size) {
+        ctx.fillStyle = ((x / size + y / size) % 2 === 0) ? '#ffffff' : '#e0e0e0';
+        ctx.fillRect(x, y, size, size);
+      }
+    }
   }
 }
 
