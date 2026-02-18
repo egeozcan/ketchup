@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
-import { provide } from '@lit/context';
+import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { DrawingState, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
@@ -46,8 +46,12 @@ export class DrawingApp extends LitElement {
 
   @query('drawing-canvas') canvas!: DrawingCanvas;
 
-  @provide({ context: drawingContext })
-  get contextValue(): DrawingContextValue {
+  private _provider = new ContextProvider(this, {
+    context: drawingContext,
+    initialValue: this._buildContextValue(),
+  });
+
+  private _buildContextValue(): DrawingContextValue {
     return {
       state: this._state,
       setTool: (tool: ToolType) => {
@@ -74,6 +78,10 @@ export class DrawingApp extends LitElement {
       canUndo: this._canUndo,
       canRedo: this._canRedo,
     };
+  }
+
+  override willUpdate() {
+    this._provider.setValue(this._buildContextValue());
   }
 
   private _onHistoryChange(e: CustomEvent) {

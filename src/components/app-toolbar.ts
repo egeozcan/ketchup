@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
-import { consume } from '@lit/context';
+import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { ToolType } from '../types.js';
 import { toolIcons, toolLabels, actionIcons } from './tool-icons.js';
@@ -85,14 +85,21 @@ export class AppToolbar extends LitElement {
     }
   `;
 
-  @consume({ context: drawingContext, subscribe: true })
-  ctx!: DrawingContextValue;
+  private _ctx = new ContextConsumer(this, {
+    context: drawingContext,
+    subscribe: true,
+  });
+
+  private get ctx(): DrawingContextValue {
+    return this._ctx.value!;
+  }
 
   private _selectTool(tool: ToolType) {
     this.ctx.setTool(tool);
   }
 
   override render() {
+    if (!this._ctx.value) return html``;
     const { activeTool } = this.ctx.state;
 
     return html`

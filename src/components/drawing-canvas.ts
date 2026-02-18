@@ -1,6 +1,6 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
-import { consume } from '@lit/context';
+import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { Point } from '../types.js';
 import { drawPencilSegment } from '../tools/pencil.js';
@@ -36,8 +36,14 @@ export class DrawingCanvas extends LitElement {
     }
   `;
 
-  @consume({ context: drawingContext, subscribe: true })
-  ctx!: DrawingContextValue;
+  private _ctx = new ContextConsumer(this, {
+    context: drawingContext,
+    subscribe: true,
+  });
+
+  private get ctx(): DrawingContextValue {
+    return this._ctx.value!;
+  }
 
   @query('#main') mainCanvas!: HTMLCanvasElement;
   @query('#preview') previewCanvas!: HTMLCanvasElement;
@@ -152,7 +158,7 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _onPointerDown(e: PointerEvent) {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || !this._ctx.value) return;
     this.mainCanvas.setPointerCapture(e.pointerId);
     const p = this._getPoint(e);
     const { activeTool } = this.ctx.state;
@@ -184,7 +190,7 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _onPointerMove(e: PointerEvent) {
-    if (!this._drawing || !this._lastPoint) return;
+    if (!this._drawing || !this._lastPoint || !this._ctx.value) return;
     const p = this._getPoint(e);
     const { activeTool } = this.ctx.state;
 
@@ -214,7 +220,7 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _onPointerUp(e: PointerEvent) {
-    if (!this._drawing) return;
+    if (!this._drawing || !this._ctx.value) return;
     const p = this._getPoint(e);
     const { activeTool } = this.ctx.state;
 
