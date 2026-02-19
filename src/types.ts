@@ -8,7 +8,8 @@ export type ToolType =
   | 'circle'
   | 'triangle'
   | 'fill'
-  | 'stamp';
+  | 'stamp'
+  | 'hand';
 
 export interface Point {
   x: number;
@@ -41,6 +42,8 @@ export interface DrawingState {
   layers: Layer[];
   activeLayerId: string;
   layersPanelOpen: boolean;
+  documentWidth: number;
+  documentHeight: number;
 }
 
 export type HistoryEntry =
