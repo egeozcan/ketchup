@@ -13,6 +13,15 @@ export interface DrawingContextValue {
   redo: () => void;
   clearCanvas: () => void;
   saveCanvas: () => void;
+  // Layer operations
+  addLayer: () => void;
+  deleteLayer: (id: string) => void;
+  setActiveLayer: (id: string) => void;
+  setLayerVisibility: (id: string, visible: boolean) => void;
+  setLayerOpacity: (id: string, opacity: number) => void;
+  reorderLayer: (id: string, newIndex: number) => void;
+  renameLayer: (id: string, name: string) => void;
+  toggleLayersPanel: () => void;
   canUndo: boolean;
   canRedo: boolean;
 }
