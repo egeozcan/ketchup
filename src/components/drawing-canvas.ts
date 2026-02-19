@@ -134,11 +134,13 @@ export class DrawingCanvas extends LitElement {
     this._resizeToFit();
     this._resizeObserver = new ResizeObserver(() => this._resizeToFit());
     this._resizeObserver.observe(this);
-    // Initialize first layer with white background
-    const layerCtx = this._getActiveLayerCtx();
-    if (layerCtx) {
-      layerCtx.fillStyle = '#ffffff';
-      layerCtx.fillRect(0, 0, this._width, this._height);
+    if (!this._skipInitialFill) {
+      // Initialize first layer with white background
+      const layerCtx = this._getActiveLayerCtx();
+      if (layerCtx) {
+        layerCtx.fillStyle = '#ffffff';
+        layerCtx.fillRect(0, 0, this._width, this._height);
+      }
     }
     this.composite();
   }
@@ -186,6 +188,19 @@ export class DrawingCanvas extends LitElement {
   private _history: HistoryEntry[] = [];
   private _historyIndex = -1;
   private _maxHistory = 50;
+
+  // --- Public history access for persistence ---
+  public getHistory(): HistoryEntry[] { return this._history; }
+  public getHistoryIndex(): number { return this._historyIndex; }
+  public setHistory(entries: HistoryEntry[], index: number) {
+    this._history = entries;
+    this._historyIndex = index;
+    this._notifyHistory();
+  }
+
+  private _skipInitialFill = false;
+  public setSkipInitialFill() { this._skipInitialFill = true; }
+
   private _beforeDrawData: ImageData | null = null;
 
   /** Call before a drawing operation starts (pointerdown) */
