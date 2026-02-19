@@ -676,8 +676,11 @@ export class LayersPanel extends LitElement {
                 type="range"
                 min="0"
                 max="100"
+                draggable="false"
                 .value=${String(Math.round(layer.opacity * 100))}
-                @pointerdown=${() => this._onOpacityPointerDown(layer)}
+                @pointerdown=${(e: Event) => { e.stopPropagation(); this._onOpacityPointerDown(layer); }}
+                @dragstart=${(e: Event) => e.preventDefault()}
+                @mousedown=${(e: Event) => e.stopPropagation()}
                 @input=${(e: Event) => this._onOpacityInput(layer.id, e)}
                 @change=${(e: Event) => this._onOpacityChange(layer.id, e)}
               />

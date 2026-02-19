@@ -120,7 +120,6 @@ export class DrawingApp extends LitElement {
         newLayers.splice(activeIdx + 1, 0, layer);
         this._state = { ...this._state, layers: newLayers, activeLayerId: layer.id };
         this.canvas?.pushLayerOperation({ type: 'add-layer', layer: this._snapshotLayer(layer) });
-        this.canvas?.composite();
       },
       deleteLayer: (id: string) => {
         if (this._state.layers.length <= 1) return;
@@ -134,7 +133,6 @@ export class DrawingApp extends LitElement {
           : this._state.activeLayerId;
         this._state = { ...this._state, layers: newLayers, activeLayerId: newActiveId };
         this.canvas?.pushLayerOperation({ type: 'delete-layer', layer: snapshot, index: idx });
-        this.canvas?.composite();
       },
       setActiveLayer: (id: string) => {
         if (this._state.layers.some(l => l.id === id)) {
@@ -149,14 +147,12 @@ export class DrawingApp extends LitElement {
         const newLayers = this._state.layers.map(l => l.id === id ? { ...l, visible } : l);
         this._state = { ...this._state, layers: newLayers };
         this.canvas?.pushLayerOperation({ type: 'visibility', layerId: id, before, after: visible });
-        this.canvas?.composite();
       },
       setLayerOpacity: (id: string, opacity: number) => {
         const layer = this._state.layers.find(l => l.id === id);
         if (!layer) return;
         const newLayers = this._state.layers.map(l => l.id === id ? { ...l, opacity } : l);
         this._state = { ...this._state, layers: newLayers };
-        this.canvas?.composite();
       },
       reorderLayer: (id: string, newIndex: number) => {
         const oldIndex = this._state.layers.findIndex(l => l.id === id);
@@ -166,7 +162,6 @@ export class DrawingApp extends LitElement {
         newLayers.splice(newIndex, 0, layer);
         this._state = { ...this._state, layers: newLayers };
         this.canvas?.pushLayerOperation({ type: 'reorder', fromIndex: oldIndex, toIndex: newIndex });
-        this.canvas?.composite();
       },
       renameLayer: (id: string, name: string) => {
         const layer = this._state.layers.find(l => l.id === id);

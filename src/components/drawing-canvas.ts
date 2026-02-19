@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, query } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import type { Point, HistoryEntry } from '../types.js';
+import type { Point, HistoryEntry, Layer } from '../types.js';
 import { drawPencilSegment } from '../tools/pencil.js';
 import { drawMarkerSegment } from '../tools/marker.js';
 import { drawEraserSegment } from '../tools/eraser.js';
@@ -54,6 +54,7 @@ export class DrawingCanvas extends LitElement {
 
   private _checkerboardPattern: CanvasPattern | null = null;
   private _resizeObserver: ResizeObserver | null = null;
+  private _lastLayers: Layer[] | null = null;
   private _drawing = false;
   private _lastPoint: Point | null = null;
   private _startPoint: Point | null = null;
@@ -115,6 +116,17 @@ export class DrawingCanvas extends LitElement {
       this._checkerboardPattern = ctx.createPattern(tile, 'repeat')!;
     }
     return this._checkerboardPattern;
+  }
+
+  override willUpdate() {
+    const layers = this._ctx.value?.state.layers ?? null;
+    if (layers && layers !== this._lastLayers) {
+      this._lastLayers = layers;
+      // Defer composite to after render so the display canvas exists
+      if (this.mainCanvas) {
+        this.composite();
+      }
+    }
   }
 
   override firstUpdated() {
