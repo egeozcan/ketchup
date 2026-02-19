@@ -2,8 +2,20 @@ import { LitElement, html, css } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
 import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import type { DrawingState, Layer, LayerSnapshot, ToolType } from '../types.js';
+import type { DrawingState, Layer, LayerSnapshot, ToolType, ProjectMeta, HistoryEntry } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
+import {
+  listProjects,
+  createProject as createProjectInDB,
+  deleteProject as deleteProjectInDB,
+  renameProject as renameProjectInDB,
+  saveProjectState,
+  loadProjectState,
+  clearProjectHistory,
+  canvasToBlob,
+  serializeLayer,
+  deserializeLayer,
+} from '../project-store.js';
 import './app-toolbar.js';
 import './tool-settings.js';
 import './drawing-canvas.js';
@@ -65,6 +77,12 @@ export class DrawingApp extends LitElement {
 
   @state() private _canUndo = false;
   @state() private _canRedo = false;
+  @state() private _saving = false;
+  @state() private _currentProject: ProjectMeta | null = null;
+  @state() private _projectList: ProjectMeta[] = [];
+  private _dirty = false;
+  private _saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private _lastSavedHistoryLength = 0;
 
   @query('drawing-canvas') canvas!: DrawingCanvas;
 
@@ -84,6 +102,103 @@ export class DrawingApp extends LitElement {
     };
   }
 
+  private _onBeforeUnload = (e: BeforeUnloadEvent) => {
+    if (this._dirty) {
+      e.preventDefault();
+    }
+  };
+
+  private _markDirty() {
+    this._dirty = true;
+    if (this._saveTimer) clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => this._save(), 500);
+  }
+
+  private async _save() {
+    if (!this._currentProject) return;
+    this._saving = true;
+    try {
+      const layers = await Promise.all(
+        this._state.layers.map(l => serializeLayer(l)),
+      );
+      const stateRecord = {
+        projectId: this._currentProject.id,
+        toolSettings: {
+          activeTool: this._state.activeTool,
+          strokeColor: this._state.strokeColor,
+          fillColor: this._state.fillColor,
+          useFill: this._state.useFill,
+          brushSize: this._state.brushSize,
+        },
+        canvasWidth: this.canvas?.getWidth() ?? 800,
+        canvasHeight: this.canvas?.getHeight() ?? 600,
+        layers,
+        activeLayerId: this._state.activeLayerId,
+        layersPanelOpen: this._state.layersPanelOpen,
+      };
+      const allHistory = this.canvas?.getHistory() ?? [];
+      const historyIndex = this.canvas?.getHistoryIndex() ?? -1;
+      const newEntries = allHistory.slice(this._lastSavedHistoryLength);
+      let thumbnail: Blob | null = null;
+      if (this.canvas?.mainCanvas) {
+        try { thumbnail = await canvasToBlob(this.canvas.mainCanvas); } catch { /* non-critical */ }
+      }
+      await saveProjectState(this._currentProject.id, stateRecord, newEntries, historyIndex, thumbnail);
+      this._lastSavedHistoryLength = allHistory.length;
+      this._dirty = false;
+      this._projectList = await listProjects();
+    } catch (err) {
+      console.error('Save failed:', err);
+    } finally {
+      this._saving = false;
+    }
+  }
+
+  private async _loadProject(projectId: string) {
+    const result = await loadProjectState(projectId);
+    if (!result) return;
+    const { state: record, history, historyIndex } = result;
+    this.canvas?.setSkipInitialFill();
+    const layers: Layer[] = await Promise.all(
+      record.layers.map(sl => deserializeLayer(sl, record.canvasWidth, record.canvasHeight)),
+    );
+    // Restore layer counter to max existing layer number
+    const maxNum = layers.reduce((max, l) => {
+      const match = l.name.match(/^Layer (\d+)$/);
+      return match ? Math.max(max, parseInt(match[1])) : max;
+    }, 0);
+    _layerCounter = maxNum;
+    this._state = {
+      activeTool: record.toolSettings.activeTool,
+      strokeColor: record.toolSettings.strokeColor,
+      fillColor: record.toolSettings.fillColor,
+      useFill: record.toolSettings.useFill,
+      brushSize: record.toolSettings.brushSize,
+      stampImage: null,
+      layers,
+      activeLayerId: record.activeLayerId,
+      layersPanelOpen: record.layersPanelOpen,
+    };
+    await this.updateComplete;
+    this.canvas?.setHistory(history, historyIndex);
+    this._lastSavedHistoryLength = history.length;
+    this._dirty = false;
+    this.canvas?.composite();
+  }
+
+  override async firstUpdated() {
+    this._projectList = await listProjects();
+    if (this._projectList.length > 0) {
+      this._currentProject = this._projectList[0];
+      await this._loadProject(this._currentProject.id);
+    } else {
+      const meta = await createProjectInDB('Untitled');
+      this._currentProject = meta;
+      this._projectList = [meta];
+      this._markDirty();
+    }
+  }
+
   private _buildContextValue(): DrawingContextValue {
     return {
       state: this._state,
@@ -92,21 +207,27 @@ export class DrawingApp extends LitElement {
           this.canvas?.clearSelection();
         }
         this._state = { ...this._state, activeTool: tool };
+        this._markDirty();
       },
       setStrokeColor: (color: string) => {
         this._state = { ...this._state, strokeColor: color };
+        this._markDirty();
       },
       setFillColor: (color: string) => {
         this._state = { ...this._state, fillColor: color };
+        this._markDirty();
       },
       setUseFill: (useFill: boolean) => {
         this._state = { ...this._state, useFill };
+        this._markDirty();
       },
       setBrushSize: (size: number) => {
         this._state = { ...this._state, brushSize: size };
+        this._markDirty();
       },
       setStampImage: (img: HTMLImageElement | null) => {
         this._state = { ...this._state, stampImage: img };
+        this._markDirty();
       },
       undo: () => this.canvas?.undo(),
       redo: () => this.canvas?.redo(),
@@ -121,6 +242,7 @@ export class DrawingApp extends LitElement {
         newLayers.splice(insertIdx, 0, layer);
         this._state = { ...this._state, layers: newLayers, activeLayerId: layer.id };
         this.canvas?.pushLayerOperation({ type: 'add-layer', layer: this._snapshotLayer(layer), index: insertIdx });
+        this._markDirty();
       },
       deleteLayer: (id: string) => {
         if (this._state.layers.length <= 1) return;
@@ -137,11 +259,13 @@ export class DrawingApp extends LitElement {
           : this._state.activeLayerId;
         this._state = { ...this._state, layers: newLayers, activeLayerId: newActiveId };
         this.canvas?.pushLayerOperation({ type: 'delete-layer', layer: snapshot, index: idx });
+        this._markDirty();
       },
       setActiveLayer: (id: string) => {
         if (this._state.layers.some(l => l.id === id)) {
           this.canvas?.clearSelection();
           this._state = { ...this._state, activeLayerId: id };
+          this._markDirty();
         }
       },
       setLayerVisibility: (id: string, visible: boolean) => {
@@ -151,12 +275,14 @@ export class DrawingApp extends LitElement {
         const newLayers = this._state.layers.map(l => l.id === id ? { ...l, visible } : l);
         this._state = { ...this._state, layers: newLayers };
         this.canvas?.pushLayerOperation({ type: 'visibility', layerId: id, before, after: visible });
+        this._markDirty();
       },
       setLayerOpacity: (id: string, opacity: number) => {
         const layer = this._state.layers.find(l => l.id === id);
         if (!layer) return;
         const newLayers = this._state.layers.map(l => l.id === id ? { ...l, opacity } : l);
         this._state = { ...this._state, layers: newLayers };
+        this._markDirty();
       },
       reorderLayer: (id: string, newIndex: number) => {
         const oldIndex = this._state.layers.findIndex(l => l.id === id);
@@ -166,6 +292,7 @@ export class DrawingApp extends LitElement {
         newLayers.splice(newIndex, 0, layer);
         this._state = { ...this._state, layers: newLayers };
         this.canvas?.pushLayerOperation({ type: 'reorder', fromIndex: oldIndex, toIndex: newIndex });
+        this._markDirty();
       },
       renameLayer: (id: string, name: string) => {
         const layer = this._state.layers.find(l => l.id === id);
@@ -174,12 +301,79 @@ export class DrawingApp extends LitElement {
         const newLayers = this._state.layers.map(l => l.id === id ? { ...l, name } : l);
         this._state = { ...this._state, layers: newLayers };
         this.canvas?.pushLayerOperation({ type: 'rename', layerId: id, before, after: name });
+        this._markDirty();
       },
       toggleLayersPanel: () => {
         this._state = { ...this._state, layersPanelOpen: !this._state.layersPanelOpen };
+        this._markDirty();
       },
       canUndo: this._canUndo,
       canRedo: this._canRedo,
+      // Project operations
+      currentProject: this._currentProject,
+      projectList: this._projectList,
+      saving: this._saving,
+      switchProject: async (id: string) => {
+        if (id === this._currentProject?.id) return;
+        if (this._dirty) await this._save();
+        const meta = this._projectList.find(p => p.id === id);
+        if (!meta) return;
+        this._currentProject = meta;
+        await this._loadProject(id);
+      },
+      createProject: async (name: string) => {
+        if (this._dirty) await this._save();
+        const meta = await createProjectInDB(name);
+        this._currentProject = meta;
+        this._projectList = await listProjects();
+        _layerCounter = 0;
+        const layer = createLayer(this.canvas?.getWidth() ?? 800, this.canvas?.getHeight() ?? 600);
+        this._state = {
+          activeTool: 'pencil', strokeColor: '#000000', fillColor: '#ff0000',
+          useFill: false, brushSize: 4, stampImage: null,
+          layers: [layer], activeLayerId: layer.id, layersPanelOpen: true,
+        };
+        await this.updateComplete;
+        this.canvas?.setHistory([], -1);
+        this._lastSavedHistoryLength = 0;
+        const ctx = layer.canvas.getContext('2d')!;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
+        this.canvas?.composite();
+        this._markDirty();
+      },
+      deleteProject: async (id: string) => {
+        await deleteProjectInDB(id);
+        this._projectList = await listProjects();
+        if (id === this._currentProject?.id) {
+          if (this._projectList.length > 0) {
+            this._currentProject = this._projectList[0];
+            await this._loadProject(this._currentProject.id);
+          } else {
+            const meta = await createProjectInDB('Untitled');
+            this._currentProject = meta;
+            this._projectList = [meta];
+            _layerCounter = 0;
+            const layer = createLayer(this.canvas?.getWidth() ?? 800, this.canvas?.getHeight() ?? 600);
+            this._state = { ...this._state, layers: [layer], activeLayerId: layer.id };
+            await this.updateComplete;
+            this.canvas?.setHistory([], -1);
+            this._lastSavedHistoryLength = 0;
+            const ctx = layer.canvas.getContext('2d')!;
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
+            this.canvas?.composite();
+            this._markDirty();
+          }
+        }
+      },
+      renameProject: async (id: string, name: string) => {
+        await renameProjectInDB(id, name);
+        if (this._currentProject?.id === id) {
+          this._currentProject = { ...this._currentProject, name };
+        }
+        this._projectList = await listProjects();
+      },
     };
   }
 
@@ -190,6 +384,7 @@ export class DrawingApp extends LitElement {
   private _onHistoryChange(e: CustomEvent) {
     this._canUndo = e.detail.canUndo;
     this._canRedo = e.detail.canRedo;
+    this._markDirty();
   }
 
   private _onLayerUndo(e: CustomEvent) {
@@ -239,21 +434,25 @@ export class DrawingApp extends LitElement {
         break;
       }
     }
+    this._markDirty();
   }
 
   override connectedCallback() {
     super.connectedCallback();
     this.addEventListener('keydown', this._onKeyDown);
+    window.addEventListener('beforeunload', this._onBeforeUnload);
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
     this.removeEventListener('keydown', this._onKeyDown);
+    window.removeEventListener('beforeunload', this._onBeforeUnload);
   }
 
   private _onCommitOpacity(e: CustomEvent) {
     const { layerId, before, after } = e.detail;
     this.canvas?.pushLayerOperation({ type: 'opacity', layerId, before, after });
+    this._markDirty();
   }
 
   private _onKeyDown = (e: KeyboardEvent) => {
