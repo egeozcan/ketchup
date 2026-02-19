@@ -164,6 +164,11 @@ export class LayersPanel extends LitElement {
       align-items: center;
       gap: 4px;
       min-height: 24px;
+      cursor: grab;
+    }
+
+    .layer-row-main:active {
+      cursor: grabbing;
     }
 
     /* ── Visibility button ─────────────────────── */
@@ -619,15 +624,17 @@ export class LayersPanel extends LitElement {
       <div
         class="layer-row ${isActive ? 'active' : ''} ${this._draggedLayerId === layer.id ? 'dragging' : ''}"
         data-layer-id=${layer.id}
-        draggable="true"
         @click=${() => this._selectLayer(layer.id)}
-        @dragstart=${(e: DragEvent) => this._onDragStart(layer, e)}
         @dragover=${(e: DragEvent) => this._onDragOver(e)}
         @dragleave=${(e: DragEvent) => this._onDragLeave(e)}
         @drop=${(e: DragEvent) => this._onDrop(e)}
         @dragend=${() => this._onDragEnd()}
       >
-        <div class="layer-row-main">
+        <div
+          class="layer-row-main"
+          draggable="true"
+          @dragstart=${(e: DragEvent) => this._onDragStart(layer, e)}
+        >
           <button
             class="vis-btn ${layer.visible ? '' : 'hidden'}"
             title=${layer.visible ? 'Hide layer' : 'Show layer'}
@@ -676,11 +683,8 @@ export class LayersPanel extends LitElement {
                 type="range"
                 min="0"
                 max="100"
-                draggable="false"
                 .value=${String(Math.round(layer.opacity * 100))}
-                @pointerdown=${(e: Event) => { e.stopPropagation(); this._onOpacityPointerDown(layer); }}
-                @dragstart=${(e: Event) => e.preventDefault()}
-                @mousedown=${(e: Event) => e.stopPropagation()}
+                @pointerdown=${() => this._onOpacityPointerDown(layer)}
                 @input=${(e: Event) => this._onOpacityInput(layer.id, e)}
                 @change=${(e: Event) => this._onOpacityChange(layer.id, e)}
               />
