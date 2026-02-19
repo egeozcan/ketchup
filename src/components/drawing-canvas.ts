@@ -134,13 +134,11 @@ export class DrawingCanvas extends LitElement {
     this._resizeToFit();
     this._resizeObserver = new ResizeObserver(() => this._resizeToFit());
     this._resizeObserver.observe(this);
-    if (!this._skipInitialFill) {
-      // Initialize first layer with white background
-      const layerCtx = this._getActiveLayerCtx();
-      if (layerCtx) {
-        layerCtx.fillStyle = '#ffffff';
-        layerCtx.fillRect(0, 0, this._width, this._height);
-      }
+    // Initialize first layer with white background
+    const layerCtx = this._getActiveLayerCtx();
+    if (layerCtx) {
+      layerCtx.fillStyle = '#ffffff';
+      layerCtx.fillRect(0, 0, this._width, this._height);
     }
     this.composite();
   }
@@ -188,18 +186,18 @@ export class DrawingCanvas extends LitElement {
   private _history: HistoryEntry[] = [];
   private _historyIndex = -1;
   private _maxHistory = 50;
+  private _historyVersion = 0;
 
   // --- Public history access for persistence ---
-  public getHistory(): HistoryEntry[] { return this._history; }
+  public getHistory(): HistoryEntry[] { return [...this._history]; }
   public getHistoryIndex(): number { return this._historyIndex; }
+  public getHistoryVersion(): number { return this._historyVersion; }
   public setHistory(entries: HistoryEntry[], index: number) {
     this._history = entries;
     this._historyIndex = index;
+    this._historyVersion = 0;
     this._notifyHistory();
   }
-
-  private _skipInitialFill = false;
-  public setSkipInitialFill() { this._skipInitialFill = true; }
 
   private _beforeDrawData: ImageData | null = null;
 
@@ -231,10 +229,15 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _pushHistoryEntry(entry: HistoryEntry) {
+    const prevLength = this._history.length;
     this._history = this._history.slice(0, this._historyIndex + 1);
+    if (this._history.length < prevLength) {
+      this._historyVersion++;
+    }
     this._history.push(entry);
     if (this._history.length > this._maxHistory) {
       this._history.shift();
+      this._historyVersion++;
     } else {
       this._historyIndex++;
     }

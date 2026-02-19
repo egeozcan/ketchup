@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
 import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import type { DrawingState, Layer, LayerSnapshot, ToolType, ProjectMeta, HistoryEntry } from '../types.js';
+import type { DrawingState, Layer, LayerSnapshot, ToolType, ProjectMeta } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
 import {
   listProjects,
@@ -11,31 +11,14 @@ import {
   renameProject as renameProjectInDB,
   saveProjectState,
   loadProjectState,
-  clearProjectHistory,
   canvasToBlob,
-  serializeLayer,
+  serializeLayerFromImageData,
   deserializeLayer,
 } from '../project-store.js';
 import './app-toolbar.js';
 import './tool-settings.js';
 import './drawing-canvas.js';
 import './layers-panel.js';
-
-let _layerCounter = 0;
-
-function createLayer(width: number, height: number): Layer {
-  _layerCounter++;
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  return {
-    id: crypto.randomUUID(),
-    name: `Layer ${_layerCounter}`,
-    visible: true,
-    opacity: 1.0,
-    canvas,
-  };
-}
 
 @customElement('drawing-app')
 export class DrawingApp extends LitElement {
@@ -60,36 +43,58 @@ export class DrawingApp extends LitElement {
     }
   `;
 
-  private _initialLayer = createLayer(800, 600);
+  private _layerCounter = 0;
 
-  @state()
-  private _state: DrawingState = {
-    activeTool: 'pencil',
-    strokeColor: '#000000',
-    fillColor: '#ff0000',
-    useFill: false,
-    brushSize: 4,
-    stampImage: null,
-    layers: [this._initialLayer],
-    activeLayerId: this._initialLayer.id,
-    layersPanelOpen: true,
-  };
+  private _createLayer(width: number, height: number): Layer {
+    this._layerCounter++;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    return {
+      id: crypto.randomUUID(),
+      name: `Layer ${this._layerCounter}`,
+      visible: true,
+      opacity: 1.0,
+      canvas,
+    };
+  }
 
+  @state() private _state!: DrawingState;
   @state() private _canUndo = false;
   @state() private _canRedo = false;
   @state() private _saving = false;
   @state() private _currentProject: ProjectMeta | null = null;
   @state() private _projectList: ProjectMeta[] = [];
+
   private _dirty = false;
   private _saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private _saveInProgress = false;
   private _lastSavedHistoryLength = 0;
+  private _lastSavedHistoryVersion = 0;
 
   @query('drawing-canvas') canvas!: DrawingCanvas;
 
-  private _provider = new ContextProvider(this, {
-    context: drawingContext,
-    initialValue: this._buildContextValue(),
-  });
+  private _provider!: ContextProvider<typeof drawingContext>;
+
+  constructor() {
+    super();
+    const layer = this._createLayer(800, 600);
+    this._state = {
+      activeTool: 'pencil',
+      strokeColor: '#000000',
+      fillColor: '#ff0000',
+      useFill: false,
+      brushSize: 4,
+      stampImage: null,
+      layers: [layer],
+      activeLayerId: layer.id,
+      layersPanelOpen: true,
+    };
+    this._provider = new ContextProvider(this, {
+      context: drawingContext,
+      initialValue: this._buildContextValue(),
+    });
+  }
 
   private _snapshotLayer(layer: Layer): LayerSnapshot {
     const ctx = layer.canvas.getContext('2d')!;
@@ -116,11 +121,39 @@ export class DrawingApp extends LitElement {
 
   private async _save() {
     if (!this._currentProject) return;
+    if (this._saveInProgress) {
+      if (this._saveTimer) clearTimeout(this._saveTimer);
+      this._saveTimer = setTimeout(() => this._save(), 500);
+      return;
+    }
+    this._saveInProgress = true;
     this._saving = true;
     try {
+      // Synchronously snapshot all mutable data before any awaits
+      const layerSnapshots = this._state.layers.map(l => ({
+        id: l.id,
+        name: l.name,
+        visible: l.visible,
+        opacity: l.opacity,
+        imageData: l.canvas.getContext('2d')!.getImageData(0, 0, l.canvas.width, l.canvas.height),
+      }));
+      const historySnapshot = this.canvas?.getHistory() ?? [];
+      const historyIndex = this.canvas?.getHistoryIndex() ?? -1;
+      const historyVersion = this.canvas?.getHistoryVersion() ?? 0;
+
+      // Determine incremental vs full history save
+      const versionChanged = historyVersion !== this._lastSavedHistoryVersion;
+      const clearExistingHistory = versionChanged;
+      const entriesToSave = versionChanged
+        ? historySnapshot
+        : historySnapshot.slice(this._lastSavedHistoryLength);
+      const startIndex = versionChanged ? 0 : this._lastSavedHistoryLength;
+
+      // Async serialization from snapshots (not live canvas)
       const layers = await Promise.all(
-        this._state.layers.map(l => serializeLayer(l)),
+        layerSnapshots.map(snap => serializeLayerFromImageData(snap, snap.imageData)),
       );
+
       const stateRecord = {
         projectId: this._currentProject.id,
         toolSettings: {
@@ -135,55 +168,101 @@ export class DrawingApp extends LitElement {
         layers,
         activeLayerId: this._state.activeLayerId,
         layersPanelOpen: this._state.layersPanelOpen,
+        historyIndex,
       };
-      const allHistory = this.canvas?.getHistory() ?? [];
-      const historyIndex = this.canvas?.getHistoryIndex() ?? -1;
-      const newEntries = allHistory.slice(this._lastSavedHistoryLength);
+
       let thumbnail: Blob | null = null;
       if (this.canvas?.mainCanvas) {
         try { thumbnail = await canvasToBlob(this.canvas.mainCanvas); } catch { /* non-critical */ }
       }
-      await saveProjectState(this._currentProject.id, stateRecord, newEntries, historyIndex, thumbnail);
-      this._lastSavedHistoryLength = allHistory.length;
+
+      await saveProjectState(
+        this._currentProject.id,
+        stateRecord,
+        entriesToSave,
+        startIndex,
+        clearExistingHistory,
+        thumbnail,
+      );
+
       this._dirty = false;
+      this._lastSavedHistoryLength = historySnapshot.length;
+      this._lastSavedHistoryVersion = historyVersion;
       this._projectList = await listProjects();
     } catch (err) {
       console.error('Save failed:', err);
     } finally {
       this._saving = false;
+      this._saveInProgress = false;
     }
   }
 
-  private async _loadProject(projectId: string) {
-    const result = await loadProjectState(projectId);
-    if (!result) return;
-    const { state: record, history, historyIndex } = result;
-    this.canvas?.setSkipInitialFill();
-    const layers: Layer[] = await Promise.all(
-      record.layers.map(sl => deserializeLayer(sl, record.canvasWidth, record.canvasHeight)),
+  private async _resetToFreshProject() {
+    this._layerCounter = 0;
+    const layer = this._createLayer(
+      this.canvas?.getWidth() ?? 800,
+      this.canvas?.getHeight() ?? 600,
     );
-    // Restore layer counter to max existing layer number
-    const maxNum = layers.reduce((max, l) => {
-      const match = l.name.match(/^Layer (\d+)$/);
-      return match ? Math.max(max, parseInt(match[1])) : max;
-    }, 0);
-    _layerCounter = maxNum;
     this._state = {
-      activeTool: record.toolSettings.activeTool,
-      strokeColor: record.toolSettings.strokeColor,
-      fillColor: record.toolSettings.fillColor,
-      useFill: record.toolSettings.useFill,
-      brushSize: record.toolSettings.brushSize,
+      activeTool: 'pencil',
+      strokeColor: '#000000',
+      fillColor: '#ff0000',
+      useFill: false,
+      brushSize: 4,
       stampImage: null,
-      layers,
-      activeLayerId: record.activeLayerId,
-      layersPanelOpen: record.layersPanelOpen,
+      layers: [layer],
+      activeLayerId: layer.id,
+      layersPanelOpen: true,
     };
     await this.updateComplete;
-    this.canvas?.setHistory(history, historyIndex);
-    this._lastSavedHistoryLength = history.length;
-    this._dirty = false;
+    this.canvas?.setHistory([], -1);
+    const ctx = layer.canvas.getContext('2d')!;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
     this.canvas?.composite();
+    this._dirty = false;
+    this._lastSavedHistoryLength = 0;
+    this._lastSavedHistoryVersion = -1; // Force full history rewrite on next save
+  }
+
+  private async _loadProject(projectId: string) {
+    try {
+      const result = await loadProjectState(projectId);
+      if (!result) {
+        await this._resetToFreshProject();
+        return;
+      }
+      const { state: record, history, historyIndex } = result;
+      const layers: Layer[] = await Promise.all(
+        record.layers.map(sl => deserializeLayer(sl, record.canvasWidth, record.canvasHeight)),
+      );
+      // Restore layer counter to max existing layer number
+      const maxNum = layers.reduce((max, l) => {
+        const match = l.name.match(/^Layer (\d+)$/);
+        return match ? Math.max(max, parseInt(match[1])) : max;
+      }, 0);
+      this._layerCounter = maxNum;
+      this._state = {
+        activeTool: record.toolSettings.activeTool,
+        strokeColor: record.toolSettings.strokeColor,
+        fillColor: record.toolSettings.fillColor,
+        useFill: record.toolSettings.useFill,
+        brushSize: record.toolSettings.brushSize,
+        stampImage: null,
+        layers,
+        activeLayerId: record.activeLayerId,
+        layersPanelOpen: record.layersPanelOpen,
+      };
+      await this.updateComplete;
+      this.canvas?.setHistory(history, historyIndex);
+      this._dirty = false;
+      this._lastSavedHistoryLength = history.length;
+      this._lastSavedHistoryVersion = 0;
+      this.canvas?.composite();
+    } catch (err) {
+      console.error('Failed to load project:', err);
+      await this._resetToFreshProject();
+    }
   }
 
   override async firstUpdated() {
@@ -235,7 +314,7 @@ export class DrawingApp extends LitElement {
       saveCanvas: () => this.canvas?.saveCanvas(),
       // Layer operations
       addLayer: () => {
-        const layer = createLayer(this.canvas?.getWidth() ?? 800, this.canvas?.getHeight() ?? 600);
+        const layer = this._createLayer(this.canvas?.getWidth() ?? 800, this.canvas?.getHeight() ?? 600);
         const activeIdx = this._state.layers.findIndex(l => l.id === this._state.activeLayerId);
         const insertIdx = activeIdx + 1;
         const newLayers = [...this._state.layers];
@@ -265,7 +344,6 @@ export class DrawingApp extends LitElement {
         if (this._state.layers.some(l => l.id === id)) {
           this.canvas?.clearSelection();
           this._state = { ...this._state, activeLayerId: id };
-          this._markDirty();
         }
       },
       setLayerVisibility: (id: string, visible: boolean) => {
@@ -305,7 +383,6 @@ export class DrawingApp extends LitElement {
       },
       toggleLayersPanel: () => {
         this._state = { ...this._state, layersPanelOpen: !this._state.layersPanelOpen };
-        this._markDirty();
       },
       canUndo: this._canUndo,
       canRedo: this._canRedo,
@@ -313,66 +390,56 @@ export class DrawingApp extends LitElement {
       currentProject: this._currentProject,
       projectList: this._projectList,
       saving: this._saving,
-      switchProject: async (id: string) => {
+      switchProject: (id: string) => {
         if (id === this._currentProject?.id) return;
-        if (this._dirty) await this._save();
-        const meta = this._projectList.find(p => p.id === id);
-        if (!meta) return;
-        this._currentProject = meta;
-        await this._loadProject(id);
-      },
-      createProject: async (name: string) => {
-        if (this._dirty) await this._save();
-        const meta = await createProjectInDB(name);
-        this._currentProject = meta;
-        this._projectList = await listProjects();
-        _layerCounter = 0;
-        const layer = createLayer(this.canvas?.getWidth() ?? 800, this.canvas?.getHeight() ?? 600);
-        this._state = {
-          activeTool: 'pencil', strokeColor: '#000000', fillColor: '#ff0000',
-          useFill: false, brushSize: 4, stampImage: null,
-          layers: [layer], activeLayerId: layer.id, layersPanelOpen: true,
+        const doSwitch = async () => {
+          if (this._dirty) await this._save();
+          const meta = this._projectList.find(p => p.id === id);
+          if (!meta) return;
+          this._currentProject = meta;
+          await this._loadProject(id);
         };
-        await this.updateComplete;
-        this.canvas?.setHistory([], -1);
-        this._lastSavedHistoryLength = 0;
-        const ctx = layer.canvas.getContext('2d')!;
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
-        this.canvas?.composite();
-        this._markDirty();
+        doSwitch().catch(err => console.error('Switch project failed:', err));
       },
-      deleteProject: async (id: string) => {
-        await deleteProjectInDB(id);
-        this._projectList = await listProjects();
-        if (id === this._currentProject?.id) {
-          if (this._projectList.length > 0) {
-            this._currentProject = this._projectList[0];
-            await this._loadProject(this._currentProject.id);
-          } else {
-            const meta = await createProjectInDB('Untitled');
-            this._currentProject = meta;
-            this._projectList = [meta];
-            _layerCounter = 0;
-            const layer = createLayer(this.canvas?.getWidth() ?? 800, this.canvas?.getHeight() ?? 600);
-            this._state = { ...this._state, layers: [layer], activeLayerId: layer.id };
-            await this.updateComplete;
-            this.canvas?.setHistory([], -1);
-            this._lastSavedHistoryLength = 0;
-            const ctx = layer.canvas.getContext('2d')!;
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
-            this.canvas?.composite();
-            this._markDirty();
+      createProject: (name: string) => {
+        const doCreate = async () => {
+          if (this._dirty) await this._save();
+          const meta = await createProjectInDB(name);
+          this._currentProject = meta;
+          this._projectList = await listProjects();
+          await this._resetToFreshProject();
+          this._markDirty();
+        };
+        doCreate().catch(err => console.error('Create project failed:', err));
+      },
+      deleteProject: (id: string) => {
+        const doDelete = async () => {
+          await deleteProjectInDB(id);
+          this._projectList = await listProjects();
+          if (id === this._currentProject?.id) {
+            if (this._projectList.length > 0) {
+              this._currentProject = this._projectList[0];
+              await this._loadProject(this._currentProject.id);
+            } else {
+              const meta = await createProjectInDB('Untitled');
+              this._currentProject = meta;
+              this._projectList = [meta];
+              await this._resetToFreshProject();
+              this._markDirty();
+            }
           }
-        }
+        };
+        doDelete().catch(err => console.error('Delete project failed:', err));
       },
-      renameProject: async (id: string, name: string) => {
-        await renameProjectInDB(id, name);
-        if (this._currentProject?.id === id) {
-          this._currentProject = { ...this._currentProject, name };
-        }
-        this._projectList = await listProjects();
+      renameProject: (id: string, name: string) => {
+        const doRename = async () => {
+          await renameProjectInDB(id, name);
+          if (this._currentProject?.id === id) {
+            this._currentProject = { ...this._currentProject, name };
+          }
+          this._projectList = await listProjects();
+        };
+        doRename().catch(err => console.error('Rename project failed:', err));
       },
     };
   }
@@ -447,6 +514,10 @@ export class DrawingApp extends LitElement {
     super.disconnectedCallback();
     this.removeEventListener('keydown', this._onKeyDown);
     window.removeEventListener('beforeunload', this._onBeforeUnload);
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
   }
 
   private _onCommitOpacity(e: CustomEvent) {

@@ -105,6 +105,7 @@ export interface ProjectStateRecord {
   layers: SerializedLayer[];
   activeLayerId: string;
   layersPanelOpen: boolean;
+  historyIndex: number;
 }
 
 export interface ProjectHistoryRecord {

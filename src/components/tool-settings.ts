@@ -353,7 +353,6 @@ export class ToolSettings extends LitElement {
   override connectedCallback() {
     super.connectedCallback();
     this._loadStamps();
-    document.addEventListener('click', this._onDocumentClick);
   }
 
   override disconnectedCallback() {
@@ -440,24 +439,36 @@ export class ToolSettings extends LitElement {
     await this._loadStamps();
   }
 
+  private _closeDropdown() {
+    if (this._projectDropdownOpen) {
+      this._projectDropdownOpen = false;
+      document.removeEventListener('click', this._onDocumentClick);
+    }
+  }
+
   private _toggleProjectDropdown() {
-    this._projectDropdownOpen = !this._projectDropdownOpen;
+    if (this._projectDropdownOpen) {
+      this._closeDropdown();
+    } else {
+      this._projectDropdownOpen = true;
+      document.addEventListener('click', this._onDocumentClick);
+    }
   }
 
   private _onSelectProject(id: string) {
-    this._projectDropdownOpen = false;
+    this._closeDropdown();
     this.ctx.switchProject(id);
   }
 
   private _onNewProject() {
-    this._projectDropdownOpen = false;
+    this._closeDropdown();
     this.ctx.createProject('Untitled');
   }
 
   private _onDeleteProject(e: Event, id: string) {
     e.stopPropagation();
     if (confirm('Delete this project? This cannot be undone.')) {
-      this._projectDropdownOpen = false;
+      this._closeDropdown();
       this.ctx.deleteProject(id);
     }
   }
@@ -489,7 +500,7 @@ export class ToolSettings extends LitElement {
       const path = e.composedPath();
       const dropdown = this.shadowRoot?.querySelector('.project-dropdown-wrap');
       if (dropdown && !path.includes(dropdown)) {
-        this._projectDropdownOpen = false;
+        this._closeDropdown();
       }
     }
   };

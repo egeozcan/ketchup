@@ -119,6 +119,20 @@ export async function serializeLayer(layer: Layer): Promise<SerializedLayer> {
   };
 }
 
+export async function serializeLayerFromImageData(
+  meta: { id: string; name: string; visible: boolean; opacity: number },
+  imageData: ImageData,
+): Promise<SerializedLayer> {
+  const blob = await imageDataToBlob(imageData);
+  return {
+    id: meta.id,
+    name: meta.name,
+    visible: meta.visible,
+    opacity: meta.opacity,
+    imageBlob: blob,
+  };
+}
+
 export async function deserializeLayer(
   sl: SerializedLayer,
   width: number,
@@ -343,19 +357,20 @@ export async function renameProject(
 export async function saveProjectState(
   projectId: string,
   state: ProjectStateRecord,
-  newHistoryEntries: HistoryEntry[],
-  historyIndex: number,
+  historyEntries: HistoryEntry[],
+  startIndex: number,
+  clearExistingHistory: boolean,
   thumbnail: Blob | null,
 ): Promise<void> {
   const db = await openDB();
 
   // Serialize history entries in parallel before opening the transaction.
   const serializedEntries = await Promise.all(
-    newHistoryEntries.map(async (entry, i) => {
+    historyEntries.map(async (entry, i) => {
       const serialized = await serializeHistoryEntry(entry);
       return {
         projectId,
-        index: i,
+        index: startIndex + i,
         entry: serialized,
       } as ProjectHistoryRecord;
     }),
@@ -370,10 +385,30 @@ export async function saveProjectState(
     // Write state record.
     tx.objectStore(STATE_STORE).put(state);
 
-    // Append serialized history entries.
     const historyStore = tx.objectStore(HISTORY_STORE);
-    for (const record of serializedEntries) {
-      historyStore.add(record);
+
+    if (clearExistingHistory) {
+      // Clear existing history entries for this project, then write new ones.
+      const historyIdx = historyStore.index('projectId');
+      const cursorReq = historyIdx.openCursor(IDBKeyRange.only(projectId));
+      cursorReq.onsuccess = () => {
+        const cursor = cursorReq.result;
+        if (cursor) {
+          cursor.delete();
+          cursor.continue();
+        } else {
+          // All old entries deleted — write new ones.
+          for (const record of serializedEntries) {
+            historyStore.add(record);
+          }
+        }
+      };
+      cursorReq.onerror = () => reject(cursorReq.error);
+    } else if (serializedEntries.length > 0) {
+      // Append new entries only.
+      for (const record of serializedEntries) {
+        historyStore.add(record);
+      }
     }
 
     // Update project metadata timestamp & thumbnail.
@@ -446,27 +481,6 @@ export async function loadProjectState(
     records.map((r) => deserializeHistoryEntry(r.entry)),
   );
 
-  return { state, history, historyIndex: history.length - 1 };
+  return { state, history, historyIndex: state.historyIndex ?? (history.length - 1) };
 }
 
-export async function clearProjectHistory(
-  projectId: string,
-): Promise<void> {
-  const db = await openDB();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(HISTORY_STORE, 'readwrite');
-    const store = tx.objectStore(HISTORY_STORE);
-    const index = store.index('projectId');
-    const cursorReq = index.openCursor(IDBKeyRange.only(projectId));
-    cursorReq.onsuccess = () => {
-      const cursor = cursorReq.result;
-      if (cursor) {
-        cursor.delete();
-        cursor.continue();
-      }
-    };
-    cursorReq.onerror = () => reject(cursorReq.error);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
