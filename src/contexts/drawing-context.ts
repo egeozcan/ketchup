@@ -1,5 +1,5 @@
 import { createContext } from '@lit/context';
-import type { DrawingState, ToolType } from '../types.js';
+import type { DrawingState, ToolType, ProjectMeta } from '../types.js';
 
 export interface DrawingContextValue {
   state: DrawingState;
@@ -24,6 +24,14 @@ export interface DrawingContextValue {
   toggleLayersPanel: () => void;
   canUndo: boolean;
   canRedo: boolean;
+  // Project operations
+  currentProject: ProjectMeta | null;
+  projectList: ProjectMeta[];
+  saving: boolean;
+  switchProject: (id: string) => void;
+  createProject: (name: string) => void;
+  deleteProject: (id: string) => void;
+  renameProject: (id: string, name: string) => void;
 }
 
 export const drawingContext = createContext<DrawingContextValue>('drawing-context');
