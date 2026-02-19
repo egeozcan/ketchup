@@ -134,7 +134,11 @@ export class DrawingCanvas extends LitElement {
     this._resizeToFit();
     this._resizeObserver = new ResizeObserver(() => this._resizeToFit());
     this._resizeObserver.observe(this);
-    // Initialize first layer with white background
+    // White-fill the initial default layer. Safe even when a project will be loaded
+    // because Lit guarantees child firstUpdated fires before parent firstUpdated, so
+    // this runs before drawing-app._loadProject(). _loadProject replaces the layers
+    // array with entirely new Layer objects (new canvases), discarding this default one.
+    // For new projects, this provides the expected white background.
     const layerCtx = this._getActiveLayerCtx();
     if (layerCtx) {
       layerCtx.fillStyle = '#ffffff';
@@ -189,6 +193,9 @@ export class DrawingCanvas extends LitElement {
   private _historyVersion = 0;
 
   // --- Public history access for persistence ---
+  /** Returns a shallow copy of the history array. Note: entries contain shared
+   *  mutable references (e.g. ImageData in 'draw' entries). Callers that need
+   *  isolation should snapshot data synchronously before any async work. */
   public getHistory(): HistoryEntry[] { return [...this._history]; }
   public getHistoryIndex(): number { return this._historyIndex; }
   public getHistoryVersion(): number { return this._historyVersion; }

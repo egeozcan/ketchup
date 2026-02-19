@@ -357,11 +357,11 @@ export class ToolSettings extends LitElement {
 
   override disconnectedCallback() {
     super.disconnectedCallback();
+    this._closeDropdown();
     for (const url of this._thumbUrls.values()) {
       URL.revokeObjectURL(url);
     }
     this._thumbUrls.clear();
-    document.removeEventListener('click', this._onDocumentClick);
   }
 
   private async _loadStamps() {
@@ -476,6 +476,13 @@ export class ToolSettings extends LitElement {
   private _startRename(e: Event, id: string) {
     e.stopPropagation();
     this._renamingProjectId = id;
+    this.updateComplete.then(() => {
+      const input = this.shadowRoot?.querySelector('.project-rename-input') as HTMLInputElement | null;
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    });
   }
 
   private _onRenameKeydown(e: KeyboardEvent, id: string) {

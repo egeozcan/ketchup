@@ -66,6 +66,9 @@ export class DrawingApp extends LitElement {
   @state() private _currentProject: ProjectMeta | null = null;
   @state() private _projectList: ProjectMeta[] = [];
 
+  /** Sentinel value that never matches a real _historyVersion, forcing full history rewrite. */
+  private static readonly FORCE_FULL_HISTORY_SAVE = -1;
+
   private _dirty = false;
   private _saveTimer: ReturnType<typeof setTimeout> | null = null;
   private _saveInProgress = false;
@@ -120,7 +123,7 @@ export class DrawingApp extends LitElement {
   }
 
   private async _save() {
-    if (!this._currentProject) return;
+    if (!this._currentProject || !this._dirty) return;
     if (this._saveInProgress) {
       if (this._saveTimer) clearTimeout(this._saveTimer);
       this._saveTimer = setTimeout(() => this._save(), 500);
@@ -190,7 +193,11 @@ export class DrawingApp extends LitElement {
       this._lastSavedHistoryVersion = historyVersion;
       this._projectList = await listProjects();
     } catch (err) {
-      console.error('Save failed:', err);
+      if (err instanceof DOMException && err.name === 'QuotaExceededError') {
+        console.error('Storage quota exceeded. Consider deleting old projects to free space.');
+      } else {
+        console.error('Save failed:', err);
+      }
     } finally {
       this._saving = false;
       this._saveInProgress = false;
@@ -222,7 +229,7 @@ export class DrawingApp extends LitElement {
     this.canvas?.composite();
     this._dirty = false;
     this._lastSavedHistoryLength = 0;
-    this._lastSavedHistoryVersion = -1; // Force full history rewrite on next save
+    this._lastSavedHistoryVersion = DrawingApp.FORCE_FULL_HISTORY_SAVE;
   }
 
   private async _loadProject(projectId: string) {
@@ -355,6 +362,9 @@ export class DrawingApp extends LitElement {
         this.canvas?.pushLayerOperation({ type: 'visibility', layerId: id, before, after: visible });
         this._markDirty();
       },
+      // Called continuously during slider drag — no history entry here to avoid spam.
+      // History is committed via the 'commit-opacity' event on pointerup. If the user
+      // switches projects mid-drag, the opacity is persisted but won't have an undo entry.
       setLayerOpacity: (id: string, opacity: number) => {
         const layer = this._state.layers.find(l => l.id === id);
         if (!layer) return;

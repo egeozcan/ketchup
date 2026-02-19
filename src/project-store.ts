@@ -108,17 +108,6 @@ export async function blobToImageData(
 // Layer serialization
 // ---------------------------------------------------------------------------
 
-export async function serializeLayer(layer: Layer): Promise<SerializedLayer> {
-  const imageBlob = await canvasToBlob(layer.canvas);
-  return {
-    id: layer.id,
-    name: layer.name,
-    visible: layer.visible,
-    opacity: layer.opacity,
-    imageBlob,
-  };
-}
-
 export async function serializeLayerFromImageData(
   meta: { id: string; name: string; visible: boolean; opacity: number },
   imageData: ImageData,
