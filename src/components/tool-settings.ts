@@ -340,6 +340,7 @@ export class ToolSettings extends LitElement {
   @state() private _projectDropdownOpen = false;
   @state() private _renamingProjectId: string | null = null;
   private _thumbUrls = new Map<string, string>();
+  private _lastProjectId: string | null = null;
 
   private _ctx = new ContextConsumer(this, {
     context: drawingContext,
@@ -352,7 +353,16 @@ export class ToolSettings extends LitElement {
 
   override connectedCallback() {
     super.connectedCallback();
-    this._loadStamps();
+    // Stamps loaded on first willUpdate when projectId is available
+  }
+
+  override willUpdate() {
+    const projectId = this._ctx.value?.currentProject?.id ?? null;
+    if (projectId && projectId !== this._lastProjectId) {
+      this._lastProjectId = projectId;
+      this._activeStampId = null;
+      this._loadStamps(projectId);
+    }
   }
 
   override disconnectedCallback() {
@@ -364,8 +374,8 @@ export class ToolSettings extends LitElement {
     this._thumbUrls.clear();
   }
 
-  private async _loadStamps() {
-    this._recentStamps = await getRecentStamps();
+  private async _loadStamps(projectId: string) {
+    this._recentStamps = await getRecentStamps(projectId);
     // Revoke old URLs
     for (const [id, url] of this._thumbUrls) {
       if (!this._recentStamps.some((s) => s.id === id)) {
@@ -398,14 +408,16 @@ export class ToolSettings extends LitElement {
   }
 
   private _uploadStamp() {
+    const projectId = this._ctx.value?.currentProject?.id;
+    if (!projectId) return;
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;
-      const entry = await addStamp(file);
-      await this._loadStamps();
+      const entry = await addStamp(projectId, file);
+      await this._loadStamps(projectId);
       const url = this._thumbUrls.get(entry.id);
       if (!url) return;
       const img = new Image();
@@ -431,12 +443,14 @@ export class ToolSettings extends LitElement {
 
   private async _deleteStamp(entry: StampEntry, e: Event) {
     e.stopPropagation();
+    const projectId = this._ctx.value?.currentProject?.id;
+    if (!projectId) return;
     await deleteStamp(entry.id);
     if (this._activeStampId === entry.id) {
       this._activeStampId = null;
       this.ctx.setStampImage(null);
     }
-    await this._loadStamps();
+    await this._loadStamps(projectId);
   }
 
   private _closeDropdown() {

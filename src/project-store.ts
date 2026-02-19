@@ -16,14 +16,15 @@ import type {
 // ---------------------------------------------------------------------------
 
 const DB_NAME = 'ketchup-projects';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const PROJECTS_STORE = 'projects';
 const STATE_STORE = 'project-state';
 const HISTORY_STORE = 'project-history';
+export const STAMPS_STORE = 'project-stamps';
 
 let cachedDB: IDBDatabase | null = null;
 
-async function openDB(): Promise<IDBDatabase> {
+export async function openDB(): Promise<IDBDatabase> {
   if (cachedDB) return cachedDB;
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -42,6 +43,11 @@ async function openDB(): Promise<IDBDatabase> {
           autoIncrement: true,
         });
         store.createIndex('projectId', 'projectId');
+      }
+      if (!db.objectStoreNames.contains(STAMPS_STORE)) {
+        const store = db.createObjectStore(STAMPS_STORE, { keyPath: 'id' });
+        store.createIndex('projectId', 'projectId');
+        store.createIndex('createdAt', 'createdAt');
       }
     };
     req.onsuccess = () => {
@@ -294,7 +300,7 @@ export async function deleteProject(id: string): Promise<void> {
   const db = await openDB();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(
-      [PROJECTS_STORE, STATE_STORE, HISTORY_STORE],
+      [PROJECTS_STORE, STATE_STORE, HISTORY_STORE, STAMPS_STORE],
       'readwrite',
     );
     tx.objectStore(PROJECTS_STORE).delete(id);
@@ -302,16 +308,29 @@ export async function deleteProject(id: string): Promise<void> {
 
     // Delete all history entries for this project via cursor on projectId index.
     const historyStore = tx.objectStore(HISTORY_STORE);
-    const index = historyStore.index('projectId');
-    const cursorReq = index.openCursor(IDBKeyRange.only(id));
-    cursorReq.onsuccess = () => {
-      const cursor = cursorReq.result;
+    const historyIdx = historyStore.index('projectId');
+    const historyCursorReq = historyIdx.openCursor(IDBKeyRange.only(id));
+    historyCursorReq.onsuccess = () => {
+      const cursor = historyCursorReq.result;
       if (cursor) {
         cursor.delete();
         cursor.continue();
       }
     };
-    cursorReq.onerror = () => reject(cursorReq.error);
+    historyCursorReq.onerror = () => reject(historyCursorReq.error);
+
+    // Delete all stamps for this project.
+    const stampsStore = tx.objectStore(STAMPS_STORE);
+    const stampsIdx = stampsStore.index('projectId');
+    const stampsCursorReq = stampsIdx.openCursor(IDBKeyRange.only(id));
+    stampsCursorReq.onsuccess = () => {
+      const cursor = stampsCursorReq.result;
+      if (cursor) {
+        cursor.delete();
+        cursor.continue();
+      }
+    };
+    stampsCursorReq.onerror = () => reject(stampsCursorReq.error);
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
