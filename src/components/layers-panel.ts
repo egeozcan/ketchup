@@ -342,6 +342,19 @@ export class LayersPanel extends LitElement {
     return this._ctx.value!;
   }
 
+  private _onComposited = () => this._updateThumbnails();
+
+  override connectedCallback() {
+    super.connectedCallback();
+    // composited event bubbles from sibling drawing-canvas through the shared shadow root
+    (this.getRootNode() as ShadowRoot | Document).addEventListener('composited', this._onComposited);
+  }
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    (this.getRootNode() as ShadowRoot | Document).removeEventListener('composited', this._onComposited);
+  }
+
   /** The layer id currently in rename mode */
   @state() private _editingLayerId: string | null = null;
 
@@ -384,6 +397,9 @@ export class LayersPanel extends LitElement {
   }
 
   private _onRenameKeyDown(layerId: string, e: KeyboardEvent) {
+    // Stop all keydown events from reaching the app-level shortcut handler
+    // (Backspace/Delete triggers deleteSelection, Ctrl+Z triggers undo, etc.)
+    e.stopPropagation();
     if (e.key === 'Enter') {
       this._commitRename(layerId, e.target as HTMLInputElement);
     } else if (e.key === 'Escape') {

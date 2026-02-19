@@ -126,6 +126,9 @@ export class DrawingApp extends LitElement {
         if (this._state.layers.length <= 1) return;
         const idx = this._state.layers.findIndex(l => l.id === id);
         if (idx === -1) return;
+        if (id === this._state.activeLayerId) {
+          this.canvas?.clearSelection();
+        }
         const layer = this._state.layers[idx];
         const snapshot = this._snapshotLayer(layer);
         const newLayers = this._state.layers.filter(l => l.id !== id);

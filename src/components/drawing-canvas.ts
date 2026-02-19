@@ -100,6 +100,7 @@ export class DrawingCanvas extends LitElement {
       displayCtx.drawImage(layer.canvas, 0, 0);
       displayCtx.globalAlpha = 1.0;
     }
+    this.dispatchEvent(new Event('composited', { bubbles: true, composed: true }));
   }
 
   private _getCheckerboardPattern(ctx: CanvasRenderingContext2D): CanvasPattern {
