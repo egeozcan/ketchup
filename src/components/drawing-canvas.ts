@@ -336,7 +336,7 @@ export class DrawingCanvas extends LitElement {
       case 'add-layer': {
         this.dispatchEvent(new CustomEvent('layer-undo', {
           bubbles: true, composed: true,
-          detail: { action: 'restore-layer', snapshot: entry.layer, index: -1 },
+          detail: { action: 'restore-layer', snapshot: entry.layer, index: entry.index },
         }));
         break;
       }

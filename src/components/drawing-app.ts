@@ -116,10 +116,11 @@ export class DrawingApp extends LitElement {
       addLayer: () => {
         const layer = createLayer(this.canvas?.getWidth() ?? 800, this.canvas?.getHeight() ?? 600);
         const activeIdx = this._state.layers.findIndex(l => l.id === this._state.activeLayerId);
+        const insertIdx = activeIdx + 1;
         const newLayers = [...this._state.layers];
-        newLayers.splice(activeIdx + 1, 0, layer);
+        newLayers.splice(insertIdx, 0, layer);
         this._state = { ...this._state, layers: newLayers, activeLayerId: layer.id };
-        this.canvas?.pushLayerOperation({ type: 'add-layer', layer: this._snapshotLayer(layer) });
+        this.canvas?.pushLayerOperation({ type: 'add-layer', layer: this._snapshotLayer(layer), index: insertIdx });
       },
       deleteLayer: (id: string) => {
         if (this._state.layers.length <= 1) return;
@@ -192,19 +193,22 @@ export class DrawingApp extends LitElement {
     const detail = e.detail;
     switch (detail.action) {
       case 'remove-layer': {
+        const removedIdx = this._state.layers.findIndex(l => l.id === detail.layerId);
         const newLayers = this._state.layers.filter(l => l.id !== detail.layerId);
         if (newLayers.length === 0) return;
         const newActiveId = this._state.activeLayerId === detail.layerId
-          ? newLayers[Math.min(newLayers.length - 1, 0)].id
+          ? newLayers[Math.min(removedIdx, newLayers.length - 1)].id
           : this._state.activeLayerId;
         this._state = { ...this._state, layers: newLayers, activeLayerId: newActiveId };
         break;
       }
       case 'restore-layer': {
         const snapshot = detail.snapshot as LayerSnapshot;
+        const currentWidth = this.canvas?.getWidth() ?? 800;
+        const currentHeight = this.canvas?.getHeight() ?? 600;
         const canvas = document.createElement('canvas');
-        canvas.width = snapshot.imageData.width;
-        canvas.height = snapshot.imageData.height;
+        canvas.width = currentWidth;
+        canvas.height = currentHeight;
         canvas.getContext('2d')!.putImageData(snapshot.imageData, 0, 0);
         const layer: Layer = {
           id: snapshot.id,

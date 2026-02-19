@@ -45,7 +45,7 @@ export interface DrawingState {
 
 export type HistoryEntry =
   | { type: 'draw'; layerId: string; before: ImageData; after: ImageData }
-  | { type: 'add-layer'; layer: LayerSnapshot }
+  | { type: 'add-layer'; layer: LayerSnapshot; index: number }
   | { type: 'delete-layer'; layer: LayerSnapshot; index: number }
   | { type: 'reorder'; fromIndex: number; toIndex: number }
   | { type: 'visibility'; layerId: string; before: boolean; after: boolean }
