@@ -585,6 +585,9 @@ export class DrawingApp extends LitElement {
       this.canvas?.deleteSelection();
     } else if (e.key === 'Escape') {
       this.canvas?.clearSelection();
+    } else if (e.key === '0' && ctrl) {
+      e.preventDefault();
+      this.canvas?.centerDocument();
     }
   };
 

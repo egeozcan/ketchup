@@ -137,9 +137,6 @@ export class DrawingCanvas extends LitElement {
     displayCtx.lineWidth = 1;
     displayCtx.strokeRect(-0.5, -0.5, this._docWidth + 1, this._docHeight + 1);
 
-    // Drop shadow
-    displayCtx.shadowColor = 'transparent';
-
     displayCtx.restore();
 
     this.dispatchEvent(new Event('composited', { bubbles: true, composed: true }));
@@ -176,7 +173,7 @@ export class DrawingCanvas extends LitElement {
       const tool = this._ctx.value.state.activeTool;
       if (tool === 'hand') {
         this.mainCanvas.style.cursor = this._panning ? 'grabbing' : 'grab';
-      } else if (tool !== 'select') {
+      } else {
         this.mainCanvas.style.cursor = 'crosshair';
       }
     }
@@ -541,25 +538,23 @@ export class DrawingCanvas extends LitElement {
 
   private _endPan() {
     if (!this._panning) return;
+    const pointerId = this._panPointerId;
     this._panning = false;
     this._panPointerId = -1;
+    // Release pointer capture
+    if (pointerId >= 0 && this.mainCanvas) {
+      try { this.mainCanvas.releasePointerCapture(pointerId); } catch { /* already released */ }
+    }
     // Restore cursor
     if (this._ctx.value) {
       const tool = this._ctx.value.state.activeTool;
-      if (tool === 'hand') {
-        this.mainCanvas.style.cursor = 'grab';
-      } else {
-        this.mainCanvas.style.cursor = 'crosshair';
-      }
+      this.mainCanvas.style.cursor = tool === 'hand' ? 'grab' : 'crosshair';
     }
   }
 
   private _onWheel = (e: WheelEvent) => {
-    // ctrl+wheel = zoom (not implemented yet, just prevent default)
-    if (e.ctrlKey) {
-      e.preventDefault();
-      return;
-    }
+    // ctrl+wheel = zoom (not yet implemented, let browser handle it)
+    if (e.ctrlKey) return;
     e.preventDefault();
     this._panX -= e.deltaX;
     this._panY -= e.deltaY;
