@@ -4,6 +4,17 @@ import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import { getRecentStamps, addStamp, deleteStamp, type StampEntry } from '../stamp-store.js';
 
+const documentPresets = [
+  { label: '800 \u00d7 600', width: 800, height: 600 },
+  { label: '1024 \u00d7 768', width: 1024, height: 768 },
+  { label: '1280 \u00d7 720 (HD)', width: 1280, height: 720 },
+  { label: '1920 \u00d7 1080 (Full HD)', width: 1920, height: 1080 },
+  { label: '2560 \u00d7 1440 (QHD)', width: 2560, height: 1440 },
+  { label: 'A4 Portrait (794 \u00d7 1123)', width: 794, height: 1123 },
+  { label: 'A4 Landscape (1123 \u00d7 794)', width: 1123, height: 794 },
+  { label: 'Square 1024', width: 1024, height: 1024 },
+];
+
 const presetColors = [
   '#000000', '#ffffff', '#ff0000', '#ff6600', '#ffcc00',
   '#33cc33', '#0099ff', '#6633ff', '#cc33cc', '#996633',
@@ -333,12 +344,110 @@ export class ToolSettings extends LitElement {
       0%, 100% { opacity: 0.5; }
       50% { opacity: 1; }
     }
+
+    .doc-size-section {
+      position: relative;
+    }
+
+    .doc-size-btn {
+      background: #444;
+      color: #ddd;
+      border: 1px solid #555;
+      border-radius: 0.25rem;
+      padding: 0.25rem 0.5rem;
+      cursor: pointer;
+      font-size: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+      white-space: nowrap;
+    }
+
+    .doc-size-btn:hover {
+      background: #555;
+    }
+
+    .doc-size-dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      margin-top: 0.25rem;
+      background: #3a3a3a;
+      border: 1px solid #555;
+      border-radius: 0.375rem;
+      min-width: 15rem;
+      z-index: 100;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      padding: 0.25rem 0;
+    }
+
+    .doc-size-preset {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: none;
+      border: none;
+      color: #ddd;
+      cursor: pointer;
+      padding: 0.375rem 0.625rem;
+      font-size: 0.8125rem;
+      height: auto;
+      border-radius: 0;
+    }
+
+    .doc-size-preset:hover {
+      background: #4a4a4a;
+    }
+
+    .doc-size-preset.active {
+      color: #5b8cf7;
+    }
+
+    .doc-size-custom {
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.375rem 0.625rem;
+    }
+
+    .doc-size-input {
+      width: 4rem;
+      background: #2a2a2a;
+      border: 1px solid #555;
+      border-radius: 0.1875rem;
+      color: #ddd;
+      padding: 0.1875rem 0.25rem;
+      font-size: 0.75rem;
+      text-align: center;
+    }
+
+    .doc-size-input:focus {
+      border-color: #5b8cf7;
+      outline: none;
+    }
+
+    .doc-size-apply {
+      background: #5b8cf7;
+      color: white;
+      border: none;
+      border-radius: 0.25rem;
+      padding: 0.1875rem 0.5rem;
+      cursor: pointer;
+      font-size: 0.75rem;
+    }
+
+    .doc-size-apply:hover {
+      background: #4a7be6;
+    }
   `;
 
   @state() private _recentStamps: StampEntry[] = [];
   @state() private _activeStampId: string | null = null;
   @state() private _projectDropdownOpen = false;
   @state() private _renamingProjectId: string | null = null;
+  @state() private _docSizeDropdownOpen = false;
+  @state() private _customWidth = '';
+  @state() private _customHeight = '';
   private _thumbUrls = new Map<string, string>();
   private _lastProjectId: string | null = null;
 
@@ -373,6 +482,7 @@ export class ToolSettings extends LitElement {
   override disconnectedCallback() {
     super.disconnectedCallback();
     this._closeDropdown();
+    this._closeDocSizeDropdown();
     for (const url of this._thumbUrls.values()) {
       URL.revokeObjectURL(url);
     }
@@ -537,6 +647,54 @@ export class ToolSettings extends LitElement {
     }
   };
 
+  private _toggleDocSizeDropdown() {
+    if (this._docSizeDropdownOpen) {
+      this._closeDocSizeDropdown();
+    } else {
+      this._docSizeDropdownOpen = true;
+      this._customWidth = String(this.ctx.state.documentWidth);
+      this._customHeight = String(this.ctx.state.documentHeight);
+      document.addEventListener('click', this._onDocSizeDocumentClick);
+    }
+  }
+
+  private _closeDocSizeDropdown() {
+    if (this._docSizeDropdownOpen) {
+      this._docSizeDropdownOpen = false;
+      document.removeEventListener('click', this._onDocSizeDocumentClick);
+    }
+  }
+
+  private _onDocSizeDocumentClick = (e: MouseEvent) => {
+    if (this._docSizeDropdownOpen) {
+      const path = e.composedPath();
+      const dropdown = this.shadowRoot?.querySelector('.doc-size-section');
+      if (dropdown && !path.includes(dropdown)) {
+        this._closeDocSizeDropdown();
+      }
+    }
+  };
+
+  private _selectDocPreset(preset: { width: number; height: number }) {
+    this.ctx.setDocumentSize(preset.width, preset.height);
+    this._closeDocSizeDropdown();
+  }
+
+  private _applyCustomSize() {
+    const w = parseInt(this._customWidth);
+    const h = parseInt(this._customHeight);
+    if (w > 0 && h > 0 && w <= 8192 && h <= 8192) {
+      this.ctx.setDocumentSize(w, h);
+      this._closeDocSizeDropdown();
+    }
+  }
+
+  private _onCustomSizeKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      this._applyCustomSize();
+    }
+  }
+
   private _showsShapeOptions(): boolean {
     const t = this.ctx.state.activeTool;
     return t === 'rectangle' || t === 'circle' || t === 'triangle';
@@ -579,6 +737,49 @@ export class ToolSettings extends LitElement {
           ` : ''}
         </div>
         ${this.ctx.saving ? html`<span class="saving-indicator">Saving...</span>` : ''}
+      </div>
+      <div class="separator"></div>
+
+      <div class="section doc-size-section">
+        <button class="doc-size-btn" @click=${this._toggleDocSizeDropdown}>
+          ${this.ctx.state.documentWidth} \u00d7 ${this.ctx.state.documentHeight}
+          <span class="dropdown-arrow">&#9662;</span>
+        </button>
+        ${this._docSizeDropdownOpen ? html`
+          <div class="doc-size-dropdown">
+            ${documentPresets.map(p => html`
+              <button
+                class="doc-size-preset ${p.width === this.ctx.state.documentWidth && p.height === this.ctx.state.documentHeight ? 'active' : ''}"
+                @click=${() => this._selectDocPreset(p)}
+              >${p.label}</button>
+            `)}
+            <div class="project-dropdown-divider"></div>
+            <div class="doc-size-custom">
+              <input
+                class="doc-size-input"
+                type="number"
+                min="1"
+                max="8192"
+                .value=${this._customWidth}
+                @input=${(e: Event) => { this._customWidth = (e.target as HTMLInputElement).value; }}
+                @keydown=${this._onCustomSizeKeydown}
+                placeholder="Width"
+              />
+              <span>\u00d7</span>
+              <input
+                class="doc-size-input"
+                type="number"
+                min="1"
+                max="8192"
+                .value=${this._customHeight}
+                @input=${(e: Event) => { this._customHeight = (e.target as HTMLInputElement).value; }}
+                @keydown=${this._onCustomSizeKeydown}
+                placeholder="Height"
+              />
+              <button class="doc-size-apply" @click=${this._applyCustomSize}>Apply</button>
+            </div>
+          </div>
+        ` : ''}
       </div>
       <div class="separator"></div>
 

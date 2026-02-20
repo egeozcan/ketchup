@@ -19,24 +19,17 @@ export class DrawingCanvas extends LitElement {
       flex: 1;
       overflow: hidden;
       position: relative;
-      background: #e8e8e8;
-      background-image:
-        linear-gradient(45deg, #ddd 25%, transparent 25%),
-        linear-gradient(-45deg, #ddd 25%, transparent 25%),
-        linear-gradient(45deg, transparent 75%, #ddd 75%),
-        linear-gradient(-45deg, transparent 75%, #ddd 75%);
-      background-size: 20px 20px;
-      background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+      background: #3a3a3a;
     }
 
     canvas {
       display: block;
-      cursor: crosshair;
       touch-action: none;
     }
 
     #main {
       background: transparent;
+      cursor: crosshair;
     }
   `;
 
@@ -58,8 +51,16 @@ export class DrawingCanvas extends LitElement {
   private _drawing = false;
   private _lastPoint: Point | null = null;
   private _startPoint: Point | null = null;
-  private _width = 800;
-  private _height = 600;
+
+  // --- Pan state ---
+  private _panX = 0;
+  private _panY = 0;
+  private _panning = false;
+  private _panStartX = 0;
+  private _panStartY = 0;
+  private _panStartOffsetX = 0;
+  private _panStartOffsetY = 0;
+  private _panPointerId = -1;
 
   // Selection state
   private _selection: { x: number; y: number; w: number; h: number } | null = null;
@@ -72,9 +73,22 @@ export class DrawingCanvas extends LitElement {
   private _selectionAnimFrame: number | null = null;
   private _selectionDrawing = false;
 
+  // --- Document dimension accessors (from context state) ---
+  private get _docWidth(): number {
+    return this._ctx.value?.state.documentWidth ?? 800;
+  }
+
+  private get _docHeight(): number {
+    return this._ctx.value?.state.documentHeight ?? 600;
+  }
+
   // --- Public dimension accessors ---
-  public getWidth() { return this._width; }
-  public getHeight() { return this._height; }
+  public getWidth() { return this._docWidth; }
+  public getHeight() { return this._docHeight; }
+
+  // --- Viewport helpers ---
+  private get _vw(): number { return this.mainCanvas?.width ?? 800; }
+  private get _vh(): number { return this.mainCanvas?.height ?? 600; }
 
   // --- Layer-aware helpers ---
 
@@ -86,12 +100,29 @@ export class DrawingCanvas extends LitElement {
   }
 
   public composite() {
+    if (!this.mainCanvas) return;
     const displayCtx = this.mainCanvas.getContext('2d')!;
-    displayCtx.clearRect(0, 0, this._width, this._height);
-    // Draw checkerboard
+    const vw = this._vw;
+    const vh = this._vh;
+
+    // Clear entire viewport with workspace background
+    displayCtx.fillStyle = '#3a3a3a';
+    displayCtx.fillRect(0, 0, vw, vh);
+
+    // Translate to document position
+    displayCtx.save();
+    displayCtx.translate(this._panX, this._panY);
+
+    // Draw checkerboard within document bounds
+    displayCtx.save();
+    displayCtx.beginPath();
+    displayCtx.rect(0, 0, this._docWidth, this._docHeight);
+    displayCtx.clip();
     const pattern = this._getCheckerboardPattern(displayCtx);
     displayCtx.fillStyle = pattern;
-    displayCtx.fillRect(0, 0, this._width, this._height);
+    displayCtx.fillRect(0, 0, this._docWidth, this._docHeight);
+    displayCtx.restore();
+
     // Composite layers bottom-to-top
     const layers = this._ctx.value?.state.layers ?? [];
     for (const layer of layers) {
@@ -100,6 +131,14 @@ export class DrawingCanvas extends LitElement {
       displayCtx.drawImage(layer.canvas, 0, 0);
       displayCtx.globalAlpha = 1.0;
     }
+
+    // Document border
+    displayCtx.strokeStyle = 'rgba(0,0,0,0.3)';
+    displayCtx.lineWidth = 1;
+    displayCtx.strokeRect(-0.5, -0.5, this._docWidth + 1, this._docHeight + 1);
+
+    displayCtx.restore();
+
     this.dispatchEvent(new Event('composited', { bubbles: true, composed: true }));
   }
 
@@ -128,12 +167,35 @@ export class DrawingCanvas extends LitElement {
         this.composite();
       }
     }
+
+    // Update cursor based on active tool
+    if (this.mainCanvas && this._ctx.value) {
+      const tool = this._ctx.value.state.activeTool;
+      if (tool === 'hand') {
+        this.mainCanvas.style.cursor = this._panning ? 'grabbing' : 'grab';
+      } else {
+        this.mainCanvas.style.cursor = 'crosshair';
+      }
+    }
   }
 
   override firstUpdated() {
-    this._resizeToFit();
+    const rect = this.getBoundingClientRect();
+    const vw = rect.width > 0 ? Math.floor(rect.width) : 800;
+    const vh = rect.height > 0 ? Math.floor(rect.height) : 600;
+
+    this.mainCanvas.width = vw;
+    this.mainCanvas.height = vh;
+    this.previewCanvas.width = vw;
+    this.previewCanvas.height = vh;
+
+    // Center document in viewport
+    this._panX = Math.round((vw - this._docWidth) / 2);
+    this._panY = Math.round((vh - this._docHeight) / 2);
+
     this._resizeObserver = new ResizeObserver(() => this._resizeToFit());
     this._resizeObserver.observe(this);
+
     // White-fill the initial default layer. Safe even when a project will be loaded
     // because Lit guarantees child firstUpdated fires before parent firstUpdated, so
     // this runs before drawing-app._loadProject(). _loadProject replaces the layers
@@ -142,48 +204,45 @@ export class DrawingCanvas extends LitElement {
     const layerCtx = this._getActiveLayerCtx();
     if (layerCtx) {
       layerCtx.fillStyle = '#ffffff';
-      layerCtx.fillRect(0, 0, this._width, this._height);
+      layerCtx.fillRect(0, 0, this._docWidth, this._docHeight);
     }
     this.composite();
   }
 
+  /** Center the document in the viewport */
+  public centerDocument() {
+    if (!this.mainCanvas) return;
+    this._panX = Math.round((this._vw - this._docWidth) / 2);
+    this._panY = Math.round((this._vh - this._docHeight) / 2);
+    this.composite();
+    if (this._selection) this._redrawSelectionPreview();
+  }
+
   private _resizeToFit() {
-    this._commitSelection();
     const rect = this.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
 
     const newWidth = Math.floor(rect.width);
     const newHeight = Math.floor(rect.height);
-    if (this.mainCanvas.width === newWidth && this.mainCanvas.height === newHeight) return;
+    const oldWidth = this.mainCanvas.width;
+    const oldHeight = this.mainCanvas.height;
+    if (oldWidth === newWidth && oldHeight === newHeight) return;
 
-    // Save each layer's content
-    const layers = this._ctx.value?.state.layers ?? [];
-    const savedLayerData: Map<string, ImageData> = new Map();
-    for (const layer of layers) {
-      if (layer.canvas.width > 0 && layer.canvas.height > 0) {
-        const ctx = layer.canvas.getContext('2d')!;
-        savedLayerData.set(layer.id, ctx.getImageData(0, 0, layer.canvas.width, layer.canvas.height));
-      }
-    }
-
-    this._width = newWidth;
-    this._height = newHeight;
+    // Resize display and preview canvases to viewport size only
     this.mainCanvas.width = newWidth;
     this.mainCanvas.height = newHeight;
     this.previewCanvas.width = newWidth;
     this.previewCanvas.height = newHeight;
 
-    // Resize and restore each layer
-    for (const layer of layers) {
-      layer.canvas.width = newWidth;
-      layer.canvas.height = newHeight;
-      const saved = savedLayerData.get(layer.id);
-      if (saved) {
-        layer.canvas.getContext('2d')!.putImageData(saved, 0, 0);
-      }
-    }
+    // Adjust pan to keep the center stable
+    this._panX += Math.round((newWidth - oldWidth) / 2);
+    this._panY += Math.round((newHeight - oldHeight) / 2);
+
+    // Pattern is tied to canvas context, must recreate
+    this._checkerboardPattern = null;
 
     this.composite();
+    if (this._selection) this._redrawSelectionPreview();
   }
 
   // --- History ---
@@ -212,7 +271,7 @@ export class DrawingCanvas extends LitElement {
   private _captureBeforeDraw() {
     const ctx = this._getActiveLayerCtx();
     if (!ctx) return;
-    this._beforeDrawData = ctx.getImageData(0, 0, this._width, this._height);
+    this._beforeDrawData = ctx.getImageData(0, 0, this._docWidth, this._docHeight);
   }
 
   /** Call after a drawing operation completes (pointerup) */
@@ -220,7 +279,7 @@ export class DrawingCanvas extends LitElement {
     const state = this._ctx.value?.state;
     const ctx = this._getActiveLayerCtx();
     if (!ctx || !state || !this._beforeDrawData) return;
-    const after = ctx.getImageData(0, 0, this._width, this._height);
+    const after = ctx.getImageData(0, 0, this._docWidth, this._docHeight);
     this._pushHistoryEntry({
       type: 'draw',
       layerId: state.activeLayerId,
@@ -420,7 +479,7 @@ export class DrawingCanvas extends LitElement {
     this._captureBeforeDraw();
     const ctx = this._getActiveLayerCtx();
     if (ctx) {
-      ctx.clearRect(0, 0, this._width, this._height);
+      ctx.clearRect(0, 0, this._docWidth, this._docHeight);
     }
     this._pushDrawHistory();
     this.composite();
@@ -429,8 +488,8 @@ export class DrawingCanvas extends LitElement {
   public saveCanvas() {
     // Composite onto a temp canvas without checkerboard for clean export
     const exportCanvas = document.createElement('canvas');
-    exportCanvas.width = this._width;
-    exportCanvas.height = this._height;
+    exportCanvas.width = this._docWidth;
+    exportCanvas.height = this._docHeight;
     const exportCtx = exportCanvas.getContext('2d')!;
     const layers = this._ctx.value?.state.layers ?? [];
     for (const layer of layers) {
@@ -445,20 +504,88 @@ export class DrawingCanvas extends LitElement {
     link.click();
   }
 
-  // --- Pointer events ---
-  private _getPoint(e: PointerEvent): Point {
+  // --- Coordinate conversion ---
+
+  /** Convert viewport pointer position to document coordinates */
+  private _getDocPoint(e: PointerEvent): Point {
     const rect = this.mainCanvas.getBoundingClientRect();
     return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
+      x: e.clientX - rect.left - this._panX,
+      y: e.clientY - rect.top - this._panY,
     };
   }
 
-  private _onPointerDown(e: PointerEvent) {
-    if (e.button !== 0 || !this._ctx.value) return;
+  // --- Panning ---
+
+  private _startPan(e: PointerEvent) {
+    this._panning = true;
+    this._panStartX = e.clientX;
+    this._panStartY = e.clientY;
+    this._panStartOffsetX = this._panX;
+    this._panStartOffsetY = this._panY;
+    this._panPointerId = e.pointerId;
     this.mainCanvas.setPointerCapture(e.pointerId);
-    const p = this._getPoint(e);
+    this.mainCanvas.style.cursor = 'grabbing';
+  }
+
+  private _updatePan(e: PointerEvent) {
+    if (!this._panning) return;
+    this._panX = this._panStartOffsetX + (e.clientX - this._panStartX);
+    this._panY = this._panStartOffsetY + (e.clientY - this._panStartY);
+    this.composite();
+    if (this._selection) this._redrawSelectionPreview();
+  }
+
+  private _endPan() {
+    if (!this._panning) return;
+    const pointerId = this._panPointerId;
+    this._panning = false;
+    this._panPointerId = -1;
+    // Release pointer capture
+    if (pointerId >= 0 && this.mainCanvas) {
+      try { this.mainCanvas.releasePointerCapture(pointerId); } catch { /* already released */ }
+    }
+    // Restore cursor
+    if (this._ctx.value) {
+      const tool = this._ctx.value.state.activeTool;
+      this.mainCanvas.style.cursor = tool === 'hand' ? 'grab' : 'crosshair';
+    }
+  }
+
+  private _onWheel = (e: WheelEvent) => {
+    // ctrl+wheel = zoom (not yet implemented, let browser handle it)
+    if (e.ctrlKey) return;
+    e.preventDefault();
+    this._panX -= e.deltaX;
+    this._panY -= e.deltaY;
+    this.composite();
+    if (this._selection) this._redrawSelectionPreview();
+  };
+
+  // --- Pointer events ---
+
+  private _onPointerDown(e: PointerEvent) {
+    if (!this._ctx.value) return;
+
+    // Middle mouse button → always pan
+    if (e.button === 1) {
+      e.preventDefault();
+      this._startPan(e);
+      return;
+    }
+
+    if (e.button !== 0) return;
+
     const { activeTool } = this.ctx.state;
+
+    // Hand tool → pan
+    if (activeTool === 'hand') {
+      this._startPan(e);
+      return;
+    }
+
+    this.mainCanvas.setPointerCapture(e.pointerId);
+    const p = this._getDocPoint(e);
 
     if (activeTool === 'select') {
       this._handleSelectPointerDown(p);
@@ -466,13 +593,16 @@ export class DrawingCanvas extends LitElement {
     }
 
     if (activeTool === 'fill') {
-      this._captureBeforeDraw();
-      const layerCtx = this._getActiveLayerCtx();
-      if (layerCtx) {
-        floodFill(layerCtx, p.x, p.y, this.ctx.state.strokeColor);
+      // Only fill if the click is within document bounds
+      if (p.x >= 0 && p.y >= 0 && p.x < this._docWidth && p.y < this._docHeight) {
+        this._captureBeforeDraw();
+        const layerCtx = this._getActiveLayerCtx();
+        if (layerCtx) {
+          floodFill(layerCtx, p.x, p.y, this.ctx.state.strokeColor);
+        }
+        this._pushDrawHistory();
+        this.composite();
       }
-      this._pushDrawHistory();
-      this.composite();
       return;
     }
 
@@ -502,6 +632,13 @@ export class DrawingCanvas extends LitElement {
 
   private _onPointerMove(e: PointerEvent) {
     if (!this._ctx.value) return;
+
+    // Handle panning
+    if (this._panning) {
+      this._updatePan(e);
+      return;
+    }
+
     const { activeTool } = this.ctx.state;
 
     if (activeTool === 'select') {
@@ -510,7 +647,7 @@ export class DrawingCanvas extends LitElement {
     }
 
     if (!this._drawing || !this._lastPoint) return;
-    const p = this._getPoint(e);
+    const p = this._getDocPoint(e);
 
     if (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser') {
       this._drawBrushAt(this._lastPoint, p);
@@ -521,9 +658,11 @@ export class DrawingCanvas extends LitElement {
       activeTool === 'line' ||
       activeTool === 'triangle'
     ) {
-      // Preview on overlay
+      // Preview on overlay with pan transform
       const previewCtx = this.previewCanvas.getContext('2d')!;
-      previewCtx.clearRect(0, 0, this._width, this._height);
+      previewCtx.clearRect(0, 0, this._vw, this._vh);
+      previewCtx.save();
+      previewCtx.translate(this._panX, this._panY);
       drawShapePreview(
         previewCtx,
         activeTool,
@@ -534,11 +673,19 @@ export class DrawingCanvas extends LitElement {
         this.ctx.state.useFill,
         this.ctx.state.brushSize,
       );
+      previewCtx.restore();
     }
   }
 
   private _onPointerUp(e: PointerEvent) {
     if (!this._ctx.value) return;
+
+    // Handle panning end
+    if (this._panning) {
+      this._endPan();
+      return;
+    }
+
     const { activeTool } = this.ctx.state;
 
     if (activeTool === 'select') {
@@ -547,7 +694,7 @@ export class DrawingCanvas extends LitElement {
     }
 
     if (!this._drawing) return;
-    const p = this._getPoint(e);
+    const p = this._getDocPoint(e);
 
     if (
       activeTool === 'rectangle' ||
@@ -573,7 +720,7 @@ export class DrawingCanvas extends LitElement {
       }
       // Clear preview
       const previewCtx = this.previewCanvas.getContext('2d')!;
-      previewCtx.clearRect(0, 0, this._width, this._height);
+      previewCtx.clearRect(0, 0, this._vw, this._vh);
     }
 
     this._drawing = false;
@@ -631,7 +778,7 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _handleSelectPointerMove(e: PointerEvent) {
-    const p = this._getPoint(e);
+    const p = this._getDocPoint(e);
 
     // Update cursor
     if (this._selectionMoving || this._isInsideSelection(p)) {
@@ -649,17 +796,20 @@ export class DrawingCanvas extends LitElement {
       this._redrawSelectionPreview();
     } else if (this._selectionDrawing && this._startPoint) {
       const previewCtx = this.previewCanvas.getContext('2d')!;
-      previewCtx.clearRect(0, 0, this._width, this._height);
+      previewCtx.clearRect(0, 0, this._vw, this._vh);
       const x = Math.min(this._startPoint.x, p.x);
       const y = Math.min(this._startPoint.y, p.y);
       const w = Math.abs(p.x - this._startPoint.x);
       const h = Math.abs(p.y - this._startPoint.y);
+      previewCtx.save();
+      previewCtx.translate(this._panX, this._panY);
       drawSelectionRect(previewCtx, x, y, w, h, 0);
+      previewCtx.restore();
     }
   }
 
   private _handleSelectPointerUp(e: PointerEvent) {
-    const p = this._getPoint(e);
+    const p = this._getDocPoint(e);
 
     if (this._selectionMoving) {
       this._dropSelection();
@@ -679,7 +829,7 @@ export class DrawingCanvas extends LitElement {
       if (w < 2 || h < 2) {
         // Too small, clear preview
         const previewCtx = this.previewCanvas.getContext('2d')!;
-        previewCtx.clearRect(0, 0, this._width, this._height);
+        previewCtx.clearRect(0, 0, this._vw, this._vh);
         return;
       }
 
@@ -726,17 +876,27 @@ export class DrawingCanvas extends LitElement {
     this._stopSelectionAnimation();
     if (this.previewCanvas) {
       const previewCtx = this.previewCanvas.getContext('2d')!;
-      previewCtx.clearRect(0, 0, this._width, this._height);
+      previewCtx.clearRect(0, 0, this._vw, this._vh);
     }
   }
 
   private _redrawSelectionPreview() {
     const previewCtx = this.previewCanvas.getContext('2d')!;
-    previewCtx.clearRect(0, 0, this._width, this._height);
+    previewCtx.clearRect(0, 0, this._vw, this._vh);
+
+    // putImageData ignores transforms, so apply pan offset manually
     if (this._selectionImageData && this._selection) {
-      previewCtx.putImageData(this._selectionImageData, this._selection.x, this._selection.y);
+      previewCtx.putImageData(
+        this._selectionImageData,
+        Math.round(this._selection.x + this._panX),
+        Math.round(this._selection.y + this._panY),
+      );
     }
+
+    // Selection rect respects canvas transforms
     if (this._selection) {
+      previewCtx.save();
+      previewCtx.translate(this._panX, this._panY);
       drawSelectionRect(
         previewCtx,
         this._selection.x,
@@ -745,6 +905,7 @@ export class DrawingCanvas extends LitElement {
         this._selection.h,
         this._selectionDashOffset,
       );
+      previewCtx.restore();
     }
   }
 
@@ -829,11 +990,17 @@ export class DrawingCanvas extends LitElement {
     this._commitSelection();
   }
 
+  override connectedCallback() {
+    super.connectedCallback();
+    this.addEventListener('wheel', this._onWheel, { passive: false });
+  }
+
   override disconnectedCallback() {
     super.disconnectedCallback();
     this._resizeObserver?.disconnect();
     this._resizeObserver = null;
     this._stopSelectionAnimation();
+    this.removeEventListener('wheel', this._onWheel);
   }
 
   override render() {

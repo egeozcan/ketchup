@@ -92,6 +92,8 @@ export class DrawingApp extends LitElement {
       layers: [layer],
       activeLayerId: layer.id,
       layersPanelOpen: true,
+      documentWidth: 800,
+      documentHeight: 600,
     };
     this._provider = new ContextProvider(this, {
       context: drawingContext,
@@ -166,8 +168,8 @@ export class DrawingApp extends LitElement {
           useFill: this._state.useFill,
           brushSize: this._state.brushSize,
         },
-        canvasWidth: this.canvas?.getWidth() ?? 800,
-        canvasHeight: this.canvas?.getHeight() ?? 600,
+        canvasWidth: this._state.documentWidth,
+        canvasHeight: this._state.documentHeight,
         layers,
         activeLayerId: this._state.activeLayerId,
         layersPanelOpen: this._state.layersPanelOpen,
@@ -206,10 +208,9 @@ export class DrawingApp extends LitElement {
 
   private async _resetToFreshProject() {
     this._layerCounter = 0;
-    const layer = this._createLayer(
-      this.canvas?.getWidth() ?? 800,
-      this.canvas?.getHeight() ?? 600,
-    );
+    const w = this._state.documentWidth;
+    const h = this._state.documentHeight;
+    const layer = this._createLayer(w, h);
     this._state = {
       activeTool: 'pencil',
       strokeColor: '#000000',
@@ -220,6 +221,8 @@ export class DrawingApp extends LitElement {
       layers: [layer],
       activeLayerId: layer.id,
       layersPanelOpen: true,
+      documentWidth: w,
+      documentHeight: h,
     };
     await this.updateComplete;
     this.canvas?.setHistory([], -1);
@@ -259,12 +262,15 @@ export class DrawingApp extends LitElement {
         layers,
         activeLayerId: record.activeLayerId,
         layersPanelOpen: record.layersPanelOpen,
+        documentWidth: record.canvasWidth,
+        documentHeight: record.canvasHeight,
       };
       await this.updateComplete;
       this.canvas?.setHistory(history, historyIndex);
       this._dirty = false;
       this._lastSavedHistoryLength = history.length;
       this._lastSavedHistoryVersion = 0;
+      this.canvas?.centerDocument();
       this.canvas?.composite();
     } catch (err) {
       console.error('Failed to load project:', err);
@@ -321,7 +327,7 @@ export class DrawingApp extends LitElement {
       saveCanvas: () => this.canvas?.saveCanvas(),
       // Layer operations
       addLayer: () => {
-        const layer = this._createLayer(this.canvas?.getWidth() ?? 800, this.canvas?.getHeight() ?? 600);
+        const layer = this._createLayer(this._state.documentWidth, this._state.documentHeight);
         const activeIdx = this._state.layers.findIndex(l => l.id === this._state.activeLayerId);
         const insertIdx = activeIdx + 1;
         const newLayers = [...this._state.layers];
@@ -393,6 +399,24 @@ export class DrawingApp extends LitElement {
       },
       toggleLayersPanel: () => {
         this._state = { ...this._state, layersPanelOpen: !this._state.layersPanelOpen };
+      },
+      setDocumentSize: (width: number, height: number) => {
+        if (width === this._state.documentWidth && height === this._state.documentHeight) return;
+        this.canvas?.clearSelection();
+        // Resize all layer canvases, preserving content
+        for (const layer of this._state.layers) {
+          const ctx = layer.canvas.getContext('2d')!;
+          const imageData = ctx.getImageData(0, 0, layer.canvas.width, layer.canvas.height);
+          layer.canvas.width = width;
+          layer.canvas.height = height;
+          ctx.putImageData(imageData, 0, 0);
+        }
+        this._state = { ...this._state, documentWidth: width, documentHeight: height };
+        // Clear history — old ImageData dimensions are incompatible
+        this.canvas?.setHistory([], -1);
+        this.canvas?.centerDocument();
+        this.canvas?.composite();
+        this._markDirty();
       },
       canUndo: this._canUndo,
       canRedo: this._canRedo,
@@ -479,8 +503,8 @@ export class DrawingApp extends LitElement {
       }
       case 'restore-layer': {
         const snapshot = detail.snapshot as LayerSnapshot;
-        const currentWidth = this.canvas?.getWidth() ?? 800;
-        const currentHeight = this.canvas?.getHeight() ?? 600;
+        const currentWidth = this._state.documentWidth;
+        const currentHeight = this._state.documentHeight;
         const canvas = document.createElement('canvas');
         canvas.width = currentWidth;
         canvas.height = currentHeight;
@@ -561,6 +585,9 @@ export class DrawingApp extends LitElement {
       this.canvas?.deleteSelection();
     } else if (e.key === 'Escape') {
       this.canvas?.clearSelection();
+    } else if (e.key === '0' && ctrl) {
+      e.preventDefault();
+      this.canvas?.centerDocument();
     }
   };
 

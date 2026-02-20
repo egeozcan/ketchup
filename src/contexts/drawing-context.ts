@@ -22,6 +22,7 @@ export interface DrawingContextValue {
   reorderLayer: (id: string, newIndex: number) => void;
   renameLayer: (id: string, name: string) => void;
   toggleLayersPanel: () => void;
+  setDocumentSize: (width: number, height: number) => void;
   canUndo: boolean;
   canRedo: boolean;
   // Project operations
