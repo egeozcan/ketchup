@@ -24,6 +24,11 @@ export const STAMPS_STORE = 'project-stamps';
 
 let cachedDB: IDBDatabase | null = null;
 
+// One-time cleanup of the legacy stamps database (pre-per-project migration)
+const _legacyDeleteReq = indexedDB.deleteDatabase('ketchup-stamps');
+_legacyDeleteReq.onerror = () => {}; // Ignore — may not exist
+_legacyDeleteReq.onblocked = () => {}; // Ignore — other tab may have it open
+
 export async function openDB(): Promise<IDBDatabase> {
   if (cachedDB) return cachedDB;
   return new Promise((resolve, reject) => {
@@ -47,7 +52,6 @@ export async function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STAMPS_STORE)) {
         const store = db.createObjectStore(STAMPS_STORE, { keyPath: 'id' });
         store.createIndex('projectId', 'projectId');
-        store.createIndex('createdAt', 'createdAt');
       }
     };
     req.onsuccess = () => {

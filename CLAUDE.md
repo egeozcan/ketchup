@@ -44,7 +44,7 @@ Uses a discriminated union `HistoryEntry` type (max 50 entries) supporting: `dra
 
 ### Persistence
 
-`stamp-store.ts` uses IndexedDB (`ketchup-stamps` database) to store recent stamp images as Blobs (max 20, auto-pruned).
+`stamp-store.ts` stores recent stamp images as Blobs (max 20 per project, auto-pruned) in the `project-stamps` object store within the `ketchup-projects` database, scoped by project ID.
 
 ### Deployment
 

@@ -361,6 +361,11 @@ export class ToolSettings extends LitElement {
     if (projectId && projectId !== this._lastProjectId) {
       this._lastProjectId = projectId;
       this._activeStampId = null;
+      // Revoke stale thumb URLs from previous project
+      for (const url of this._thumbUrls.values()) {
+        URL.revokeObjectURL(url);
+      }
+      this._thumbUrls.clear();
       this._loadStamps(projectId);
     }
   }
@@ -375,7 +380,10 @@ export class ToolSettings extends LitElement {
   }
 
   private async _loadStamps(projectId: string) {
-    this._recentStamps = await getRecentStamps(projectId);
+    const stamps = await getRecentStamps(projectId);
+    // Guard against race: project may have changed while awaiting
+    if (this._lastProjectId !== projectId) return;
+    this._recentStamps = stamps;
     // Revoke old URLs
     for (const [id, url] of this._thumbUrls) {
       if (!this._recentStamps.some((s) => s.id === id)) {
@@ -416,8 +424,11 @@ export class ToolSettings extends LitElement {
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;
-      const entry = await addStamp(projectId, file);
-      await this._loadStamps(projectId);
+      // Re-read projectId at resolution time in case user switched projects
+      const currentProjectId = this._ctx.value?.currentProject?.id;
+      if (!currentProjectId) return;
+      const entry = await addStamp(currentProjectId, file);
+      await this._loadStamps(currentProjectId);
       const url = this._thumbUrls.get(entry.id);
       if (!url) return;
       const img = new Image();
