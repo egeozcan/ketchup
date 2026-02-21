@@ -704,6 +704,11 @@ export class DrawingCanvas extends LitElement {
     }
 
     if (activeTool === 'stamp') {
+      // If a float exists and click is on handle or inside, move/resize it
+      if (this._float && (this._hitTestHandle(p) || this._isInsideFloat(p))) {
+        this._handleSelectPointerDown(p);
+        return;
+      }
       if (this.ctx.state.stampImage) {
         this._commitFloat();
         this._captureBeforeDraw();
