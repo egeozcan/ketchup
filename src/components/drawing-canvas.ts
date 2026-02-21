@@ -77,6 +77,7 @@ export class DrawingCanvas extends LitElement {
   private _selectionOffset: Point | null = null;
   private _selectionDashOffset = 0;
   private _selectionAnimFrame: number | null = null;
+  private _selectionTmpCanvas: HTMLCanvasElement | null = null;
   private _selectionDrawing = false;
 
   // --- Document dimension accessors (from context state) ---
@@ -934,6 +935,12 @@ export class DrawingCanvas extends LitElement {
     if (!layerCtx) return;
     this._captureBeforeDraw();
     this._selectionImageData = layerCtx.getImageData(x, y, w, h);
+    // Cache temp canvas for zoom-aware rendering in _redrawSelectionPreview
+    const tmp = document.createElement('canvas');
+    tmp.width = w;
+    tmp.height = h;
+    tmp.getContext('2d')!.putImageData(this._selectionImageData, 0, 0);
+    this._selectionTmpCanvas = tmp;
     // Clear the area on the active layer (transparent)
     layerCtx.clearRect(x, y, w, h);
     this.composite();
@@ -959,6 +966,7 @@ export class DrawingCanvas extends LitElement {
   private _clearSelectionState() {
     this._selection = null;
     this._selectionImageData = null;
+    this._selectionTmpCanvas = null;
     this._selectionMoving = false;
     this._selectionOffset = null;
     this._selectionDrawing = false;
@@ -973,17 +981,12 @@ export class DrawingCanvas extends LitElement {
     const previewCtx = this.previewCanvas.getContext('2d')!;
     previewCtx.clearRect(0, 0, this._vw, this._vh);
 
-    // Draw lifted selection image data (putImageData ignores transforms, so use drawImage)
-    if (this._selectionImageData && this._selection) {
-      const tmp = document.createElement('canvas');
-      tmp.width = this._selectionImageData.width;
-      tmp.height = this._selectionImageData.height;
-      tmp.getContext('2d')!.putImageData(this._selectionImageData, 0, 0);
-
+    // Draw lifted selection via cached temp canvas (drawImage respects transforms, putImageData doesn't)
+    if (this._selectionTmpCanvas && this._selection) {
       previewCtx.save();
       previewCtx.translate(this._panX, this._panY);
       previewCtx.scale(this._zoom, this._zoom);
-      previewCtx.drawImage(tmp, this._selection.x, this._selection.y);
+      previewCtx.drawImage(this._selectionTmpCanvas, this._selection.x, this._selection.y);
       previewCtx.restore();
     }
 
