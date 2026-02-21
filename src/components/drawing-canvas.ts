@@ -341,7 +341,7 @@ export class DrawingCanvas extends LitElement {
 
   public undo() {
     if (this._historyIndex < 0) return;
-    this._clearFloatState();
+    this._commitFloat();
     const entry = this._history[this._historyIndex];
     this._historyIndex--;
     this._applyUndo(entry);
@@ -351,7 +351,7 @@ export class DrawingCanvas extends LitElement {
 
   public redo() {
     if (this._historyIndex >= this._history.length - 1) return;
-    this._clearFloatState();
+    this._commitFloat();
     this._historyIndex++;
     const entry = this._history[this._historyIndex];
     this._applyRedo(entry);
