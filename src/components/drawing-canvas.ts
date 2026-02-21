@@ -62,6 +62,12 @@ export class DrawingCanvas extends LitElement {
   private _panStartOffsetY = 0;
   private _panPointerId = -1;
 
+  // --- Zoom state ---
+  private _zoom = 1;
+  private static readonly MIN_ZOOM = 0.1;
+  private static readonly MAX_ZOOM = 10;
+  private static readonly ZOOM_STEP = 1.1;
+
   // Selection state
   private _selection: { x: number; y: number; w: number; h: number } | null = null;
   private _selectionImageData: ImageData | null = null;
@@ -112,6 +118,7 @@ export class DrawingCanvas extends LitElement {
     // Translate to document position
     displayCtx.save();
     displayCtx.translate(this._panX, this._panY);
+    displayCtx.scale(this._zoom, this._zoom);
 
     // Draw checkerboard within document bounds
     displayCtx.save();
@@ -190,8 +197,8 @@ export class DrawingCanvas extends LitElement {
     this.previewCanvas.height = vh;
 
     // Center document in viewport
-    this._panX = Math.round((vw - this._docWidth) / 2);
-    this._panY = Math.round((vh - this._docHeight) / 2);
+    this._panX = Math.round((vw - this._docWidth * this._zoom) / 2);
+    this._panY = Math.round((vh - this._docHeight * this._zoom) / 2);
 
     this._resizeObserver = new ResizeObserver(() => this._resizeToFit());
     this._resizeObserver.observe(this);
@@ -212,8 +219,8 @@ export class DrawingCanvas extends LitElement {
   /** Center the document in the viewport */
   public centerDocument() {
     if (!this.mainCanvas) return;
-    this._panX = Math.round((this._vw - this._docWidth) / 2);
-    this._panY = Math.round((this._vh - this._docHeight) / 2);
+    this._panX = Math.round((this._vw - this._docWidth * this._zoom) / 2);
+    this._panY = Math.round((this._vh - this._docHeight * this._zoom) / 2);
     this.composite();
     if (this._selection) this._redrawSelectionPreview();
   }
@@ -235,8 +242,10 @@ export class DrawingCanvas extends LitElement {
     this.previewCanvas.height = newHeight;
 
     // Adjust pan to keep the center stable
-    this._panX += Math.round((newWidth - oldWidth) / 2);
-    this._panY += Math.round((newHeight - oldHeight) / 2);
+    const oldCenterDocX = (oldWidth / 2 - this._panX) / this._zoom;
+    const oldCenterDocY = (oldHeight / 2 - this._panY) / this._zoom;
+    this._panX = newWidth / 2 - oldCenterDocX * this._zoom;
+    this._panY = newHeight / 2 - oldCenterDocY * this._zoom;
 
     // Pattern is tied to canvas context, must recreate
     this._checkerboardPattern = null;
@@ -510,8 +519,8 @@ export class DrawingCanvas extends LitElement {
   private _getDocPoint(e: PointerEvent): Point {
     const rect = this.mainCanvas.getBoundingClientRect();
     return {
-      x: e.clientX - rect.left - this._panX,
-      y: e.clientY - rect.top - this._panY,
+      x: (e.clientX - rect.left - this._panX) / this._zoom,
+      y: (e.clientY - rect.top - this._panY) / this._zoom,
     };
   }
 
@@ -553,14 +562,92 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _onWheel = (e: WheelEvent) => {
-    // ctrl+wheel = zoom (not yet implemented, let browser handle it)
-    if (e.ctrlKey) return;
+    if (e.ctrlKey || e.metaKey) {
+      // Zoom anchored to cursor position
+      e.preventDefault();
+      const rect = this.mainCanvas.getBoundingClientRect();
+      const viewportX = e.clientX - rect.left;
+      const viewportY = e.clientY - rect.top;
+
+      const docX = (viewportX - this._panX) / this._zoom;
+      const docY = (viewportY - this._panY) / this._zoom;
+
+      const direction = e.deltaY < 0 ? 1 : -1;
+      const newZoom = Math.min(
+        DrawingCanvas.MAX_ZOOM,
+        Math.max(
+          DrawingCanvas.MIN_ZOOM,
+          this._zoom * Math.pow(DrawingCanvas.ZOOM_STEP, direction),
+        ),
+      );
+      if (newZoom === this._zoom) return;
+
+      this._panX = viewportX - docX * newZoom;
+      this._panY = viewportY - docY * newZoom;
+      this._zoom = newZoom;
+
+      this.composite();
+      if (this._selection) this._redrawSelectionPreview();
+      this._dispatchZoomChange();
+      return;
+    }
+
+    // Plain wheel → pan
     e.preventDefault();
     this._panX -= e.deltaX;
     this._panY -= e.deltaY;
     this.composite();
     if (this._selection) this._redrawSelectionPreview();
   };
+
+  private _dispatchZoomChange() {
+    this.dispatchEvent(new CustomEvent('zoom-change', {
+      bubbles: true,
+      composed: true,
+      detail: { zoom: this._zoom },
+    }));
+  }
+
+  public zoomIn() {
+    this._zoomToCenter(this._zoom * DrawingCanvas.ZOOM_STEP);
+  }
+
+  public zoomOut() {
+    this._zoomToCenter(this._zoom / DrawingCanvas.ZOOM_STEP);
+  }
+
+  public zoomToFit() {
+    const fitZoom = Math.min(
+      this._vw / this._docWidth,
+      this._vh / this._docHeight,
+    ) * 0.9;
+    this._zoom = Math.min(DrawingCanvas.MAX_ZOOM, Math.max(DrawingCanvas.MIN_ZOOM, fitZoom));
+    this._panX = Math.round((this._vw - this._docWidth * this._zoom) / 2);
+    this._panY = Math.round((this._vh - this._docHeight * this._zoom) / 2);
+    this.composite();
+    if (this._selection) this._redrawSelectionPreview();
+    this._dispatchZoomChange();
+  }
+
+  public getZoom(): number { return this._zoom; }
+
+  private _zoomToCenter(newZoom: number) {
+    const clamped = Math.min(DrawingCanvas.MAX_ZOOM, Math.max(DrawingCanvas.MIN_ZOOM, newZoom));
+    if (clamped === this._zoom) return;
+
+    const cx = this._vw / 2;
+    const cy = this._vh / 2;
+    const docX = (cx - this._panX) / this._zoom;
+    const docY = (cy - this._panY) / this._zoom;
+
+    this._panX = cx - docX * clamped;
+    this._panY = cy - docY * clamped;
+    this._zoom = clamped;
+
+    this.composite();
+    if (this._selection) this._redrawSelectionPreview();
+    this._dispatchZoomChange();
+  }
 
   // --- Pointer events ---
 
@@ -663,6 +750,7 @@ export class DrawingCanvas extends LitElement {
       previewCtx.clearRect(0, 0, this._vw, this._vh);
       previewCtx.save();
       previewCtx.translate(this._panX, this._panY);
+      previewCtx.scale(this._zoom, this._zoom);
       drawShapePreview(
         previewCtx,
         activeTool,
@@ -803,6 +891,7 @@ export class DrawingCanvas extends LitElement {
       const h = Math.abs(p.y - this._startPoint.y);
       previewCtx.save();
       previewCtx.translate(this._panX, this._panY);
+      previewCtx.scale(this._zoom, this._zoom);
       drawSelectionRect(previewCtx, x, y, w, h, 0);
       previewCtx.restore();
     }
@@ -884,19 +973,24 @@ export class DrawingCanvas extends LitElement {
     const previewCtx = this.previewCanvas.getContext('2d')!;
     previewCtx.clearRect(0, 0, this._vw, this._vh);
 
-    // putImageData ignores transforms, so apply pan offset manually
+    // Draw lifted selection image data (putImageData ignores transforms, so use drawImage)
     if (this._selectionImageData && this._selection) {
-      previewCtx.putImageData(
-        this._selectionImageData,
-        Math.round(this._selection.x + this._panX),
-        Math.round(this._selection.y + this._panY),
-      );
+      const tmp = document.createElement('canvas');
+      tmp.width = this._selectionImageData.width;
+      tmp.height = this._selectionImageData.height;
+      tmp.getContext('2d')!.putImageData(this._selectionImageData, 0, 0);
+
+      previewCtx.save();
+      previewCtx.translate(this._panX, this._panY);
+      previewCtx.scale(this._zoom, this._zoom);
+      previewCtx.drawImage(tmp, this._selection.x, this._selection.y);
+      previewCtx.restore();
     }
 
-    // Selection rect respects canvas transforms
     if (this._selection) {
       previewCtx.save();
       previewCtx.translate(this._panX, this._panY);
+      previewCtx.scale(this._zoom, this._zoom);
       drawSelectionRect(
         previewCtx,
         this._selection.x,
