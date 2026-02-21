@@ -6,10 +6,10 @@ import type { ToolType } from '../types.js';
  * Each icon is a 24x24 viewBox SVG template.
  */
 export const toolIcons: Record<ToolType, ReturnType<typeof svg>> = {
-  // Select — dashed rectangle
+  // Select — dashed marquee (MS Paint style)
   select: svg`
-    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="4 3"/>
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter">
+      <rect x="4" y="4" width="16" height="16" stroke-dasharray="4 4" />
     </svg>`,
 
   // Pencil — classic pencil shape
@@ -21,17 +21,16 @@ export const toolIcons: Record<ToolType, ReturnType<typeof svg>> = {
   // Marker — thick marker/highlighter
   marker: svg`
     <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 19l7-7 3 3-7 7-3-3z"/>
-      <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/>
-      <path d="M2 2l7.586 7.586"/>
-      <circle cx="11" cy="11" r="2"/>
+      <path d="m9 11-6 6v3h9l3-3"/>
+      <path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/>
     </svg>`,
 
   // Eraser — rectangular eraser
   eraser: svg`
     <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M20 20H7L3 16a1 1 0 0 1 0-1.41l9.59-9.59a2 2 0 0 1 2.82 0L20.5 10.1a2 2 0 0 1 0 2.82L13 20"/>
-      <path d="M6 14l4 4"/>
+      <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/>
+      <path d="M22 21H7"/>
+      <path d="m5 11 9 9"/>
     </svg>`,
 
   // Line — diagonal line
@@ -61,17 +60,20 @@ export const toolIcons: Record<ToolType, ReturnType<typeof svg>> = {
   // Fill — paint bucket
   fill: svg`
     <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M2.5 2.5l9 9"/>
-      <path d="M7.5 7.5L16 16a2 2 0 0 1 0 2.83l-1.17 1.17a2 2 0 0 1-2.83 0L4.5 12.5a2 2 0 0 1 0-2.83L7.5 7.5z"/>
-      <path d="M20 14c.5 1.5 1 3 1 4a2 2 0 0 1-4 0c0-1 .5-2.5 1-4l1-2 1 2z"/>
+      <path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"/>
+      <path d="m5 2 5 5"/>
+      <path d="M2 13h15"/>
+      <path d="M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z"/>
     </svg>`,
 
-  // Stamp — image/stamp icon
+  // Stamp — rubber stamp
   stamp: svg`
     <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-      <circle cx="8.5" cy="8.5" r="1.5"/>
-      <polyline points="21 15 16 10 5 21"/>
+      <path d="M2 22h20"/>
+      <path d="M6 12v-4c0-2.2 1.8-4 4-4h4c2.2 0 4 1.8 4 4v4"/>
+      <path d="M6 12h12a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2Z"/>
+      <path d="M9 13v-1"/>
+      <path d="M15 13v-1"/>
     </svg>`,
 
   // Hand — pan/drag tool
@@ -106,10 +108,9 @@ export const actionIcons = {
 
   clear: svg`
     <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <polyline points="3 6 5 6 21 6"/>
-      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-      <line x1="10" y1="11" x2="10" y2="17"/>
-      <line x1="14" y1="11" x2="14" y2="17"/>
+      <path d="M3 6h18"/>
+      <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+      <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
     </svg>`,
 };
 

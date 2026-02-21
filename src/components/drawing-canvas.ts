@@ -3,14 +3,14 @@ import { customElement, query } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { Point, HistoryEntry, Layer, FloatingSelection } from '../types.js';
-
-type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 import { drawPencilSegment } from '../tools/pencil.js';
 import { drawMarkerSegment } from '../tools/marker.js';
 import { drawEraserSegment } from '../tools/eraser.js';
 import { drawShapePreview } from '../tools/shapes.js';
 import { floodFill } from '../tools/fill.js';
 import { drawSelectionRect } from '../tools/select.js';
+
+type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
 @customElement('drawing-canvas')
 export class DrawingCanvas extends LitElement {
@@ -344,6 +344,9 @@ export class DrawingCanvas extends LitElement {
 
   public undo() {
     if (this._historyIndex < 0) return;
+    // Commit the active float first. This pushes a new history entry for the
+    // lift+commit, which the undo below then immediately reverses — effectively
+    // cancelling the float and restoring the layer to its pre-lift state.
     this._commitFloat();
     const entry = this._history[this._historyIndex];
     this._historyIndex--;
@@ -1037,7 +1040,6 @@ export class DrawingCanvas extends LitElement {
 
     this._float = {
       originalImageData: imageData,
-      sourceRect: { x, y, w, h },
       currentRect: { x, y, w, h },
       tempCanvas: tmp,
     };
@@ -1065,7 +1067,6 @@ export class DrawingCanvas extends LitElement {
 
     this._float = {
       originalImageData: imageData,
-      sourceRect: { x, y, w, h },
       currentRect: { x, y, w, h },
       tempCanvas: tmp,
     };
@@ -1078,7 +1079,7 @@ export class DrawingCanvas extends LitElement {
     if (!layerCtx) return;
 
     const { currentRect, tempCanvas } = this._float;
-    layerCtx.drawImage(tempCanvas, currentRect.x, currentRect.y, currentRect.w, currentRect.h);
+    layerCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y));
 
     this._pushDrawHistory();
     this.composite();
@@ -1139,10 +1140,7 @@ export class DrawingCanvas extends LitElement {
       newH = orig.h + dy;
     }
 
-    // Flip if dragged past opposite edge
-    if (newW < 0) { newX += newW; newW = -newW; }
-    if (newH < 0) { newY += newH; newH = -newH; }
-
+    // Enforce aspect ratio for corner handles BEFORE flip correction
     if (handle === 'nw' || handle === 'ne' || handle === 'se' || handle === 'sw') {
       const aspect = orig.w / orig.h;
       if (Math.abs(newW - orig.w) / orig.w > Math.abs(newH - orig.h) / orig.h) {
@@ -1150,6 +1148,7 @@ export class DrawingCanvas extends LitElement {
       } else {
         newW = newH * aspect;
       }
+      // Re-anchor after aspect ratio enforcement
       if (handle === 'nw') {
         newX = orig.x + orig.w - newW;
         newY = orig.y + orig.h - newH;
@@ -1159,6 +1158,10 @@ export class DrawingCanvas extends LitElement {
         newX = orig.x + orig.w - newW;
       }
     }
+
+    // Flip if dragged past opposite edge (after aspect ratio so flipped dimensions are correct)
+    if (newW < 0) { newX += newW; newW = -newW; }
+    if (newH < 0) { newY += newH; newH = -newH; }
 
     if (newW < minSize) { newW = minSize; }
     if (newH < minSize) { newH = minSize; }
@@ -1236,12 +1239,10 @@ export class DrawingCanvas extends LitElement {
 
   public copySelection() {
     if (!this._float) return;
-    this._clipboard = new ImageData(
-      new Uint8ClampedArray(this._float.originalImageData.data),
-      this._float.originalImageData.width,
-      this._float.originalImageData.height,
-    );
-    this._clipboardOrigin = { x: this._float.currentRect.x, y: this._float.currentRect.y };
+    const { tempCanvas, currentRect } = this._float;
+    const ctx = tempCanvas.getContext('2d')!;
+    this._clipboard = ctx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+    this._clipboardOrigin = { x: currentRect.x, y: currentRect.y };
   }
 
   public cutSelection() {
@@ -1257,17 +1258,22 @@ export class DrawingCanvas extends LitElement {
 
     const w = this._clipboard.width;
     const h = this._clipboard.height;
+    const src = document.createElement('canvas');
+    src.width = w;
+    src.height = h;
+    src.getContext('2d')!.putImageData(this._clipboard, 0, 0);
+    this._floatSrcCanvas = src;
+
     const tmp = document.createElement('canvas');
     tmp.width = w;
     tmp.height = h;
-    tmp.getContext('2d')!.putImageData(this._clipboard, 0, 0);
+    tmp.getContext('2d')!.drawImage(src, 0, 0);
 
     this._float = {
       originalImageData: new ImageData(
         new Uint8ClampedArray(this._clipboard.data),
         w, h,
       ),
-      sourceRect: { x: this._clipboardOrigin.x, y: this._clipboardOrigin.y, w, h },
       currentRect: { x: this._clipboardOrigin.x, y: this._clipboardOrigin.y, w, h },
       tempCanvas: tmp,
     };
@@ -1276,6 +1282,11 @@ export class DrawingCanvas extends LitElement {
 
   public deleteSelection() {
     if (!this._float) return;
+    // For stamp floats, _beforeDrawData may already be consumed or the layer
+    // wasn't modified — capture now so _pushDrawHistory has valid state.
+    if (!this._beforeDrawData) {
+      this._captureBeforeDraw();
+    }
     this._pushDrawHistory();
     this.composite();
     this._clearFloatState();

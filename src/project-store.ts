@@ -16,7 +16,7 @@ import type {
 // ---------------------------------------------------------------------------
 
 const DB_NAME = 'ketchup-projects';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const PROJECTS_STORE = 'projects';
 const STATE_STORE = 'project-state';
 const HISTORY_STORE = 'project-history';

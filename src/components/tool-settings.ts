@@ -36,6 +36,7 @@ export class ToolSettings extends LitElement {
       font-size: 0.8125rem;
       flex-wrap: wrap;
       min-height: 2.75rem;
+      position: relative;
     }
 
     .section {
@@ -335,14 +336,25 @@ export class ToolSettings extends LitElement {
     }
 
     .saving-indicator {
+      position: absolute;
+      top: 0.75rem;
+      right: 1rem;
       color: #888;
-      font-size: 0.75rem;
-      animation: pulse 1s ease-in-out infinite;
+      width: 1.25rem;
+      height: 1.25rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
 
-    @keyframes pulse {
-      0%, 100% { opacity: 0.5; }
-      50% { opacity: 1; }
+    .saving-indicator svg {
+      width: 100%;
+      height: 100%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      100% { transform: rotate(360deg); }
     }
 
     .doc-size-section {
@@ -736,7 +748,6 @@ export class ToolSettings extends LitElement {
             </div>
           ` : ''}
         </div>
-        ${this.ctx.saving ? html`<span class="saving-indicator">Saving...</span>` : ''}
       </div>
       <div class="separator"></div>
 
@@ -793,7 +804,7 @@ export class ToolSettings extends LitElement {
         />
         <div class="color-grid">
           ${presetColors.map(
-            (c) => html`
+      (c) => html`
               <button
                 class="color-swatch ${strokeColor === c ? 'active' : ''}"
                 style="background:${c}"
@@ -801,7 +812,7 @@ export class ToolSettings extends LitElement {
                 @click=${() => this.ctx.setStrokeColor(c)}
               ></button>
             `,
-          )}
+    )}
         </div>
       </div>
 
@@ -828,7 +839,7 @@ export class ToolSettings extends LitElement {
                 Fill
               </label>
               ${useFill
-                ? html`
+            ? html`
                     <input
                       type="color"
                       .value=${fillColor}
@@ -836,7 +847,7 @@ export class ToolSettings extends LitElement {
                       title="Fill color"
                     />
                   `
-                : ''}
+            : ''}
             </div>
           `
         : ''}
@@ -846,10 +857,10 @@ export class ToolSettings extends LitElement {
             <div class="separator"></div>
             <div class="section">
               ${this._recentStamps.length > 0
-                ? html`
+            ? html`
                     <div class="stamp-row">
                       ${this._recentStamps.map(
-                        (s) => html`
+              (s) => html`
                           <div class="stamp-thumb-wrap">
                             <img
                               class="stamp-thumb ${this._activeStampId === s.id ? 'active' : ''}"
@@ -863,14 +874,24 @@ export class ToolSettings extends LitElement {
                             >&times;</button>
                           </div>
                         `,
-                      )}
+            )}
                     </div>
                   `
-                : ''}
+            : ''}
               <button class="stamp-btn" @click=${this._uploadStamp}>Upload Image</button>
               ${stampImage
-                ? html`<img class="stamp-preview" .src=${stampImage.src} alt="stamp" />`
-                : ''}
+            ? html`<img class="stamp-preview" .src=${stampImage.src} alt="stamp" />`
+            : ''}
+            </div>
+          `
+        : ''}
+
+      ${this.ctx.saving
+        ? html`
+            <div class="saving-indicator" aria-label="Saving">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 12a9 9 0 1 1-6.219-8.56"></path>
+              </svg>
             </div>
           `
         : ''}

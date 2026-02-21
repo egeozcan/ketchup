@@ -135,7 +135,7 @@ export class DrawingApp extends LitElement {
       clearTimeout(this._saveTimer);
       this._saveTimer = null;
     }
-    this._save();
+    this._save(true);
   }
 
   private _markDirty() {
@@ -144,7 +144,7 @@ export class DrawingApp extends LitElement {
     this._saveTimer = setTimeout(() => this._save(), 500);
   }
 
-  private async _save() {
+  private async _save(flushing = false) {
     if (!this._currentProject || !this._dirty) return;
     if (this._saveInProgress) {
       if (this._saveTimer) clearTimeout(this._saveTimer);
@@ -216,9 +216,14 @@ export class DrawingApp extends LitElement {
       this._lastSavedHistoryVersion = historyVersion;
       this._projectList = await listProjects();
 
-      const elapsed = Date.now() - saveStartTime;
-      if (elapsed < 1500) {
-        await new Promise(resolve => setTimeout(resolve, 1500 - elapsed));
+      // Show saving indicator for a minimum duration so it doesn't flash,
+      // but skip the delay when flushing (beforeunload/visibilitychange)
+      // to avoid data loss on page close.
+      if (!flushing) {
+        const elapsed = Date.now() - saveStartTime;
+        if (elapsed < 1500) {
+          await new Promise(resolve => setTimeout(resolve, 1500 - elapsed));
+        }
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === 'QuotaExceededError') {
