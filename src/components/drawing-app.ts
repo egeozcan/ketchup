@@ -587,7 +587,13 @@ export class DrawingApp extends LitElement {
       this.canvas?.clearSelection();
     } else if (e.key === '0' && ctrl) {
       e.preventDefault();
-      this.canvas?.centerDocument();
+      this.canvas?.zoomToFit();
+    } else if (ctrl && (e.key === '=' || e.key === '+')) {
+      e.preventDefault();
+      this.canvas?.zoomIn();
+    } else if (ctrl && e.key === '-') {
+      e.preventDefault();
+      this.canvas?.zoomOut();
     }
   };
 
