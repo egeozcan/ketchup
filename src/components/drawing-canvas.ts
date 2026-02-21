@@ -63,6 +63,10 @@ export class DrawingCanvas extends LitElement {
   private _panStartOffsetY = 0;
   private _panPointerId = -1;
 
+  // --- Move tool state ---
+  private _moveTempCanvas: HTMLCanvasElement | null = null;
+  private _moveStartPoint: Point | null = null;
+
   // --- Zoom state ---
   private _zoom = 1;
   private static readonly MIN_ZOOM = 0.1;
@@ -188,6 +192,8 @@ export class DrawingCanvas extends LitElement {
       const tool = this._ctx.value.state.activeTool;
       if (tool === 'hand') {
         this.mainCanvas.style.cursor = this._panning ? 'grabbing' : 'grab';
+      } else if (tool === 'move') {
+        this.mainCanvas.style.cursor = 'move';
       } else if ((tool === 'select' || tool === 'stamp') && this._float && !this._floatMoving && !this._floatResizing) {
         // Dynamic cursor set by pointer move handler
       } else {
@@ -684,6 +690,24 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
+    // Move tool → translate active layer
+    if (activeTool === 'move') {
+      this.mainCanvas.setPointerCapture(e.pointerId);
+      this._commitFloat();
+      const p = this._getDocPoint(e);
+      this._captureBeforeDraw();
+      const layerCtx = this._getActiveLayerCtx();
+      if (!layerCtx) return;
+      // Snapshot the entire active layer to a temp canvas
+      const tmp = document.createElement('canvas');
+      tmp.width = this._docWidth;
+      tmp.height = this._docHeight;
+      tmp.getContext('2d')!.drawImage(layerCtx.canvas, 0, 0);
+      this._moveTempCanvas = tmp;
+      this._moveStartPoint = p;
+      return;
+    }
+
     this.mainCanvas.setPointerCapture(e.pointerId);
     const p = this._getDocPoint(e);
 
@@ -742,6 +766,27 @@ export class DrawingCanvas extends LitElement {
 
     const { activeTool } = this.ctx.state;
 
+    if (activeTool === 'move' && this._moveTempCanvas && this._moveStartPoint) {
+      const p = this._getDocPoint(e);
+      let dx = p.x - this._moveStartPoint.x;
+      let dy = p.y - this._moveStartPoint.y;
+      // Shift constrains to dominant axis
+      if (e.shiftKey) {
+        if (Math.abs(dx) > Math.abs(dy)) {
+          dy = 0;
+        } else {
+          dx = 0;
+        }
+      }
+      const layerCtx = this._getActiveLayerCtx();
+      if (layerCtx) {
+        layerCtx.clearRect(0, 0, this._docWidth, this._docHeight);
+        layerCtx.drawImage(this._moveTempCanvas, Math.round(dx), Math.round(dy));
+        this.composite();
+      }
+      return;
+    }
+
     if (activeTool === 'select') {
       this._handleSelectPointerMove(e);
       return;
@@ -794,6 +839,14 @@ export class DrawingCanvas extends LitElement {
     }
 
     const { activeTool } = this.ctx.state;
+
+    if (activeTool === 'move' && this._moveTempCanvas) {
+      this._moveTempCanvas = null;
+      this._moveStartPoint = null;
+      this._pushDrawHistory();
+      this.composite();
+      return;
+    }
 
     if (activeTool === 'select') {
       this._handleSelectPointerUp(e);
