@@ -114,9 +114,29 @@ export class DrawingApp extends LitElement {
 
   private _onBeforeUnload = (e: BeforeUnloadEvent) => {
     if (this._dirty) {
+      // Start the async save — it may or may not complete before unload.
+      this._flushPendingSave();
+      // Show the browser's "Leave site?" dialog so the save has time to finish.
       e.preventDefault();
     }
   };
+
+  private _onVisibilityChange = () => {
+    // When the page is hidden (tab switch, close, refresh), flush immediately.
+    // This fires before beforeunload and gives the save more time to complete.
+    if (document.hidden && this._dirty) {
+      this._flushPendingSave();
+    }
+  };
+
+  /** Cancel the debounce timer and start a save immediately. */
+  private _flushPendingSave() {
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    this._save();
+  }
 
   private _markDirty() {
     this._dirty = true;
@@ -133,6 +153,7 @@ export class DrawingApp extends LitElement {
     }
     this._saveInProgress = true;
     this._saving = true;
+    const saveStartTime = Date.now();
     try {
       // Synchronously snapshot all mutable data before any awaits
       const layerSnapshots = this._state.layers.map(l => ({
@@ -194,6 +215,11 @@ export class DrawingApp extends LitElement {
       this._lastSavedHistoryLength = historySnapshot.length;
       this._lastSavedHistoryVersion = historyVersion;
       this._projectList = await listProjects();
+
+      const elapsed = Date.now() - saveStartTime;
+      if (elapsed < 1500) {
+        await new Promise(resolve => setTimeout(resolve, 1500 - elapsed));
+      }
     } catch (err) {
       if (err instanceof DOMException && err.name === 'QuotaExceededError') {
         console.error('Storage quota exceeded. Consider deleting old projects to free space.');
@@ -542,13 +568,18 @@ export class DrawingApp extends LitElement {
     super.connectedCallback();
     this.addEventListener('keydown', this._onKeyDown);
     window.addEventListener('beforeunload', this._onBeforeUnload);
+    document.addEventListener('visibilitychange', this._onVisibilityChange);
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
     this.removeEventListener('keydown', this._onKeyDown);
     window.removeEventListener('beforeunload', this._onBeforeUnload);
-    if (this._saveTimer) {
+    document.removeEventListener('visibilitychange', this._onVisibilityChange);
+    // Flush any pending save instead of silently dropping it.
+    if (this._dirty) {
+      this._flushPendingSave();
+    } else if (this._saveTimer) {
       clearTimeout(this._saveTimer);
       this._saveTimer = null;
     }
@@ -579,7 +610,7 @@ export class DrawingApp extends LitElement {
       this.canvas?.pasteSelection();
     } else if (
       (e.key === 'Delete' || e.key === 'Backspace') &&
-      this._state.activeTool === 'select'
+      (this._state.activeTool === 'select' || this._state.activeTool === 'stamp')
     ) {
       e.preventDefault();
       this.canvas?.deleteSelection();

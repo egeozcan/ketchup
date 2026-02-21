@@ -67,7 +67,7 @@ export class DrawingCanvas extends LitElement {
   private _zoom = 1;
   private static readonly MIN_ZOOM = 0.1;
   private static readonly MAX_ZOOM = 10;
-  private static readonly ZOOM_STEP = 1.025;
+  private static readonly ZOOM_STEP = 1.1;
 
   // --- Floating selection state ---
   private _float: FloatingSelection | null = null;
@@ -75,6 +75,9 @@ export class DrawingCanvas extends LitElement {
   private _clipboardOrigin: Point | null = null;
   private _selectionDashOffset = 0;
   private _selectionAnimFrame: number | null = null;
+
+  /** Cached canvas of originalImageData at original size — avoids re-creating per resize tick */
+  private _floatSrcCanvas: HTMLCanvasElement | null = null;
 
   // Interaction state
   private _selectionDrawing = false;
@@ -1016,10 +1019,16 @@ export class DrawingCanvas extends LitElement {
     layerCtx.clearRect(x, y, w, h);
     this.composite();
 
+    const src = document.createElement('canvas');
+    src.width = w;
+    src.height = h;
+    src.getContext('2d')!.putImageData(imageData, 0, 0);
+    this._floatSrcCanvas = src;
+
     const tmp = document.createElement('canvas');
     tmp.width = w;
     tmp.height = h;
-    tmp.getContext('2d')!.putImageData(imageData, 0, 0);
+    tmp.getContext('2d')!.drawImage(src, 0, 0);
 
     this._float = {
       originalImageData: imageData,
@@ -1037,12 +1046,17 @@ export class DrawingCanvas extends LitElement {
     const x = Math.round(centerX - w / 2);
     const y = Math.round(centerY - h / 2);
 
+    const src = document.createElement('canvas');
+    src.width = w;
+    src.height = h;
+    src.getContext('2d')!.drawImage(img, 0, 0, w, h);
+    const imageData = src.getContext('2d')!.getImageData(0, 0, w, h);
+    this._floatSrcCanvas = src;
+
     const tmp = document.createElement('canvas');
     tmp.width = w;
     tmp.height = h;
-    const tmpCtx = tmp.getContext('2d')!;
-    tmpCtx.drawImage(img, 0, 0, w, h);
-    const imageData = tmpCtx.getImageData(0, 0, w, h);
+    tmp.getContext('2d')!.drawImage(src, 0, 0);
 
     this._float = {
       originalImageData: imageData,
@@ -1068,6 +1082,7 @@ export class DrawingCanvas extends LitElement {
 
   private _clearFloatState() {
     this._float = null;
+    this._floatSrcCanvas = null;
     this._floatMoving = false;
     this._floatResizing = false;
     this._floatResizeHandle = null;
@@ -1082,20 +1097,15 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _rebuildTempCanvas() {
-    if (!this._float) return;
-    const { originalImageData, currentRect } = this._float;
-
-    const src = document.createElement('canvas');
-    src.width = originalImageData.width;
-    src.height = originalImageData.height;
-    src.getContext('2d')!.putImageData(originalImageData, 0, 0);
-
-    const tmp = document.createElement('canvas');
-    tmp.width = Math.max(1, Math.round(currentRect.w));
-    tmp.height = Math.max(1, Math.round(currentRect.h));
-    tmp.getContext('2d')!.drawImage(src, 0, 0, tmp.width, tmp.height);
-
-    this._float.tempCanvas = tmp;
+    if (!this._float || !this._floatSrcCanvas) return;
+    const { currentRect } = this._float;
+    const tmp = this._float.tempCanvas;
+    const newW = Math.max(1, Math.round(currentRect.w));
+    const newH = Math.max(1, Math.round(currentRect.h));
+    // Setting width/height clears the canvas and reuses the element
+    tmp.width = newW;
+    tmp.height = newH;
+    tmp.getContext('2d')!.drawImage(this._floatSrcCanvas, 0, 0, newW, newH);
   }
 
   private _applyResize(p: Point) {
@@ -1123,6 +1133,10 @@ export class DrawingCanvas extends LitElement {
     } else if (handle === 'sw' || handle === 's' || handle === 'se') {
       newH = orig.h + dy;
     }
+
+    // Flip if dragged past opposite edge
+    if (newW < 0) { newX += newW; newW = -newW; }
+    if (newH < 0) { newY += newH; newH = -newH; }
 
     if (handle === 'nw' || handle === 'ne' || handle === 'se' || handle === 'sw') {
       const aspect = orig.w / orig.h;
