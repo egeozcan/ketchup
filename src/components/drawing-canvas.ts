@@ -2,13 +2,14 @@ import { LitElement, html, css } from 'lit';
 import { customElement, query } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import type { Point, HistoryEntry, Layer } from '../types.js';
+import type { Point, HistoryEntry, Layer, FloatingSelection } from '../types.js';
+
+type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 import { drawPencilSegment } from '../tools/pencil.js';
 import { drawMarkerSegment } from '../tools/marker.js';
 import { drawEraserSegment } from '../tools/eraser.js';
 import { drawShapePreview } from '../tools/shapes.js';
 import { floodFill } from '../tools/fill.js';
-import { drawStamp } from '../tools/stamp.js';
 import { drawSelectionRect } from '../tools/select.js';
 
 @customElement('drawing-canvas')
@@ -66,19 +67,22 @@ export class DrawingCanvas extends LitElement {
   private _zoom = 1;
   private static readonly MIN_ZOOM = 0.1;
   private static readonly MAX_ZOOM = 10;
-  private static readonly ZOOM_STEP = 1.1;
+  private static readonly ZOOM_STEP = 1.025;
 
-  // Selection state
-  private _selection: { x: number; y: number; w: number; h: number } | null = null;
-  private _selectionImageData: ImageData | null = null;
+  // --- Floating selection state ---
+  private _float: FloatingSelection | null = null;
   private _clipboard: ImageData | null = null;
   private _clipboardOrigin: Point | null = null;
-  private _selectionMoving = false;
-  private _selectionOffset: Point | null = null;
   private _selectionDashOffset = 0;
   private _selectionAnimFrame: number | null = null;
-  private _selectionTmpCanvas: HTMLCanvasElement | null = null;
+
+  // Interaction state
   private _selectionDrawing = false;
+  private _floatMoving = false;
+  private _floatResizing = false;
+  private _floatResizeHandle: ResizeHandle | null = null;
+  private _floatDragOffset: Point | null = null;
+  private _floatResizeOrigin: { rect: { x: number; y: number; w: number; h: number }; point: Point } | null = null;
 
   // --- Document dimension accessors (from context state) ---
   private get _docWidth(): number {
@@ -181,6 +185,8 @@ export class DrawingCanvas extends LitElement {
       const tool = this._ctx.value.state.activeTool;
       if (tool === 'hand') {
         this.mainCanvas.style.cursor = this._panning ? 'grabbing' : 'grab';
+      } else if ((tool === 'select' || tool === 'stamp') && this._float && !this._floatMoving && !this._floatResizing) {
+        // Dynamic cursor set by pointer move handler
       } else {
         this.mainCanvas.style.cursor = 'crosshair';
       }
@@ -223,7 +229,7 @@ export class DrawingCanvas extends LitElement {
     this._panX = Math.round((this._vw - this._docWidth * this._zoom) / 2);
     this._panY = Math.round((this._vh - this._docHeight * this._zoom) / 2);
     this.composite();
-    if (this._selection) this._redrawSelectionPreview();
+    if (this._float) this._redrawFloatPreview();
   }
 
   private _resizeToFit() {
@@ -252,7 +258,7 @@ export class DrawingCanvas extends LitElement {
     this._checkerboardPattern = null;
 
     this.composite();
-    if (this._selection) this._redrawSelectionPreview();
+    if (this._float) this._redrawFloatPreview();
   }
 
   // --- History ---
@@ -335,7 +341,7 @@ export class DrawingCanvas extends LitElement {
 
   public undo() {
     if (this._historyIndex < 0) return;
-    this._clearSelectionState();
+    this._clearFloatState();
     const entry = this._history[this._historyIndex];
     this._historyIndex--;
     this._applyUndo(entry);
@@ -345,7 +351,7 @@ export class DrawingCanvas extends LitElement {
 
   public redo() {
     if (this._historyIndex >= this._history.length - 1) return;
-    this._clearSelectionState();
+    this._clearFloatState();
     this._historyIndex++;
     const entry = this._history[this._historyIndex];
     this._applyRedo(entry);
@@ -543,7 +549,7 @@ export class DrawingCanvas extends LitElement {
     this._panX = this._panStartOffsetX + (e.clientX - this._panStartX);
     this._panY = this._panStartOffsetY + (e.clientY - this._panStartY);
     this.composite();
-    if (this._selection) this._redrawSelectionPreview();
+    if (this._float) this._redrawFloatPreview();
   }
 
   private _endPan() {
@@ -588,7 +594,7 @@ export class DrawingCanvas extends LitElement {
       this._zoom = newZoom;
 
       this.composite();
-      if (this._selection) this._redrawSelectionPreview();
+      if (this._float) this._redrawFloatPreview();
       this._dispatchZoomChange();
       return;
     }
@@ -598,7 +604,7 @@ export class DrawingCanvas extends LitElement {
     this._panX -= e.deltaX;
     this._panY -= e.deltaY;
     this.composite();
-    if (this._selection) this._redrawSelectionPreview();
+    if (this._float) this._redrawFloatPreview();
   };
 
   private _dispatchZoomChange() {
@@ -626,7 +632,7 @@ export class DrawingCanvas extends LitElement {
     this._panX = Math.round((this._vw - this._docWidth * this._zoom) / 2);
     this._panY = Math.round((this._vh - this._docHeight * this._zoom) / 2);
     this.composite();
-    if (this._selection) this._redrawSelectionPreview();
+    if (this._float) this._redrawFloatPreview();
     this._dispatchZoomChange();
   }
 
@@ -646,7 +652,7 @@ export class DrawingCanvas extends LitElement {
     this._zoom = clamped;
 
     this.composite();
-    if (this._selection) this._redrawSelectionPreview();
+    if (this._float) this._redrawFloatPreview();
     this._dispatchZoomChange();
   }
 
@@ -696,13 +702,9 @@ export class DrawingCanvas extends LitElement {
 
     if (activeTool === 'stamp') {
       if (this.ctx.state.stampImage) {
+        this._commitFloat();
         this._captureBeforeDraw();
-        const layerCtx = this._getActiveLayerCtx();
-        if (layerCtx) {
-          drawStamp(layerCtx, this.ctx.state.stampImage, p, this.ctx.state.brushSize * 10);
-        }
-        this._pushDrawHistory();
-        this.composite();
+        this._createFloatFromImage(this.ctx.state.stampImage, p.x, p.y, this.ctx.state.brushSize * 10);
       }
       return;
     }
@@ -730,6 +732,11 @@ export class DrawingCanvas extends LitElement {
     const { activeTool } = this.ctx.state;
 
     if (activeTool === 'select') {
+      this._handleSelectPointerMove(e);
+      return;
+    }
+
+    if (activeTool === 'stamp' && this._float) {
       this._handleSelectPointerMove(e);
       return;
     }
@@ -778,6 +785,11 @@ export class DrawingCanvas extends LitElement {
     const { activeTool } = this.ctx.state;
 
     if (activeTool === 'select') {
+      this._handleSelectPointerUp(e);
+      return;
+    }
+
+    if (activeTool === 'stamp' && this._float) {
       this._handleSelectPointerUp(e);
       return;
     }
@@ -838,52 +850,113 @@ export class DrawingCanvas extends LitElement {
     this.composite();
   }
 
-  // --- Selection helpers ---
+  // --- Selection / floating selection helpers ---
 
-  private _isInsideSelection(p: Point): boolean {
-    if (!this._selection) return false;
-    const { x, y, w, h } = this._selection;
+  private static readonly HANDLE_SIZE = 8;
+
+  private _handleSizeDoc(): number {
+    return DrawingCanvas.HANDLE_SIZE / this._zoom;
+  }
+
+  private _hitTestHandle(p: Point): ResizeHandle | null {
+    if (!this._float) return null;
+    const { x, y, w, h } = this._float.currentRect;
+    const hs = this._handleSizeDoc();
+    const half = hs / 2;
+
+    const handles: { handle: ResizeHandle; cx: number; cy: number }[] = [
+      { handle: 'nw', cx: x, cy: y },
+      { handle: 'n',  cx: x + w / 2, cy: y },
+      { handle: 'ne', cx: x + w, cy: y },
+      { handle: 'e',  cx: x + w, cy: y + h / 2 },
+      { handle: 'se', cx: x + w, cy: y + h },
+      { handle: 's',  cx: x + w / 2, cy: y + h },
+      { handle: 'sw', cx: x, cy: y + h },
+      { handle: 'w',  cx: x, cy: y + h / 2 },
+    ];
+
+    for (const { handle, cx, cy } of handles) {
+      if (p.x >= cx - half && p.x <= cx + half && p.y >= cy - half && p.y <= cy + half) {
+        return handle;
+      }
+    }
+    return null;
+  }
+
+  private _isInsideFloat(p: Point): boolean {
+    if (!this._float) return false;
+    const { x, y, w, h } = this._float.currentRect;
     return p.x >= x && p.x <= x + w && p.y >= y && p.y <= y + h;
   }
 
+  private _handleCursor(handle: ResizeHandle): string {
+    const cursors: Record<ResizeHandle, string> = {
+      nw: 'nwse-resize', n: 'ns-resize', ne: 'nesw-resize', e: 'ew-resize',
+      se: 'nwse-resize', s: 'ns-resize', sw: 'nesw-resize', w: 'ew-resize',
+    };
+    return cursors[handle];
+  }
+
   private _handleSelectPointerDown(p: Point) {
-    if (this._selection && this._isInsideSelection(p)) {
-      // Start moving existing selection
-      this._selectionMoving = true;
-      this._selectionOffset = {
-        x: p.x - this._selection.x,
-        y: p.y - this._selection.y,
+    const handle = this._hitTestHandle(p);
+    if (handle) {
+      this._floatResizing = true;
+      this._floatResizeHandle = handle;
+      this._floatResizeOrigin = {
+        rect: { ...this._float!.currentRect },
+        point: { x: p.x, y: p.y },
       };
-      if (!this._selectionImageData) {
-        this._liftSelection();
-      }
       this._stopSelectionAnimation();
-    } else {
-      // Commit any existing selection, start drawing new one
-      this._commitSelection();
-      this._selectionDrawing = true;
-      this._startPoint = p;
+      return;
     }
+
+    if (this._float && this._isInsideFloat(p)) {
+      this._floatMoving = true;
+      this._floatDragOffset = {
+        x: p.x - this._float.currentRect.x,
+        y: p.y - this._float.currentRect.y,
+      };
+      this._stopSelectionAnimation();
+      return;
+    }
+
+    this._commitFloat();
+    this._selectionDrawing = true;
+    this._startPoint = p;
   }
 
   private _handleSelectPointerMove(e: PointerEvent) {
     const p = this._getDocPoint(e);
 
-    // Update cursor
-    if (this._selectionMoving || this._isInsideSelection(p)) {
+    if (this._floatResizing) {
+      this.mainCanvas.style.cursor = this._handleCursor(this._floatResizeHandle!);
+    } else if (this._floatMoving) {
       this.mainCanvas.style.cursor = 'move';
     } else {
-      this.mainCanvas.style.cursor = 'crosshair';
+      const handle = this._hitTestHandle(p);
+      if (handle) {
+        this.mainCanvas.style.cursor = this._handleCursor(handle);
+      } else if (this._isInsideFloat(p)) {
+        this.mainCanvas.style.cursor = 'move';
+      } else {
+        this.mainCanvas.style.cursor = 'crosshair';
+      }
     }
 
-    if (this._selectionMoving && this._selection && this._selectionOffset) {
-      this._selection = {
-        ...this._selection,
-        x: p.x - this._selectionOffset.x,
-        y: p.y - this._selectionOffset.y,
-      };
-      this._redrawSelectionPreview();
-    } else if (this._selectionDrawing && this._startPoint) {
+    if (this._floatResizing && this._float && this._floatResizeOrigin) {
+      this._applyResize(p);
+      this._redrawFloatPreview();
+      return;
+    }
+
+    if (this._floatMoving && this._float && this._floatDragOffset) {
+      this._float.currentRect.x = p.x - this._floatDragOffset.x;
+      this._float.currentRect.y = p.y - this._floatDragOffset.y;
+      this._redrawFloatPreview();
+      return;
+    }
+
+    if (this._selectionDrawing && this._startPoint) {
       const previewCtx = this.previewCanvas.getContext('2d')!;
       previewCtx.clearRect(0, 0, this._vw, this._vh);
       const x = Math.min(this._startPoint.x, p.x);
@@ -899,17 +972,24 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _handleSelectPointerUp(e: PointerEvent) {
-    const p = this._getDocPoint(e);
-
-    if (this._selectionMoving) {
-      this._dropSelection();
-      this._pushDrawHistory();
-      this.composite();
-      this._selectionMoving = false;
-      this._selectionOffset = null;
+    if (this._floatResizing) {
+      this._floatResizing = false;
+      this._floatResizeHandle = null;
+      this._floatResizeOrigin = null;
       this._startSelectionAnimation();
-    } else if (this._selectionDrawing && this._startPoint) {
+      return;
+    }
+
+    if (this._floatMoving) {
+      this._floatMoving = false;
+      this._floatDragOffset = null;
+      this._startSelectionAnimation();
+      return;
+    }
+
+    if (this._selectionDrawing && this._startPoint) {
       this._selectionDrawing = false;
+      const p = this._getDocPoint(e);
       const x = Math.min(this._startPoint.x, p.x);
       const y = Math.min(this._startPoint.y, p.y);
       const w = Math.abs(p.x - this._startPoint.x);
@@ -917,58 +997,82 @@ export class DrawingCanvas extends LitElement {
       this._startPoint = null;
 
       if (w < 2 || h < 2) {
-        // Too small, clear preview
         const previewCtx = this.previewCanvas.getContext('2d')!;
         previewCtx.clearRect(0, 0, this._vw, this._vh);
         return;
       }
 
-      this._selection = { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
-      this._startSelectionAnimation();
+      this._liftToFloat(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
     }
   }
 
-  private _liftSelection() {
-    if (!this._selection) return;
-    const { x, y, w, h } = this._selection;
+  // --- Float lifecycle methods ---
+
+  private _liftToFloat(x: number, y: number, w: number, h: number) {
     const layerCtx = this._getActiveLayerCtx();
     if (!layerCtx) return;
     this._captureBeforeDraw();
-    this._selectionImageData = layerCtx.getImageData(x, y, w, h);
-    // Cache temp canvas for zoom-aware rendering in _redrawSelectionPreview
+    const imageData = layerCtx.getImageData(x, y, w, h);
+    layerCtx.clearRect(x, y, w, h);
+    this.composite();
+
     const tmp = document.createElement('canvas');
     tmp.width = w;
     tmp.height = h;
-    tmp.getContext('2d')!.putImageData(this._selectionImageData, 0, 0);
-    this._selectionTmpCanvas = tmp;
-    // Clear the area on the active layer (transparent)
-    layerCtx.clearRect(x, y, w, h);
-    this.composite();
+    tmp.getContext('2d')!.putImageData(imageData, 0, 0);
+
+    this._float = {
+      originalImageData: imageData,
+      sourceRect: { x, y, w, h },
+      currentRect: { x, y, w, h },
+      tempCanvas: tmp,
+    };
+    this._startSelectionAnimation();
   }
 
-  private _dropSelection() {
-    if (!this._selection || !this._selectionImageData) return;
+  private _createFloatFromImage(img: HTMLImageElement, centerX: number, centerY: number, size: number) {
+    const scale = size / Math.max(img.naturalWidth, img.naturalHeight);
+    const w = Math.round(img.naturalWidth * scale);
+    const h = Math.round(img.naturalHeight * scale);
+    const x = Math.round(centerX - w / 2);
+    const y = Math.round(centerY - h / 2);
+
+    const tmp = document.createElement('canvas');
+    tmp.width = w;
+    tmp.height = h;
+    const tmpCtx = tmp.getContext('2d')!;
+    tmpCtx.drawImage(img, 0, 0, w, h);
+    const imageData = tmpCtx.getImageData(0, 0, w, h);
+
+    this._float = {
+      originalImageData: imageData,
+      sourceRect: { x, y, w, h },
+      currentRect: { x, y, w, h },
+      tempCanvas: tmp,
+    };
+    this._startSelectionAnimation();
+  }
+
+  private _commitFloat() {
+    if (!this._float) return;
     const layerCtx = this._getActiveLayerCtx();
     if (!layerCtx) return;
-    layerCtx.putImageData(this._selectionImageData, this._selection.x, this._selection.y);
-    this._selectionImageData = null;
+
+    const { currentRect, tempCanvas } = this._float;
+    layerCtx.drawImage(tempCanvas, currentRect.x, currentRect.y, currentRect.w, currentRect.h);
+
+    this._pushDrawHistory();
     this.composite();
+    this._clearFloatState();
   }
 
-  private _commitSelection() {
-    if (!this._selection || !this.mainCanvas) return;
-    if (this._selectionImageData) {
-      this._dropSelection();
-    }
-    this._clearSelectionState();
-  }
-
-  private _clearSelectionState() {
-    this._selection = null;
-    this._selectionImageData = null;
-    this._selectionTmpCanvas = null;
-    this._selectionMoving = false;
-    this._selectionOffset = null;
+  private _clearFloatState() {
+    this._float = null;
+    this._floatMoving = false;
+    this._floatResizing = false;
+    this._floatResizeHandle = null;
+    this._floatDragOffset = null;
+    this._floatResizeOrigin = null;
     this._selectionDrawing = false;
     this._stopSelectionAnimation();
     if (this.previewCanvas) {
@@ -977,40 +1081,126 @@ export class DrawingCanvas extends LitElement {
     }
   }
 
-  private _redrawSelectionPreview() {
+  private _rebuildTempCanvas() {
+    if (!this._float) return;
+    const { originalImageData, currentRect } = this._float;
+
+    const src = document.createElement('canvas');
+    src.width = originalImageData.width;
+    src.height = originalImageData.height;
+    src.getContext('2d')!.putImageData(originalImageData, 0, 0);
+
+    const tmp = document.createElement('canvas');
+    tmp.width = Math.max(1, Math.round(currentRect.w));
+    tmp.height = Math.max(1, Math.round(currentRect.h));
+    tmp.getContext('2d')!.drawImage(src, 0, 0, tmp.width, tmp.height);
+
+    this._float.tempCanvas = tmp;
+  }
+
+  private _applyResize(p: Point) {
+    if (!this._float || !this._floatResizeOrigin) return;
+    const { rect: orig, point: start } = this._floatResizeOrigin;
+    const dx = p.x - start.x;
+    const dy = p.y - start.y;
+    const handle = this._floatResizeHandle!;
+    const cur = this._float.currentRect;
+
+    const minSize = 4 / this._zoom;
+
+    let newX = orig.x, newY = orig.y, newW = orig.w, newH = orig.h;
+
+    if (handle === 'nw' || handle === 'w' || handle === 'sw') {
+      newX = orig.x + dx;
+      newW = orig.w - dx;
+    } else if (handle === 'ne' || handle === 'e' || handle === 'se') {
+      newW = orig.w + dx;
+    }
+
+    if (handle === 'nw' || handle === 'n' || handle === 'ne') {
+      newY = orig.y + dy;
+      newH = orig.h - dy;
+    } else if (handle === 'sw' || handle === 's' || handle === 'se') {
+      newH = orig.h + dy;
+    }
+
+    if (handle === 'nw' || handle === 'ne' || handle === 'se' || handle === 'sw') {
+      const aspect = orig.w / orig.h;
+      if (Math.abs(newW - orig.w) / orig.w > Math.abs(newH - orig.h) / orig.h) {
+        newH = newW / aspect;
+      } else {
+        newW = newH * aspect;
+      }
+      if (handle === 'nw') {
+        newX = orig.x + orig.w - newW;
+        newY = orig.y + orig.h - newH;
+      } else if (handle === 'ne') {
+        newY = orig.y + orig.h - newH;
+      } else if (handle === 'sw') {
+        newX = orig.x + orig.w - newW;
+      }
+    }
+
+    if (newW < minSize) { newW = minSize; }
+    if (newH < minSize) { newH = minSize; }
+
+    cur.x = newX;
+    cur.y = newY;
+    cur.w = newW;
+    cur.h = newH;
+
+    this._rebuildTempCanvas();
+  }
+
+  private _redrawFloatPreview() {
     const previewCtx = this.previewCanvas.getContext('2d')!;
     previewCtx.clearRect(0, 0, this._vw, this._vh);
 
-    // Draw lifted selection via cached temp canvas (drawImage respects transforms, putImageData doesn't)
-    if (this._selectionTmpCanvas && this._selection) {
-      previewCtx.save();
-      previewCtx.translate(this._panX, this._panY);
-      previewCtx.scale(this._zoom, this._zoom);
-      previewCtx.drawImage(this._selectionTmpCanvas, this._selection.x, this._selection.y);
-      previewCtx.restore();
-    }
+    if (!this._float) return;
+    const { currentRect, tempCanvas } = this._float;
 
-    if (this._selection) {
-      previewCtx.save();
-      previewCtx.translate(this._panX, this._panY);
-      previewCtx.scale(this._zoom, this._zoom);
-      drawSelectionRect(
-        previewCtx,
-        this._selection.x,
-        this._selection.y,
-        this._selection.w,
-        this._selection.h,
-        this._selectionDashOffset,
-      );
-      previewCtx.restore();
+    previewCtx.save();
+    previewCtx.translate(this._panX, this._panY);
+    previewCtx.scale(this._zoom, this._zoom);
+    previewCtx.drawImage(tempCanvas, currentRect.x, currentRect.y, currentRect.w, currentRect.h);
+    drawSelectionRect(previewCtx, currentRect.x, currentRect.y, currentRect.w, currentRect.h, this._selectionDashOffset);
+    previewCtx.restore();
+
+    this._drawResizeHandles(previewCtx);
+  }
+
+  private _drawResizeHandles(ctx: CanvasRenderingContext2D) {
+    if (!this._float) return;
+    const { x, y, w, h } = this._float.currentRect;
+    const hs = DrawingCanvas.HANDLE_SIZE;
+    const half = hs / 2;
+
+    const positions: [number, number][] = [
+      [x, y], [x + w / 2, y], [x + w, y],
+      [x + w, y + h / 2],
+      [x + w, y + h], [x + w / 2, y + h], [x, y + h],
+      [x, y + h / 2],
+    ];
+
+    ctx.save();
+    for (const [cx, cy] of positions) {
+      const sx = cx * this._zoom + this._panX;
+      const sy = cy * this._zoom + this._panY;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(sx - half, sy - half, hs, hs);
+      ctx.strokeStyle = '#3b82f6';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([]);
+      ctx.strokeRect(sx - half, sy - half, hs, hs);
     }
+    ctx.restore();
   }
 
   private _startSelectionAnimation() {
     this._stopSelectionAnimation();
     const animate = () => {
       this._selectionDashOffset = (this._selectionDashOffset + 0.5) % 12;
-      this._redrawSelectionPreview();
+      this._redrawFloatPreview();
       this._selectionAnimFrame = requestAnimationFrame(animate);
     };
     this._selectionAnimFrame = requestAnimationFrame(animate);
@@ -1026,65 +1216,54 @@ export class DrawingCanvas extends LitElement {
   // --- Public selection API (for keyboard shortcuts) ---
 
   public copySelection() {
-    if (!this._selection) return;
-    const layerCtx = this._getActiveLayerCtx();
-    if (!layerCtx) return;
-    // If content is currently lifted, copy from the lifted data
-    if (this._selectionImageData) {
-      this._clipboard = new ImageData(
-        new Uint8ClampedArray(this._selectionImageData.data),
-        this._selectionImageData.width,
-        this._selectionImageData.height,
-      );
-    } else {
-      const { x, y, w, h } = this._selection;
-      this._clipboard = layerCtx.getImageData(x, y, w, h);
-    }
-    this._clipboardOrigin = { x: this._selection.x, y: this._selection.y };
+    if (!this._float) return;
+    this._clipboard = new ImageData(
+      new Uint8ClampedArray(this._float.originalImageData.data),
+      this._float.originalImageData.width,
+      this._float.originalImageData.height,
+    );
+    this._clipboardOrigin = { x: this._float.currentRect.x, y: this._float.currentRect.y };
   }
 
   public cutSelection() {
-    if (!this._selection) return;
+    if (!this._float) return;
     this.copySelection();
     this.deleteSelection();
   }
 
   public pasteSelection() {
     if (!this._clipboard || !this._clipboardOrigin) return;
-    this._commitSelection();
+    this._commitFloat();
     this._captureBeforeDraw();
-    const layerCtx = this._getActiveLayerCtx();
-    if (!layerCtx) return;
-    layerCtx.putImageData(this._clipboard, this._clipboardOrigin.x, this._clipboardOrigin.y);
-    this._selection = {
-      x: this._clipboardOrigin.x,
-      y: this._clipboardOrigin.y,
-      w: this._clipboard.width,
-      h: this._clipboard.height,
+
+    const w = this._clipboard.width;
+    const h = this._clipboard.height;
+    const tmp = document.createElement('canvas');
+    tmp.width = w;
+    tmp.height = h;
+    tmp.getContext('2d')!.putImageData(this._clipboard, 0, 0);
+
+    this._float = {
+      originalImageData: new ImageData(
+        new Uint8ClampedArray(this._clipboard.data),
+        w, h,
+      ),
+      sourceRect: { x: this._clipboardOrigin.x, y: this._clipboardOrigin.y, w, h },
+      currentRect: { x: this._clipboardOrigin.x, y: this._clipboardOrigin.y, w, h },
+      tempCanvas: tmp,
     };
-    this._pushDrawHistory();
-    this.composite();
     this._startSelectionAnimation();
   }
 
   public deleteSelection() {
-    if (!this._selection) return;
-    const { x, y, w, h } = this._selection;
-    // If content was lifted, just discard it
-    this._selectionImageData = null;
-    // Clear the area on the active layer (transparent)
-    this._captureBeforeDraw();
-    const layerCtx = this._getActiveLayerCtx();
-    if (layerCtx) {
-      layerCtx.clearRect(x, y, w, h);
-    }
+    if (!this._float) return;
     this._pushDrawHistory();
     this.composite();
-    this._clearSelectionState();
+    this._clearFloatState();
   }
 
   public clearSelection() {
-    this._commitSelection();
+    this._commitFloat();
   }
 
   override connectedCallback() {

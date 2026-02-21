@@ -16,6 +16,17 @@ export interface Point {
   y: number;
 }
 
+export interface FloatingSelection {
+  /** Original pixel content — never mutated, used as resize source */
+  originalImageData: ImageData;
+  /** Original position before any moves (for undo) */
+  sourceRect: { x: number; y: number; w: number; h: number };
+  /** Current position + size (updated on move/resize) */
+  currentRect: { x: number; y: number; w: number; h: number };
+  /** Cached render of originalImageData at currentRect size */
+  tempCanvas: HTMLCanvasElement;
+}
+
 export interface Layer {
   id: string;
   name: string;
