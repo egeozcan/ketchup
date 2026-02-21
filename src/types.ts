@@ -1,5 +1,6 @@
 export type ToolType =
   | 'select'
+  | 'move'
   | 'pencil'
   | 'marker'
   | 'eraser'

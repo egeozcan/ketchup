@@ -12,6 +12,17 @@ export const toolIcons: Record<ToolType, ReturnType<typeof svg>> = {
       <rect x="4" y="4" width="16" height="16" stroke-dasharray="4 4" />
     </svg>`,
 
+  // Move — four-directional arrow (move layer content)
+  move: svg`
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="5 9 2 12 5 15"/>
+      <polyline points="9 5 12 2 15 5"/>
+      <polyline points="15 19 12 22 9 19"/>
+      <polyline points="19 9 22 12 19 15"/>
+      <line x1="2" y1="12" x2="22" y2="12"/>
+      <line x1="12" y1="2" x2="12" y2="22"/>
+    </svg>`,
+
   // Pencil — classic pencil shape
   pencil: svg`
     <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -116,6 +127,7 @@ export const actionIcons = {
 
 export const toolLabels: Record<ToolType, string> = {
   select: 'Select',
+  move: 'Move',
   pencil: 'Pencil',
   marker: 'Marker',
   eraser: 'Eraser',
