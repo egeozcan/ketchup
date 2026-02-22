@@ -1054,11 +1054,20 @@ export class DrawingCanvas extends LitElement {
     if (this._selectionDrawing && this._startPoint) {
       this._selectionDrawing = false;
       const p = this._getDocPoint(e);
-      const x = Math.min(this._startPoint.x, p.x);
-      const y = Math.min(this._startPoint.y, p.y);
-      const w = Math.abs(p.x - this._startPoint.x);
-      const h = Math.abs(p.y - this._startPoint.y);
+      const rawLeft = Math.min(this._startPoint.x, p.x);
+      const rawTop = Math.min(this._startPoint.y, p.y);
+      const rawRight = Math.max(this._startPoint.x, p.x);
+      const rawBottom = Math.max(this._startPoint.y, p.y);
       this._startPoint = null;
+
+      // Clamp selection bounds to document so getImageData never receives
+      // out-of-range coordinates.
+      const x = Math.max(0, Math.min(this._docWidth, rawLeft));
+      const y = Math.max(0, Math.min(this._docHeight, rawTop));
+      const right = Math.max(0, Math.min(this._docWidth, rawRight));
+      const bottom = Math.max(0, Math.min(this._docHeight, rawBottom));
+      const w = right - x;
+      const h = bottom - y;
 
       if (w < 2 || h < 2) {
         const previewCtx = this.previewCanvas.getContext('2d')!;
@@ -1075,25 +1084,31 @@ export class DrawingCanvas extends LitElement {
   private _liftToFloat(x: number, y: number, w: number, h: number) {
     const layerCtx = this._getActiveLayerCtx();
     if (!layerCtx) return;
+    const clampedX = Math.max(0, Math.min(this._docWidth, x));
+    const clampedY = Math.max(0, Math.min(this._docHeight, y));
+    const clampedW = Math.max(0, Math.min(w, this._docWidth - clampedX));
+    const clampedH = Math.max(0, Math.min(h, this._docHeight - clampedY));
+    if (clampedW < 1 || clampedH < 1) return;
+
     this._captureBeforeDraw();
-    const imageData = layerCtx.getImageData(x, y, w, h);
-    layerCtx.clearRect(x, y, w, h);
+    const imageData = layerCtx.getImageData(clampedX, clampedY, clampedW, clampedH);
+    layerCtx.clearRect(clampedX, clampedY, clampedW, clampedH);
     this.composite();
 
     const src = document.createElement('canvas');
-    src.width = w;
-    src.height = h;
+    src.width = clampedW;
+    src.height = clampedH;
     src.getContext('2d')!.putImageData(imageData, 0, 0);
     this._floatSrcCanvas = src;
 
     const tmp = document.createElement('canvas');
-    tmp.width = w;
-    tmp.height = h;
+    tmp.width = clampedW;
+    tmp.height = clampedH;
     tmp.getContext('2d')!.drawImage(src, 0, 0);
 
     this._float = {
       originalImageData: imageData,
-      currentRect: { x, y, w, h },
+      currentRect: { x: clampedX, y: clampedY, w: clampedW, h: clampedH },
       tempCanvas: tmp,
     };
     this._startSelectionAnimation();

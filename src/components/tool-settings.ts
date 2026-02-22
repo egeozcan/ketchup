@@ -633,6 +633,7 @@ export class ToolSettings extends LitElement {
   }
 
   private _onRenameKeydown(e: KeyboardEvent, id: string) {
+    e.stopPropagation();
     if (e.key === 'Enter') {
       this._commitRename(e, id);
     } else if (e.key === 'Escape') {
@@ -702,6 +703,7 @@ export class ToolSettings extends LitElement {
   }
 
   private _onCustomSizeKeydown(e: KeyboardEvent) {
+    e.stopPropagation();
     if (e.key === 'Enter') {
       this._applyCustomSize();
     }

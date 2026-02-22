@@ -68,10 +68,26 @@ export class DrawingApp extends LitElement {
 
   /** Sentinel value that never matches a real _historyVersion, forcing full history rewrite. */
   private static readonly FORCE_FULL_HISTORY_SAVE = -1;
+  private static readonly NON_TEXT_INPUT_TYPES = new Set([
+    'button',
+    'checkbox',
+    'color',
+    'file',
+    'hidden',
+    'image',
+    'radio',
+    'range',
+    'reset',
+    'submit',
+  ]);
 
   private _dirty = false;
   private _saveTimer: ReturnType<typeof setTimeout> | null = null;
   private _saveInProgress = false;
+  private _savePromise: Promise<void> | null = null;
+  private _saveRequested = false;
+  private _forceFlushNextSave = false;
+  private _dirtyVersion = 0;
   private _lastSavedHistoryLength = 0;
   private _lastSavedHistoryVersion = 0;
 
@@ -135,107 +151,209 @@ export class DrawingApp extends LitElement {
       clearTimeout(this._saveTimer);
       this._saveTimer = null;
     }
-    this._save(true);
+    void this._save(true);
+  }
+
+  /** Cancel debounce and await save completion, including any in-flight save. */
+  private async _flushPendingSaveAndWait() {
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    await this._save(true);
   }
 
   private _markDirty() {
     this._dirty = true;
+    this._dirtyVersion++;
+    this._saveRequested = true;
     if (this._saveTimer) clearTimeout(this._saveTimer);
-    this._saveTimer = setTimeout(() => this._save(), 500);
+    this._saveTimer = setTimeout(() => {
+      void this._save();
+    }, 500);
   }
 
   private async _save(flushing = false) {
-    if (!this._currentProject || !this._dirty) return;
-    if (this._saveInProgress) {
-      if (this._saveTimer) clearTimeout(this._saveTimer);
-      this._saveTimer = setTimeout(() => this._save(), 500);
-      return;
+    if (this._savePromise) {
+      if (flushing) this._forceFlushNextSave = true;
+      if (this._dirty) this._saveRequested = true;
+      return this._savePromise;
     }
-    this._saveInProgress = true;
-    this._saving = true;
-    const saveStartTime = Date.now();
-    try {
-      // Synchronously snapshot all mutable data before any awaits
-      const layerSnapshots = this._state.layers.map(l => ({
-        id: l.id,
-        name: l.name,
-        visible: l.visible,
-        opacity: l.opacity,
-        imageData: l.canvas.getContext('2d')!.getImageData(0, 0, l.canvas.width, l.canvas.height),
-      }));
-      const historySnapshot = this.canvas?.getHistory() ?? [];
-      const historyIndex = this.canvas?.getHistoryIndex() ?? -1;
-      const historyVersion = this.canvas?.getHistoryVersion() ?? 0;
+    if (!this._currentProject || !this._dirty) return;
 
-      // Determine incremental vs full history save
-      const versionChanged = historyVersion !== this._lastSavedHistoryVersion;
-      const clearExistingHistory = versionChanged;
-      const entriesToSave = versionChanged
-        ? historySnapshot
-        : historySnapshot.slice(this._lastSavedHistoryLength);
-      const startIndex = versionChanged ? 0 : this._lastSavedHistoryLength;
+    this._savePromise = (async () => {
+      this._saveInProgress = true;
+      this._saving = true;
+      let flushingThisRun = flushing;
+      try {
+        while (this._currentProject && this._dirty) {
+          const projectId = this._currentProject.id;
+          const dirtyVersionAtSnapshot = this._dirtyVersion;
+          const saveStartTime = Date.now();
+          const forceFlush = this._forceFlushNextSave;
+          this._forceFlushNextSave = false;
+          this._saveRequested = false;
+          const skipDelay = flushingThisRun || forceFlush;
 
-      // Async serialization from snapshots (not live canvas)
-      const layers = await Promise.all(
-        layerSnapshots.map(snap => serializeLayerFromImageData(snap, snap.imageData)),
-      );
+          // Synchronously snapshot all mutable data before any awaits
+          const layerSnapshots = this._state.layers.map(l => ({
+            id: l.id,
+            name: l.name,
+            visible: l.visible,
+            opacity: l.opacity,
+            imageData: l.canvas.getContext('2d')!.getImageData(0, 0, l.canvas.width, l.canvas.height),
+          }));
+          const historySnapshot = this.canvas?.getHistory() ?? [];
+          const historyIndex = this.canvas?.getHistoryIndex() ?? -1;
+          const historyVersion = this.canvas?.getHistoryVersion() ?? 0;
 
-      const stateRecord = {
-        projectId: this._currentProject.id,
-        toolSettings: {
-          activeTool: this._state.activeTool,
-          strokeColor: this._state.strokeColor,
-          fillColor: this._state.fillColor,
-          useFill: this._state.useFill,
-          brushSize: this._state.brushSize,
-        },
-        canvasWidth: this._state.documentWidth,
-        canvasHeight: this._state.documentHeight,
-        layers,
-        activeLayerId: this._state.activeLayerId,
-        layersPanelOpen: this._state.layersPanelOpen,
-        historyIndex,
-      };
+          // Determine incremental vs full history save
+          const versionChanged = historyVersion !== this._lastSavedHistoryVersion;
+          const clearExistingHistory = versionChanged;
+          const entriesToSave = versionChanged
+            ? historySnapshot
+            : historySnapshot.slice(this._lastSavedHistoryLength);
+          const startIndex = versionChanged ? 0 : this._lastSavedHistoryLength;
 
-      let thumbnail: Blob | null = null;
-      if (this.canvas?.mainCanvas) {
-        try { thumbnail = await canvasToBlob(this.canvas.mainCanvas); } catch { /* non-critical */ }
-      }
+          // Async serialization from snapshots (not live canvas)
+          const layers = await Promise.all(
+            layerSnapshots.map(snap => serializeLayerFromImageData(snap, snap.imageData)),
+          );
 
-      await saveProjectState(
-        this._currentProject.id,
-        stateRecord,
-        entriesToSave,
-        startIndex,
-        clearExistingHistory,
-        thumbnail,
-      );
+          const stateRecord = {
+            projectId,
+            toolSettings: {
+              activeTool: this._state.activeTool,
+              strokeColor: this._state.strokeColor,
+              fillColor: this._state.fillColor,
+              useFill: this._state.useFill,
+              brushSize: this._state.brushSize,
+            },
+            canvasWidth: this._state.documentWidth,
+            canvasHeight: this._state.documentHeight,
+            layers,
+            activeLayerId: this._state.activeLayerId,
+            layersPanelOpen: this._state.layersPanelOpen,
+            historyIndex,
+          };
 
-      this._dirty = false;
-      this._lastSavedHistoryLength = historySnapshot.length;
-      this._lastSavedHistoryVersion = historyVersion;
-      this._projectList = await listProjects();
+          let thumbnail: Blob | null = null;
+          if (this.canvas?.mainCanvas) {
+            try { thumbnail = await canvasToBlob(this.canvas.mainCanvas); } catch { /* non-critical */ }
+          }
 
-      // Show saving indicator for a minimum duration so it doesn't flash,
-      // but skip the delay when flushing (beforeunload/visibilitychange)
-      // to avoid data loss on page close.
-      if (!flushing) {
-        const elapsed = Date.now() - saveStartTime;
-        if (elapsed < 1500) {
-          await new Promise(resolve => setTimeout(resolve, 1500 - elapsed));
+          await saveProjectState(
+            projectId,
+            stateRecord,
+            entriesToSave,
+            startIndex,
+            clearExistingHistory,
+            thumbnail,
+          );
+
+          // Only apply save cursors if we are still on the same project.
+          if (this._currentProject?.id === projectId) {
+            this._lastSavedHistoryLength = historySnapshot.length;
+            this._lastSavedHistoryVersion = historyVersion;
+            // Keep dirty=true if new edits landed while this save was in flight.
+            if (this._dirtyVersion === dirtyVersionAtSnapshot) {
+              this._dirty = false;
+            }
+          }
+
+          this._projectList = await listProjects();
+
+          // Show saving indicator for a minimum duration so it doesn't flash,
+          // but skip the delay when flushing (beforeunload/visibilitychange)
+          // to avoid data loss on page close.
+          if (!skipDelay) {
+            const elapsed = Date.now() - saveStartTime;
+            if (elapsed < 1500) {
+              await new Promise(resolve => setTimeout(resolve, 1500 - elapsed));
+            }
+          }
+
+          if (!this._saveRequested || !this._dirty) {
+            break;
+          }
+          flushingThisRun = false;
         }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'QuotaExceededError') {
+          console.error('Storage quota exceeded. Consider deleting old projects to free space.');
+        } else {
+          console.error('Save failed:', err);
+        }
+      } finally {
+        this._saving = false;
+        this._saveInProgress = false;
       }
-    } catch (err) {
-      if (err instanceof DOMException && err.name === 'QuotaExceededError') {
-        console.error('Storage quota exceeded. Consider deleting old projects to free space.');
-      } else {
-        console.error('Save failed:', err);
-      }
+    })();
+
+    try {
+      await this._savePromise;
     } finally {
-      this._saving = false;
-      this._saveInProgress = false;
+      this._savePromise = null;
     }
   }
+
+  private _isTextEntryTarget(e: KeyboardEvent): boolean {
+    for (const node of e.composedPath()) {
+      if (!(node instanceof HTMLElement)) continue;
+      if (node.isContentEditable) return true;
+      if (node instanceof HTMLTextAreaElement) return true;
+      if (node instanceof HTMLInputElement) {
+        return !DrawingApp.NON_TEXT_INPUT_TYPES.has(node.type);
+      }
+    }
+    return false;
+  }
+
+  private _onCommitOpacity(e: CustomEvent) {
+    const { layerId, before, after } = e.detail;
+    this.canvas?.pushLayerOperation({ type: 'opacity', layerId, before, after });
+    this._markDirty();
+  }
+
+  private _onKeyDown = (e: KeyboardEvent) => {
+    if (this._isTextEntryTarget(e)) {
+      return;
+    }
+    const ctrl = e.ctrlKey || e.metaKey;
+    if (ctrl && e.key === 'z' && !e.shiftKey) {
+      e.preventDefault();
+      this.canvas?.undo();
+    } else if (ctrl && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+      e.preventDefault();
+      this.canvas?.redo();
+    } else if (ctrl && e.key === 'c') {
+      e.preventDefault();
+      this.canvas?.copySelection();
+    } else if (ctrl && e.key === 'x') {
+      e.preventDefault();
+      this.canvas?.cutSelection();
+    } else if (ctrl && e.key === 'v') {
+      e.preventDefault();
+      this.canvas?.pasteSelection();
+    } else if (
+      (e.key === 'Delete' || e.key === 'Backspace') &&
+      (this._state.activeTool === 'select' || this._state.activeTool === 'stamp')
+    ) {
+      e.preventDefault();
+      this.canvas?.deleteSelection();
+    } else if (e.key === 'Escape') {
+      this.canvas?.clearSelection();
+    } else if (e.key === '0' && ctrl) {
+      e.preventDefault();
+      this.canvas?.zoomToFit();
+    } else if (ctrl && (e.key === '=' || e.key === '+')) {
+      e.preventDefault();
+      this.canvas?.zoomIn();
+    } else if (ctrl && e.key === '-') {
+      e.preventDefault();
+      this.canvas?.zoomOut();
+    }
+  };
 
   private async _resetToFreshProject() {
     this._layerCounter = 0;
@@ -430,6 +548,7 @@ export class DrawingApp extends LitElement {
       },
       toggleLayersPanel: () => {
         this._state = { ...this._state, layersPanelOpen: !this._state.layersPanelOpen };
+        this._markDirty();
       },
       setDocumentSize: (width: number, height: number) => {
         if (width === this._state.documentWidth && height === this._state.documentHeight) return;
@@ -445,6 +564,9 @@ export class DrawingApp extends LitElement {
         this._state = { ...this._state, documentWidth: width, documentHeight: height };
         // Clear history — old ImageData dimensions are incompatible
         this.canvas?.setHistory([], -1);
+        // Force persistence to clear incompatible on-disk history entries.
+        this._lastSavedHistoryLength = 0;
+        this._lastSavedHistoryVersion = DrawingApp.FORCE_FULL_HISTORY_SAVE;
         this.canvas?.centerDocument();
         this.canvas?.composite();
         this._markDirty();
@@ -458,7 +580,9 @@ export class DrawingApp extends LitElement {
       switchProject: (id: string) => {
         if (id === this._currentProject?.id) return;
         const doSwitch = async () => {
-          if (this._dirty) await this._save();
+          if (this._savePromise || this._dirty) {
+            await this._flushPendingSaveAndWait();
+          }
           const meta = this._projectList.find(p => p.id === id);
           if (!meta) return;
           this._currentProject = meta;
@@ -468,7 +592,9 @@ export class DrawingApp extends LitElement {
       },
       createProject: (name: string) => {
         const doCreate = async () => {
-          if (this._dirty) await this._save();
+          if (this._savePromise || this._dirty) {
+            await this._flushPendingSaveAndWait();
+          }
           const meta = await createProjectInDB(name);
           this._currentProject = meta;
           this._projectList = await listProjects();
@@ -589,49 +715,6 @@ export class DrawingApp extends LitElement {
       this._saveTimer = null;
     }
   }
-
-  private _onCommitOpacity(e: CustomEvent) {
-    const { layerId, before, after } = e.detail;
-    this.canvas?.pushLayerOperation({ type: 'opacity', layerId, before, after });
-    this._markDirty();
-  }
-
-  private _onKeyDown = (e: KeyboardEvent) => {
-    const ctrl = e.ctrlKey || e.metaKey;
-    if (ctrl && e.key === 'z' && !e.shiftKey) {
-      e.preventDefault();
-      this.canvas?.undo();
-    } else if (ctrl && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
-      e.preventDefault();
-      this.canvas?.redo();
-    } else if (ctrl && e.key === 'c') {
-      e.preventDefault();
-      this.canvas?.copySelection();
-    } else if (ctrl && e.key === 'x') {
-      e.preventDefault();
-      this.canvas?.cutSelection();
-    } else if (ctrl && e.key === 'v') {
-      e.preventDefault();
-      this.canvas?.pasteSelection();
-    } else if (
-      (e.key === 'Delete' || e.key === 'Backspace') &&
-      (this._state.activeTool === 'select' || this._state.activeTool === 'stamp')
-    ) {
-      e.preventDefault();
-      this.canvas?.deleteSelection();
-    } else if (e.key === 'Escape') {
-      this.canvas?.clearSelection();
-    } else if (e.key === '0' && ctrl) {
-      e.preventDefault();
-      this.canvas?.zoomToFit();
-    } else if (ctrl && (e.key === '=' || e.key === '+')) {
-      e.preventDefault();
-      this.canvas?.zoomIn();
-    } else if (ctrl && e.key === '-') {
-      e.preventDefault();
-      this.canvas?.zoomOut();
-    }
-  };
 
   override render() {
     return html`
