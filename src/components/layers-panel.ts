@@ -749,9 +749,7 @@ export class LayersPanel extends LitElement {
       // Mini checkerboard to show transparency
       this._drawMiniCheckerboard(ctx, thumb.width, thumb.height);
       // Scale layer content to thumbnail
-      if (layer.visible) {
-        ctx.globalAlpha = layer.opacity;
-      }
+      ctx.globalAlpha = layer.opacity;
       ctx.drawImage(layer.canvas, 0, 0, thumb.width, thumb.height);
       ctx.globalAlpha = 1.0;
     });

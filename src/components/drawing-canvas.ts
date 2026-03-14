@@ -526,6 +526,11 @@ export class DrawingCanvas extends LitElement {
       exportCtx.drawImage(layer.canvas, 0, 0);
       exportCtx.globalAlpha = 1.0;
     }
+    // Include active floating selection so the export matches what the user sees
+    if (this._float) {
+      const { currentRect, tempCanvas } = this._float;
+      exportCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y));
+    }
     const link = document.createElement('a');
     link.download = 'drawing.png';
     link.href = exportCanvas.toDataURL('image/png');
@@ -573,10 +578,16 @@ export class DrawingCanvas extends LitElement {
     if (pointerId >= 0 && this.mainCanvas) {
       try { this.mainCanvas.releasePointerCapture(pointerId); } catch { /* already released */ }
     }
-    // Restore cursor
+    // Restore cursor to match the active tool
     if (this._ctx.value) {
       const tool = this._ctx.value.state.activeTool;
-      this.mainCanvas.style.cursor = tool === 'hand' ? 'grab' : 'crosshair';
+      if (tool === 'hand') {
+        this.mainCanvas.style.cursor = 'grab';
+      } else if (tool === 'move') {
+        this.mainCanvas.style.cursor = 'move';
+      } else {
+        this.mainCanvas.style.cursor = 'crosshair';
+      }
     }
   }
 
@@ -736,8 +747,8 @@ export class DrawingCanvas extends LitElement {
         this._handleSelectPointerDown(p);
         return;
       }
+      this._commitFloat();
       if (this.ctx.state.stampImage) {
-        this._commitFloat();
         this._captureBeforeDraw();
         this._createFloatFromImage(this.ctx.state.stampImage, p.x, p.y, this.ctx.state.brushSize * 10);
       }
@@ -1075,7 +1086,18 @@ export class DrawingCanvas extends LitElement {
         return;
       }
 
-      this._liftToFloat(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+      // Round endpoints first, then derive dimensions so the lifted region
+      // exactly covers the rounded pixel boundaries.
+      const rx = Math.round(x);
+      const ry = Math.round(y);
+      const rw = Math.round(right) - rx;
+      const rh = Math.round(bottom) - ry;
+      if (rw < 1 || rh < 1) {
+        const previewCtx = this.previewCanvas.getContext('2d')!;
+        previewCtx.clearRect(0, 0, this._vw, this._vh);
+        return;
+      }
+      this._liftToFloat(rx, ry, rw, rh);
     }
   }
 
@@ -1145,6 +1167,10 @@ export class DrawingCanvas extends LitElement {
     if (!this._float) return;
     const layerCtx = this._getActiveLayerCtx();
     if (!layerCtx) return;
+
+    if (!this._beforeDrawData) {
+      this._captureBeforeDraw();
+    }
 
     const { currentRect, tempCanvas } = this._float;
     layerCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y));
@@ -1231,8 +1257,21 @@ export class DrawingCanvas extends LitElement {
     if (newW < 0) { newX += newW; newW = -newW; }
     if (newH < 0) { newY += newH; newH = -newH; }
 
-    if (newW < minSize) { newW = minSize; }
-    if (newH < minSize) { newH = minSize; }
+    // For corner handles, clamp to minSize while preserving aspect ratio
+    if (handle === 'nw' || handle === 'ne' || handle === 'se' || handle === 'sw') {
+      const aspect = orig.w / orig.h;
+      if (newW < minSize) {
+        newW = minSize;
+        newH = newW / aspect;
+      }
+      if (newH < minSize) {
+        newH = minSize;
+        newW = newH * aspect;
+      }
+    } else {
+      if (newW < minSize) { newW = minSize; }
+      if (newH < minSize) { newH = minSize; }
+    }
 
     cur.x = newX;
     cur.y = newY;
@@ -1337,12 +1376,17 @@ export class DrawingCanvas extends LitElement {
     tmp.height = h;
     tmp.getContext('2d')!.drawImage(src, 0, 0);
 
+    // Clamp origin so the pasted content is at least partially inside the
+    // document (the clipboard may have been copied before a document resize).
+    const x = Math.max(0, Math.min(this._clipboardOrigin.x, this._docWidth - 1));
+    const y = Math.max(0, Math.min(this._clipboardOrigin.y, this._docHeight - 1));
+
     this._float = {
       originalImageData: new ImageData(
         new Uint8ClampedArray(this._clipboard.data),
         w, h,
       ),
-      currentRect: { x: this._clipboardOrigin.x, y: this._clipboardOrigin.y, w, h },
+      currentRect: { x, y, w, h },
       tempCanvas: tmp,
     };
     this._startSelectionAnimation();

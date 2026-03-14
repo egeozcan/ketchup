@@ -131,4 +131,49 @@ describe('DrawingApp', () => {
     expect((layerCanvas as any).width).toBe(20);
     expect((layerCanvas as any).height).toBe(30);
   });
+
+  it('triggers redo on Ctrl+Shift+Z with uppercase key (browser default)', () => {
+    const app = createAppWithCanvasSpies();
+    // Browsers produce e.key='Z' (uppercase) when Shift is held
+    const event = makeKeyEvent('Z', [], { ctrlKey: true, shiftKey: true });
+
+    (app as any)._onKeyDown(event);
+
+    expect((app as any).canvas.redo).toHaveBeenCalledTimes(1);
+    expect((event.preventDefault as any)).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks state dirty when switching the active layer', () => {
+    const app = createAppWithCanvasSpies();
+
+    // Add a second layer so we have something to switch to
+    const layer2 = (app as any)._createLayer(800, 600);
+    (app as any)._state = {
+      ...(app as any)._state,
+      layers: [...(app as any)._state.layers, layer2],
+    };
+
+    (app as any)._dirty = false;
+    const ctx = (app as any)._buildContextValue();
+
+    ctx.setActiveLayer(layer2.id);
+
+    expect((app as any)._state.activeLayerId).toBe(layer2.id);
+    expect((app as any)._dirty).toBe(true);
+  });
+
+  it('clears the floating selection when resetting to a fresh project', async () => {
+    const app = createAppWithCanvasSpies();
+
+    // _resetToFreshProject awaits this.updateComplete, so stub it
+    Object.defineProperty(app, 'updateComplete', {
+      configurable: true,
+      get: () => Promise.resolve(true),
+    });
+
+    await (app as any)._resetToFreshProject();
+
+    // clearSelection must be called to discard any float from the old project
+    expect((app as any).canvas.clearSelection).toHaveBeenCalled();
+  });
 });

@@ -320,19 +320,20 @@ export class DrawingApp extends LitElement {
       return;
     }
     const ctrl = e.ctrlKey || e.metaKey;
-    if (ctrl && e.key === 'z' && !e.shiftKey) {
+    const key = e.key.toLowerCase();
+    if (ctrl && key === 'z' && !e.shiftKey) {
       e.preventDefault();
       this.canvas?.undo();
-    } else if (ctrl && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+    } else if (ctrl && (key === 'y' || (key === 'z' && e.shiftKey))) {
       e.preventDefault();
       this.canvas?.redo();
-    } else if (ctrl && e.key === 'c') {
+    } else if (ctrl && key === 'c') {
       e.preventDefault();
       this.canvas?.copySelection();
-    } else if (ctrl && e.key === 'x') {
+    } else if (ctrl && key === 'x') {
       e.preventDefault();
       this.canvas?.cutSelection();
-    } else if (ctrl && e.key === 'v') {
+    } else if (ctrl && key === 'v') {
       e.preventDefault();
       this.canvas?.pasteSelection();
     } else if (
@@ -356,6 +357,7 @@ export class DrawingApp extends LitElement {
   };
 
   private async _resetToFreshProject() {
+    this.canvas?.clearSelection();
     this._layerCounter = 0;
     const w = this._state.documentWidth;
     const h = this._state.documentHeight;
@@ -386,6 +388,7 @@ export class DrawingApp extends LitElement {
 
   private async _loadProject(projectId: string) {
     try {
+      this.canvas?.clearSelection();
       const result = await loadProjectState(projectId);
       if (!result) {
         await this._resetToFreshProject();
@@ -506,6 +509,7 @@ export class DrawingApp extends LitElement {
         if (this._state.layers.some(l => l.id === id)) {
           this.canvas?.clearSelection();
           this._state = { ...this._state, activeLayerId: id };
+          this._markDirty();
         }
       },
       setLayerVisibility: (id: string, visible: boolean) => {
