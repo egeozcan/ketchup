@@ -4,13 +4,14 @@ import { DrawingApp } from '../src/components/drawing-app.ts';
 function makeKeyEvent(
   key: string,
   path: EventTarget[],
-  options: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean } = {},
+  options: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean; altKey?: boolean } = {},
 ): KeyboardEvent {
   return {
     key,
     ctrlKey: options.ctrlKey ?? false,
     metaKey: options.metaKey ?? false,
     shiftKey: options.shiftKey ?? false,
+    altKey: options.altKey ?? false,
     preventDefault: vi.fn(),
     composedPath: () => path,
   } as unknown as KeyboardEvent;
@@ -278,5 +279,18 @@ describe('DrawingApp', () => {
     const layers = (app as any)._state.layers;
     const lastLayer = layers[layers.length - 1];
     expect(lastLayer.name).toBe('Layer 2');
+  });
+
+  it('does not switch tools when Shift is held (Shift is for constraining)', () => {
+    const app = createAppWithCanvasSpies();
+    (app as any)._state = { ...(app as any)._state, activeTool: 'select' };
+
+    // Shift+B should NOT switch to pencil — user is holding Shift to constrain
+    const event = makeKeyEvent('B', [], { shiftKey: true });
+    (app as any)._onKeyDown(event);
+
+    // Tool must stay on select
+    expect((app as any)._state.activeTool).toBe('select');
+    expect(event.preventDefault).not.toHaveBeenCalled();
   });
 });

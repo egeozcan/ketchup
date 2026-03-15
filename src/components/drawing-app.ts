@@ -371,7 +371,7 @@ export class DrawingApp extends LitElement {
     } else if (ctrl && e.key === '-') {
       e.preventDefault();
       this.canvas?.zoomOut();
-    } else if (!ctrl && !e.altKey && key.length === 1) {
+    } else if (!ctrl && !e.altKey && !e.shiftKey && key.length === 1) {
       const tool = toolForShortcut(key);
       if (tool && tool !== this._state.activeTool) {
         e.preventDefault();
