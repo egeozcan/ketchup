@@ -553,7 +553,7 @@ export class DrawingCanvas extends LitElement {
   }
 
   public clearCanvas() {
-    this._commitFloat();
+    this.clearSelection();
     this._captureBeforeDraw();
     const ctx = this._getActiveLayerCtx();
     if (ctx) {

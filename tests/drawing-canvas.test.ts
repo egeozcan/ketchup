@@ -1379,6 +1379,68 @@ describe('DrawingCanvas pointerup with _drawing false', () => {
   });
 });
 
+describe('DrawingCanvas clearCanvas during active brush stroke', () => {
+  it('finalizes the in-progress stroke before clearing', () => {
+    const canvas = new DrawingCanvas();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 100;
+    layerCanvas.height = 100;
+
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          activeTool: 'pencil',
+          strokeColor: '#000000',
+          fillColor: '#ff0000',
+          useFill: false,
+          brushSize: 4,
+          stampImage: null,
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+          activeLayerId: 'l1',
+          documentWidth: 100,
+          documentHeight: 100,
+          layersPanelOpen: true,
+        },
+      },
+    };
+
+    (canvas as any).composite = vi.fn();
+
+    Object.defineProperty(canvas, 'mainCanvas', {
+      configurable: true,
+      value: {
+        setPointerCapture: vi.fn(),
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }),
+        style: { cursor: '' },
+      },
+    });
+
+    (canvas as any)._panX = 0;
+    (canvas as any)._panY = 0;
+    (canvas as any)._zoom = 1;
+
+    // Start a pencil stroke
+    const downEvent = { button: 0, clientX: 10, clientY: 10, pointerId: 1 } as unknown as PointerEvent;
+    (canvas as any)._onPointerDown(downEvent);
+    expect((canvas as any)._drawing).toBe(true);
+
+    const preBrushData = (canvas as any)._beforeDrawData;
+    expect(preBrushData).not.toBeNull();
+
+    // Clear canvas mid-stroke
+    canvas.clearCanvas();
+
+    // _drawing must be finalized so the stroke doesn't continue
+    expect((canvas as any)._drawing).toBe(false);
+    // The stroke's _beforeDrawData (pre-stroke state) must end up in
+    // the FIRST history entry — not be overwritten by clearCanvas's capture.
+    const history: any[] = (canvas as any)._history;
+    expect(history.length).toBe(2); // stroke entry + clear entry
+    expect(history[0].before).toBe(preBrushData);
+  });
+});
+
 describe('DrawingCanvas undo during active brush stroke', () => {
   it('finalizes the in-progress stroke before applying undo', () => {
     const canvas = new DrawingCanvas();
