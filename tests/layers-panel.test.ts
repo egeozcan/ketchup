@@ -88,3 +88,46 @@ describe('LayersPanel rename', () => {
     expect(renameLayerSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('LayersPanel opacity', () => {
+  it('commits opacity history when changed via keyboard (no pointerdown)', () => {
+    const panel = new LayersPanel();
+
+    const layer = { id: 'l1', name: 'Layer 1', visible: true, opacity: 0.8, canvas: document.createElement('canvas') };
+
+    const setLayerOpacity = vi.fn();
+    (panel as any)._ctx = {
+      value: {
+        state: {
+          layers: [layer],
+          activeLayerId: 'l1',
+          layersPanelOpen: true,
+        },
+        setLayerOpacity,
+      },
+    };
+
+    // Track dispatched events
+    const committed: CustomEvent[] = [];
+    panel.addEventListener('commit-opacity', (e) => committed.push(e as CustomEvent));
+
+    // Keyboard-driven slider change: input fires (value changes), then
+    // change fires on blur — but pointerdown never fires.
+    // Simulate input event (arrow key press changes value to 50)
+    const inputEvent = new Event('input');
+    Object.defineProperty(inputEvent, 'target', { value: { value: '50' } });
+    (panel as any)._onOpacityInput('l1', inputEvent);
+
+    // Simulate change event (slider loses focus)
+    const changeEvent = new Event('change');
+    Object.defineProperty(changeEvent, 'target', { value: { value: '50' } });
+    (panel as any)._onOpacityChange('l1', changeEvent);
+
+    // A commit-opacity event must be dispatched so the change is undoable.
+    // BUG: _opacityBefore is null because pointerdown never fired, so the
+    // commit is silently skipped.
+    expect(committed.length).toBe(1);
+    expect(committed[0].detail.before).toBe(0.8);
+    expect(committed[0].detail.after).toBe(0.5);
+  });
+});

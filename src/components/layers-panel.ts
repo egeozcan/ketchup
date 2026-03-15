@@ -552,6 +552,12 @@ export class LayersPanel extends LitElement {
   }
 
   private _onOpacityInput(layerId: string, e: Event) {
+    // Capture the "before" value on the first input event if pointerdown
+    // didn't fire (keyboard-driven slider changes skip pointerdown).
+    if (this._opacityBefore === null) {
+      const layer = this._getLayerById(layerId);
+      if (layer) this._opacityBefore = layer.opacity;
+    }
     const value = Number((e.target as HTMLInputElement).value) / 100;
     this.ctx.setLayerOpacity(layerId, value);
   }
