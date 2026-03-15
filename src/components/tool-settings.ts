@@ -203,6 +203,13 @@ export class ToolSettings extends LitElement {
       background: #e55;
     }
 
+    .stamp-line {
+      flex-basis: 100%;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
     .project-section {
       position: relative;
     }
@@ -543,20 +550,25 @@ export class ToolSettings extends LitElement {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
+    input.multiple = true;
     input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
+      const files = input.files;
+      if (!files || files.length === 0) return;
       // Re-read projectId at resolution time in case user switched projects
       const currentProjectId = this._ctx.value?.currentProject?.id;
       if (!currentProjectId) return;
-      const entry = await addStamp(currentProjectId, file);
+      let lastEntry: StampEntry | null = null;
+      for (const file of files) {
+        lastEntry = await addStamp(currentProjectId, file);
+      }
       await this._loadStamps(currentProjectId);
-      const url = this._thumbUrls.get(entry.id);
+      if (!lastEntry) return;
+      const url = this._thumbUrls.get(lastEntry.id);
       if (!url) return;
       const img = new Image();
       img.onload = () => {
         this.ctx.setStampImage(img);
-        this._activeStampId = entry.id;
+        this._activeStampId = lastEntry!.id;
       };
       img.src = url;
     };
@@ -857,8 +869,7 @@ export class ToolSettings extends LitElement {
 
       ${activeTool === 'stamp'
         ? html`
-            <div class="separator"></div>
-            <div class="section">
+            <div class="stamp-line">
               ${this._recentStamps.length > 0
             ? html`
                     <div class="stamp-row">
