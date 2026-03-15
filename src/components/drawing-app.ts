@@ -478,9 +478,10 @@ export class DrawingApp extends LitElement {
       clearCanvas: () => this.canvas?.clearCanvas(),
       saveCanvas: () => this.canvas?.saveCanvas(),
       // Layer operations
-      addLayer: () => {
+      addLayer: (name?: string) => {
         this.canvas?.clearSelection();
         const layer = this._createLayer(this._state.documentWidth, this._state.documentHeight);
+        if (name) layer.name = name;
         const activeIdx = this._state.layers.findIndex(l => l.id === this._state.activeLayerId);
         const insertIdx = activeIdx + 1;
         const newLayers = [...this._state.layers];
@@ -488,6 +489,7 @@ export class DrawingApp extends LitElement {
         this._state = { ...this._state, layers: newLayers, activeLayerId: layer.id };
         this.canvas?.pushLayerOperation({ type: 'add-layer', layer: this._snapshotLayer(layer), index: insertIdx });
         this._markDirty();
+        return layer.id;
       },
       deleteLayer: (id: string) => {
         if (this._state.layers.length <= 1) return;

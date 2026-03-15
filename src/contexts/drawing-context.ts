@@ -14,7 +14,7 @@ export interface DrawingContextValue {
   clearCanvas: () => void;
   saveCanvas: () => void;
   // Layer operations
-  addLayer: () => void;
+  addLayer: (name?: string) => string;
   deleteLayer: (id: string) => void;
   setActiveLayer: (id: string) => void;
   setLayerVisibility: (id: string, visible: boolean) => void;
