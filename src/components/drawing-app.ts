@@ -15,6 +15,7 @@ import {
   serializeLayerFromImageData,
   deserializeLayer,
 } from '../project-store.js';
+import { toolForShortcut } from './tool-icons.js';
 import './app-toolbar.js';
 import './tool-settings.js';
 import './drawing-canvas.js';
@@ -129,6 +130,8 @@ export class DrawingApp extends LitElement {
   }
 
   private _onBeforeUnload = (e: BeforeUnloadEvent) => {
+    // Commit any active float so the layer canvas includes the selection content.
+    this.canvas?.clearSelection();
     if (this._dirty) {
       // Start the async save — it may or may not complete before unload.
       this._flushPendingSave();
@@ -138,10 +141,14 @@ export class DrawingApp extends LitElement {
   };
 
   private _onVisibilityChange = () => {
-    // When the page is hidden (tab switch, close, refresh), flush immediately.
-    // This fires before beforeunload and gives the save more time to complete.
-    if (document.hidden && this._dirty) {
-      this._flushPendingSave();
+    if (document.hidden) {
+      // Commit any active float so the layer canvas includes the selection content.
+      this.canvas?.clearSelection();
+      // When the page is hidden (tab switch, close, refresh), flush immediately.
+      // This fires before beforeunload and gives the save more time to complete.
+      if (this._dirty) {
+        this._flushPendingSave();
+      }
     }
   };
 
@@ -361,6 +368,12 @@ export class DrawingApp extends LitElement {
     } else if (ctrl && e.key === '-') {
       e.preventDefault();
       this.canvas?.zoomOut();
+    } else if (!ctrl && !e.altKey && key.length === 1) {
+      const tool = toolForShortcut(key);
+      if (tool) {
+        e.preventDefault();
+        this._state = { ...this._state, activeTool: tool };
+      }
     }
   };
 

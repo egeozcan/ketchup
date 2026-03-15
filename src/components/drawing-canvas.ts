@@ -169,7 +169,14 @@ export class DrawingCanvas extends LitElement {
 
     displayCtx.restore();
 
-    this.dispatchEvent(new Event('composited', { bubbles: true, composed: true }));
+    const activeLayerId = this._ctx.value?.state.activeLayerId ?? null;
+    const floatDetail = this._float && activeLayerId
+      ? { tempCanvas: this._float.tempCanvas, rect: this._float.currentRect, layerId: activeLayerId }
+      : null;
+    this.dispatchEvent(new CustomEvent('composited', {
+      bubbles: true, composed: true,
+      detail: floatDetail,
+    }));
   }
 
   private _getCheckerboardPattern(ctx: CanvasRenderingContext2D): CanvasPattern {
@@ -1136,7 +1143,6 @@ export class DrawingCanvas extends LitElement {
     this._captureBeforeDraw();
     const imageData = layerCtx.getImageData(clampedX, clampedY, clampedW, clampedH);
     layerCtx.clearRect(clampedX, clampedY, clampedW, clampedH);
-    this.composite();
 
     const src = document.createElement('canvas');
     src.width = clampedW;
@@ -1154,6 +1160,7 @@ export class DrawingCanvas extends LitElement {
       currentRect: { x: clampedX, y: clampedY, w: clampedW, h: clampedH },
       tempCanvas: tmp,
     };
+    this.composite();
     this._startSelectionAnimation();
   }
 

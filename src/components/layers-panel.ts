@@ -342,7 +342,12 @@ export class LayersPanel extends LitElement {
     return this._ctx.value!;
   }
 
-  private _onComposited = () => this._updateThumbnails();
+  private _floatDetail: { tempCanvas: HTMLCanvasElement; rect: { x: number; y: number; w: number; h: number }; layerId: string } | null = null;
+
+  private _onComposited = (e: Event) => {
+    this._floatDetail = (e as CustomEvent).detail;
+    this._updateThumbnails();
+  };
 
   override connectedCallback() {
     super.connectedCallback();
@@ -752,6 +757,17 @@ export class LayersPanel extends LitElement {
       // Scale layer content to thumbnail
       ctx.globalAlpha = layer.opacity;
       ctx.drawImage(layer.canvas, 0, 0, thumb.width, thumb.height);
+      // Draw floating selection content onto the active layer's thumbnail
+      if (this._floatDetail && layer.id === this._floatDetail.layerId) {
+        const { tempCanvas, rect } = this._floatDetail;
+        const cw = layer.canvas.width;
+        const ch = layer.canvas.height;
+        const sx = (rect.x / cw) * thumb.width;
+        const sy = (rect.y / ch) * thumb.height;
+        const sw = (rect.w / cw) * thumb.width;
+        const sh = (rect.h / ch) * thumb.height;
+        ctx.drawImage(tempCanvas, sx, sy, sw, sh);
+      }
       ctx.globalAlpha = 1.0;
     });
   }
