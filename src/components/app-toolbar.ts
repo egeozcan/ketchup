@@ -3,7 +3,7 @@ import { customElement } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { ToolType } from '../types.js';
-import { toolIcons, toolLabels, actionIcons } from './tool-icons.js';
+import { toolIcons, toolLabels, toolShortcuts, actionIcons } from './tool-icons.js';
 
 const toolGroups: ToolType[][] = [
   ['select', 'move', 'hand'],
@@ -115,7 +115,7 @@ export class AppToolbar extends LitElement {
               (tool) => html`
                 <button
                   class=${activeTool === tool ? 'active' : ''}
-                  title=${toolLabels[tool]}
+                  title=${`${toolLabels[tool]} (${toolShortcuts[tool]})`}
                   @click=${() => this._selectTool(tool)}
                 >
                   ${toolIcons[tool]}

@@ -125,6 +125,29 @@ export const actionIcons = {
     </svg>`,
 };
 
+export const toolShortcuts: Record<ToolType, string> = {
+  select: 'V',
+  move: 'M',
+  hand: 'H',
+  pencil: 'B',
+  marker: 'K',
+  eraser: 'E',
+  line: 'L',
+  rectangle: 'U',
+  circle: 'C',
+  triangle: 'T',
+  fill: 'G',
+  stamp: 'S',
+};
+
+const shortcutToTool = new Map<string, ToolType>(
+  (Object.entries(toolShortcuts) as [ToolType, string][]).map(([tool, key]) => [key.toLowerCase(), tool]),
+);
+
+export function toolForShortcut(key: string): ToolType | undefined {
+  return shortcutToTool.get(key.toLowerCase());
+}
+
 export const toolLabels: Record<ToolType, string> = {
   select: 'Select',
   move: 'Move',
