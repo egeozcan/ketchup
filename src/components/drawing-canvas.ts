@@ -83,6 +83,9 @@ export class DrawingCanvas extends LitElement {
   /** Cached canvas of originalImageData at original size — avoids re-creating per resize tick */
   private _floatSrcCanvas: HTMLCanvasElement | null = null;
 
+  /** True when the current float was created via paste/drop — Escape discards + deletes layer */
+  private _floatIsExternalImage = false;
+
   // Interaction state
   private _selectionDrawing = false;
   private _floatMoving = false;
@@ -1173,6 +1176,36 @@ export class DrawingCanvas extends LitElement {
     this._startSelectionAnimation();
   }
 
+  /**
+   * Create a float from an image with explicit dimensions (no size-based scaling).
+   * Used by external image paste/drop where dimensions are already resolved.
+   */
+  private _createFloatFromImageDirect(img: HTMLImageElement, w: number, h: number) {
+    const cx = this._docWidth / 2;
+    const cy = this._docHeight / 2;
+    const x = Math.round(cx - w / 2);
+    const y = Math.round(cy - h / 2);
+
+    const src = document.createElement('canvas');
+    src.width = w;
+    src.height = h;
+    src.getContext('2d')!.drawImage(img, 0, 0, w, h);
+    const imageData = src.getContext('2d')!.getImageData(0, 0, w, h);
+    this._floatSrcCanvas = src;
+
+    const tmp = document.createElement('canvas');
+    tmp.width = w;
+    tmp.height = h;
+    tmp.getContext('2d')!.drawImage(src, 0, 0);
+
+    this._float = {
+      originalImageData: imageData,
+      currentRect: { x, y, w, h },
+      tempCanvas: tmp,
+    };
+    this._startSelectionAnimation();
+  }
+
   private _commitFloat() {
     if (!this._float) return;
     const layerCtx = this._getActiveLayerCtx();
@@ -1210,6 +1243,7 @@ export class DrawingCanvas extends LitElement {
   private _clearFloatState() {
     this._float = null;
     this._floatSrcCanvas = null;
+    this._floatIsExternalImage = false;
     this._floatMoving = false;
     this._floatResizing = false;
     this._floatResizeHandle = null;
