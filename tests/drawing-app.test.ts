@@ -319,4 +319,58 @@ describe('DrawingApp', () => {
     // BUG: currently clearSelection IS called, destroying any active float.
     expect((app as any).canvas.clearSelection).not.toHaveBeenCalled();
   });
+
+  it('falls back to the first layer if saved activeLayerId is invalid on load', async () => {
+    const app = createAppWithCanvasSpies();
+
+    // Stub updateComplete
+    Object.defineProperty(app, 'updateComplete', {
+      configurable: true,
+      get: () => Promise.resolve(true),
+    });
+
+    // Simulate _loadProject with a record whose activeLayerId doesn't
+    // match any layer (e.g. data corruption or partial migration).
+    const fakeRecord = {
+      toolSettings: {
+        activeTool: 'pencil' as const,
+        strokeColor: '#000000',
+        fillColor: '#ff0000',
+        useFill: false,
+        brushSize: 4,
+      },
+      canvasWidth: 100,
+      canvasHeight: 100,
+      layers: [
+        { id: 'real-layer', name: 'Layer 1', visible: true, opacity: 1, imageBlob: new Blob() },
+      ],
+      activeLayerId: 'deleted-layer-id',
+      layersPanelOpen: true,
+      historyIndex: -1,
+    };
+
+    // Mock loadProjectState to return our corrupted record
+    const projectStore = await import('../src/project-store.js');
+    const loadSpy = vi.spyOn(projectStore, 'loadProjectState').mockResolvedValue({
+      state: fakeRecord as any,
+      history: [],
+      historyIndex: -1,
+    });
+    // Mock deserializeLayer to return a real layer object
+    vi.spyOn(projectStore, 'deserializeLayer').mockResolvedValue({
+      id: 'real-layer',
+      name: 'Layer 1',
+      visible: true,
+      opacity: 1,
+      canvas: document.createElement('canvas'),
+    });
+
+    await (app as any)._loadProject('test-project');
+
+    // activeLayerId must fall back to the first layer, not stay on the
+    // non-existent 'deleted-layer-id'.
+    expect((app as any)._state.activeLayerId).toBe('real-layer');
+
+    loadSpy.mockRestore();
+  });
 });

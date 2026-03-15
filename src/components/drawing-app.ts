@@ -430,6 +430,11 @@ export class DrawingApp extends LitElement {
         return match ? Math.max(max, parseInt(match[1])) : max;
       }, 0);
       this._layerCounter = maxNum;
+      // Validate activeLayerId — fall back to first layer if the saved ID
+      // doesn't match any loaded layer (e.g. data corruption).
+      const validActiveId = layers.some(l => l.id === record.activeLayerId)
+        ? record.activeLayerId
+        : layers[0].id;
       this._state = {
         activeTool: record.toolSettings.activeTool,
         strokeColor: record.toolSettings.strokeColor,
@@ -438,7 +443,7 @@ export class DrawingApp extends LitElement {
         brushSize: record.toolSettings.brushSize,
         stampImage: null,
         layers,
-        activeLayerId: record.activeLayerId,
+        activeLayerId: validActiveId,
         layersPanelOpen: record.layersPanelOpen,
         documentWidth: record.canvasWidth,
         documentHeight: record.canvasHeight,
