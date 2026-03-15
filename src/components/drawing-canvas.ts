@@ -1557,7 +1557,11 @@ export class DrawingCanvas extends LitElement {
   public pasteSelection() {
     if (!this._clipboard || !this._clipboardOrigin) return;
     this._commitFloat();
-    this._captureBeforeDraw();
+    // Only capture if _beforeDrawData isn't already owned by an in-progress
+    // brush stroke — overwriting it would corrupt that stroke's undo entry.
+    if (!this._beforeDrawData) {
+      this._captureBeforeDraw();
+    }
 
     const w = this._clipboard.width;
     const h = this._clipboard.height;

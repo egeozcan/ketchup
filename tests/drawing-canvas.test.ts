@@ -1378,3 +1378,75 @@ describe('DrawingCanvas pointerup with _drawing false', () => {
     expect((canvas as any)._beforeDrawData).not.toBeNull();
   });
 });
+
+describe('DrawingCanvas pasteSelection during active stroke', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('does not overwrite _beforeDrawData from an in-progress brush stroke', () => {
+    const canvas = new DrawingCanvas();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 100;
+    layerCanvas.height = 100;
+
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          activeTool: 'pencil',
+          strokeColor: '#000000',
+          fillColor: '#ff0000',
+          useFill: false,
+          brushSize: 4,
+          stampImage: null,
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+          activeLayerId: 'l1',
+          documentWidth: 100,
+          documentHeight: 100,
+          layersPanelOpen: true,
+        },
+      },
+    };
+
+    (canvas as any).composite = vi.fn();
+    (canvas as any)._stopSelectionAnimation = vi.fn();
+
+    Object.defineProperty(canvas, 'mainCanvas', {
+      configurable: true,
+      value: {
+        setPointerCapture: vi.fn(),
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }),
+        style: { cursor: '' },
+      },
+    });
+
+    (canvas as any)._panX = 0;
+    (canvas as any)._panY = 0;
+    (canvas as any)._zoom = 1;
+
+    // Start a pencil stroke — this sets _beforeDrawData to the clean layer state
+    const downEvent = { button: 0, clientX: 10, clientY: 10, pointerId: 1 } as unknown as PointerEvent;
+    (canvas as any)._onPointerDown(downEvent);
+    expect((canvas as any)._drawing).toBe(true);
+
+    const preBrushData = (canvas as any)._beforeDrawData;
+    expect(preBrushData).not.toBeNull();
+
+    // Simulate Ctrl+V mid-stroke — pasteSelection should NOT overwrite
+    // _beforeDrawData because the brush stroke owns it.
+    (canvas as any)._clipboard = new ImageData(20, 20);
+    (canvas as any)._clipboardOrigin = { x: 50, y: 50 };
+
+    canvas.pasteSelection();
+
+    // _beforeDrawData must still be the brush stroke's original capture,
+    // NOT a fresh capture from pasteSelection.
+    expect((canvas as any)._beforeDrawData).toBe(preBrushData);
+  });
+});
