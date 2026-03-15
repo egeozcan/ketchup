@@ -241,4 +241,22 @@ describe('DrawingApp', () => {
     // The float must be committed before switching away from the select tool
     expect((app as any).canvas.clearSelection).toHaveBeenCalled();
   });
+
+  it('suppresses shortcuts when a modal dialog is in the event path', () => {
+    const app = createAppWithCanvasSpies();
+    (app as any)._state = { ...(app as any)._state, activeTool: 'select' };
+
+    // Simulate a keydown inside an open <dialog> (e.g. resize-dialog)
+    const dialog = document.createElement('dialog');
+    dialog.setAttribute('open', '');
+    const button = document.createElement('button');
+    dialog.appendChild(button);
+
+    const event = makeKeyEvent('b', [button, dialog]);
+    (app as any)._onKeyDown(event);
+
+    // Tool must NOT switch — the dialog should swallow the shortcut
+    expect((app as any)._state.activeTool).toBe('select');
+    expect(event.preventDefault).not.toHaveBeenCalled();
+  });
 });

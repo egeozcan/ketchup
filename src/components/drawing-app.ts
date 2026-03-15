@@ -312,6 +312,9 @@ export class DrawingApp extends LitElement {
       if (node instanceof HTMLInputElement) {
         return !DrawingApp.NON_TEXT_INPUT_TYPES.has(node.type);
       }
+      // Modal dialogs (e.g. resize-dialog) should swallow shortcuts so
+      // tool switches and undo/redo don't fire while the dialog is open.
+      if (node instanceof HTMLDialogElement && node.open) return true;
     }
     return false;
   }
