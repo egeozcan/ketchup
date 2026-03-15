@@ -227,4 +227,18 @@ describe('DrawingApp', () => {
     // clearSelection must be called to discard any float from the old project
     expect((app as any).canvas.clearSelection).toHaveBeenCalled();
   });
+
+  it('commits the floating selection when switching tools via keyboard shortcut', () => {
+    const app = createAppWithCanvasSpies();
+    // Start with the select tool active
+    (app as any)._state = { ...(app as any)._state, activeTool: 'select' };
+
+    // Press 'b' to switch to pencil
+    const event = makeKeyEvent('b', []);
+    (app as any)._onKeyDown(event);
+
+    expect((app as any)._state.activeTool).toBe('pencil');
+    // The float must be committed before switching away from the select tool
+    expect((app as any).canvas.clearSelection).toHaveBeenCalled();
+  });
 });
