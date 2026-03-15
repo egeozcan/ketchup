@@ -641,6 +641,7 @@ export class DrawingApp extends LitElement {
       },
       createProject: (name: string) => {
         const doCreate = async () => {
+          this.canvas?.clearSelection();
           if (this._savePromise || this._dirty) {
             await this._flushPendingSaveAndWait();
           }

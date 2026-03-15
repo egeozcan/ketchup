@@ -214,6 +214,40 @@ describe('DrawingApp', () => {
     expect(callOrder.indexOf('clearSelection')).toBeLessThan(callOrder.indexOf('flush'));
   });
 
+  it('commits the float before flushing the save when creating a new project', async () => {
+    const app = createAppWithCanvasSpies();
+
+    (app as any)._currentProject = { id: 'old', name: 'Old', createdAt: 0, updatedAt: 0, thumbnail: null };
+
+    const callOrder: string[] = [];
+    (app as any).canvas.clearSelection = vi.fn(() => callOrder.push('clearSelection'));
+    (app as any)._flushPendingSaveAndWait = vi.fn(async () => callOrder.push('flush'));
+    (app as any)._dirty = true;
+
+    // Stub _resetToFreshProject so it doesn't do real work
+    (app as any)._resetToFreshProject = vi.fn(async () => {});
+
+    // Stub createProjectInDB
+    const projectStore = await import('../src/project-store.js');
+    const createSpy = vi.spyOn(projectStore, 'createProject').mockResolvedValue(
+      { id: 'new', name: 'Untitled', createdAt: 0, updatedAt: 0, thumbnail: null },
+    );
+    vi.spyOn(projectStore, 'listProjects').mockResolvedValue([]);
+
+    const ctx = (app as any)._buildContextValue();
+    ctx.createProject('Untitled');
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    // clearSelection must happen BEFORE flush so the save captures the
+    // layer with the float committed (no hole).
+    expect(callOrder).toContain('clearSelection');
+    expect(callOrder).toContain('flush');
+    expect(callOrder.indexOf('clearSelection')).toBeLessThan(callOrder.indexOf('flush'));
+
+    createSpy.mockRestore();
+  });
+
   it('clears the floating selection when resetting to a fresh project', async () => {
     const app = createAppWithCanvasSpies();
 
