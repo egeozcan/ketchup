@@ -303,7 +303,7 @@ export class DrawingCanvas extends LitElement {
   public getHistoryVersion(): number { return this._historyVersion; }
   public setHistory(entries: HistoryEntry[], index: number) {
     this._history = entries;
-    this._historyIndex = index;
+    this._historyIndex = Math.max(-1, Math.min(index, entries.length - 1));
     this._historyVersion = 0;
     this._notifyHistory();
   }

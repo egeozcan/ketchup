@@ -1275,3 +1275,47 @@ describe('DrawingCanvas wheel zoom', () => {
     expect((canvas as any)._zoom).toBe(zoomBefore);
   });
 });
+
+describe('DrawingCanvas setHistory bounds', () => {
+  it('clamps historyIndex to valid range when index exceeds history length', () => {
+    const canvas = new DrawingCanvas();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 100;
+    layerCanvas.height = 100;
+
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+          activeLayerId: 'l1',
+          documentWidth: 100,
+          documentHeight: 100,
+        },
+      },
+    };
+
+    (canvas as any).composite = vi.fn();
+
+    const img = () => new ImageData(100, 100);
+    const history: any[] = [
+      { type: 'draw', layerId: 'l1', before: img(), after: img() },
+      { type: 'draw', layerId: 'l1', before: img(), after: img() },
+    ];
+
+    // Index 5 is way past the end of a 2-entry history
+    canvas.setHistory(history, 5);
+
+    // Must be clamped to history.length - 1 = 1
+    expect(canvas.getHistoryIndex()).toBe(1);
+
+    // Undo must not crash
+    expect(() => canvas.undo()).not.toThrow();
+  });
+
+  it('clamps negative historyIndex below -1', () => {
+    const canvas = new DrawingCanvas();
+    canvas.setHistory([], -5);
+    expect(canvas.getHistoryIndex()).toBe(-1);
+  });
+});
