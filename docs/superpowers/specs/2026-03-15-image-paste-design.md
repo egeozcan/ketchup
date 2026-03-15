@@ -11,7 +11,7 @@ When a user pastes an image from the system clipboard (Ctrl+V) or drags and drop
 - **Oversize handling:** If either image dimension exceeds the canvas, a dialog asks the user whether to scale to fit or keep original size.
 - **Interactive placement:** The image appears as a floating selection (reusing existing float infrastructure) centered on the canvas, with drag-to-move and handle-to-resize.
 - **Layer naming:** Drag-and-drop uses the filename (without extension). Clipboard paste uses "Pasted Image".
-- **Cancel cleanup:** If the user dismisses the float (Escape), the empty layer created for the paste is deleted.
+- **Cancel cleanup:** If the user cancels the float, the empty layer created for the paste is deleted.
 
 ## Design
 
@@ -19,18 +19,19 @@ When a user pastes an image from the system clipboard (Ctrl+V) or drags and drop
 
 Two entry points converge on a single method `_handleExternalImage(img: HTMLImageElement, name: string)`:
 
-**Clipboard paste (`paste` event):** A listener on the `drawing-canvas` element inspects `clipboardData.items` for image types (`image/png`, `image/jpeg`, etc.). If found, extracts the `File`, converts to `HTMLImageElement` via `URL.createObjectURL`, and calls `_handleExternalImage` with name `"Pasted Image"`.
+**Clipboard paste:** Handled via `drawing-app.ts` keyboard handler, not a `paste` DOM event. When Ctrl+V is pressed and `drawing-canvas` has no internal `_clipboard` data, `drawing-app` calls a new public method on the canvas: `pasteExternalImage()`. This method uses `navigator.clipboard.read()` to read the system clipboard, looks for items with any type starting with `image/`, converts to a Blob, creates an `HTMLImageElement` via `URL.createObjectURL`, and on load calls `_handleExternalImage` with name `"Pasted Image"`. The object URL is revoked in the `onload` callback after the image is used. An `onerror` handler revokes the URL and returns silently.
 
-**Drag-and-drop (`drop` + `dragover` events):** A listener on the `drawing-canvas` element inspects `dataTransfer.files` for image types. Extracts the `File` (capturing the filename), converts to `HTMLImageElement`, and calls `_handleExternalImage` with the filename minus extension. A `dragover` handler calls `preventDefault()` to allow drops.
+**Drag-and-drop (`drop` + `dragover` + `dragenter` + `dragleave` events):** Listeners on the `drawing-canvas` element. On `drop`, inspects `dataTransfer.files` for files with MIME type starting with `image/`. Non-image files and empty transfers are silently ignored. Extracts the `File` (capturing the filename), converts to `HTMLImageElement` via `URL.createObjectURL` (revoked after load), and calls `_handleExternalImage` with the filename minus extension. A `dragover` handler calls `preventDefault()` to allow drops. `dragenter`/`dragleave` toggle a CSS class for visual drop-target feedback (e.g., a subtle border highlight).
 
 ### Ctrl+V Integration
 
-Currently `drawing-app.ts` handles Ctrl+V by calling `this.canvas?.pasteSelection()` (internal clipboard). This is replaced by consolidating all paste handling into a `paste` DOM event listener on the canvas:
+The existing Ctrl+V flow in `drawing-app.ts` is extended, not replaced:
 
-1. `paste` event fires on the canvas element.
-2. If `clipboardData` contains an image → external image flow (`_handleExternalImage`).
-3. If no image in clipboard data → call existing `pasteSelection()` for internal clipboard.
-4. The Ctrl+V → `pasteSelection()` wiring is removed from `drawing-app.ts`.
+1. Ctrl+V pressed → check if canvas has internal clipboard data (`_clipboard` is non-null via a new public getter or method).
+2. If yes → call existing `pasteSelection()` (float on current layer).
+3. If no → call new `pasteExternalImage()` on the canvas (system clipboard → new layer).
+
+This keeps keyboard handling in `drawing-app.ts` where all other shortcuts live.
 
 ### Oversize Image Dialog
 
@@ -41,20 +42,33 @@ When `_handleExternalImage` receives an image where `img.naturalWidth > document
 - "Scale to fit" uses `Math.min(canvasW / imgW, canvasH / imgH)` to calculate scale, preserving aspect ratio.
 - The dialog resolves a promise with the user's choice.
 - If the image fits within canvas bounds, the dialog is skipped entirely.
+- The dialog uses a native `<dialog>` element with `showModal()` for proper modal behavior. It is rendered inside the `drawing-canvas` shadow DOM.
+
+### Existing Float Handling
+
+If a floating selection is already active when a paste/drop occurs, it is committed first (via `_commitFloat()`) before proceeding with the new external image flow. This matches the existing pattern used by `pasteSelection()`.
 
 ### Layer Creation & Floating Selection
 
 Once image dimensions are resolved:
 
-1. **Create layer:** Call `addLayer(name)` — the context method is extended to accept an optional name parameter. The layer is inserted above the current active layer and set as active. An `add-layer` history entry is pushed.
-2. **Create float:** Call `_createFloatFromImage` on the new active layer, centered at `((canvasW - imgW) / 2, (canvasH - imgH) / 2)`.
-3. **User interaction:** Existing float infrastructure handles repositioning (drag) and resizing (handles) on the preview canvas.
-4. **Commit:** On commit (click outside, Enter, or tool switch), `_commitFloat()` draws to the layer canvas and pushes draw history. Standard behavior.
-5. **Cancel:** On Escape, clear float state and delete the newly created empty layer. The canvas detects this case (layer was created for external image and float was never committed) and dispatches a layer-delete operation to clean up.
+1. **Create layer:** Call `addLayer(name)` via context — the method is extended to accept an optional name parameter and returns the new layer's ID. After calling `addLayer`, await `this.updateComplete` to ensure the context update has propagated before proceeding.
+2. **Capture before-draw state:** Call `_captureBeforeDraw()` on the new empty layer. This captures a blank ImageData as the "before" state for undo, which is correct for a newly created layer.
+3. **Create float:** Use a new variant of `_createFloatFromImage` (or extend the existing one) that accepts pre-computed width and height instead of a `size` parameter. The stamp tool path continues to use the `size`-based scaling. The image is centered at `((canvasW - imgW) / 2, (canvasH - imgH) / 2)`.
+4. **User interaction:** Existing float infrastructure handles repositioning (drag) and resizing (handles) on the preview canvas.
+5. **Commit:** On commit (click outside, Enter, or tool switch), `_commitFloat()` draws to the layer canvas and pushes draw history. Standard behavior.
+6. **Cancel:** A new `_discardFloat()` call (instead of `_commitFloat()`) clears the float state without drawing to the layer. The canvas tracks whether the current float was created for an external image paste (via a flag like `_floatIsExternalImage`). If so, it also dispatches a layer-delete operation to remove the empty layer. This is a new cancel path distinct from the existing Escape behavior — Escape currently commits; for external image floats specifically, Escape discards and cleans up.
+
+## Edge Cases
+
+- **Non-image files dropped:** Silently ignored — no error, no UI feedback.
+- **Empty clipboard on Ctrl+V (no internal or external data):** No-op.
+- **Image load failure (corrupted file, unsupported format):** `onerror` handler revokes the object URL and returns silently.
+- **Supported image formats:** Any type starting with `image/` — the browser's `HTMLImageElement` handles decoding. No explicit format allowlist.
 
 ## Files Changed
 
-- **`src/components/drawing-canvas.ts`** — Add `paste`, `drop`, `dragover` event listeners. Add `_handleExternalImage()`. Add empty-layer cleanup on float cancel.
-- **`src/components/drawing-app.ts`** — Remove Ctrl+V → `pasteSelection()` wiring. Extend `addLayer()` to accept optional `name` parameter.
-- **`src/components/resize-dialog.ts`** — New Lit component. Simple modal dialog with two buttons, resolves a promise.
-- **`src/types.ts`** — No changes needed.
+- **`src/components/drawing-canvas.ts`** — Add `drop`, `dragover`, `dragenter`, `dragleave` event listeners. Add `_handleExternalImage()` and `pasteExternalImage()` methods. Extend or add variant of `_createFloatFromImage` for pre-computed dimensions. Add `_floatIsExternalImage` flag and discard-on-cancel logic. Add drop-target CSS feedback. Expose `hasClipboardData()` getter.
+- **`src/components/drawing-app.ts`** — Extend Ctrl+V handler to check internal clipboard first, then fall back to `pasteExternalImage()`. Extend `addLayer()` to accept optional `name` parameter and return the new layer ID.
+- **`src/contexts/drawing-context.ts`** — Update `addLayer` signature in `DrawingContextValue` from `() => void` to `(name?: string) => string` (returns layer ID).
+- **`src/components/resize-dialog.ts`** — New Lit component using native `<dialog>` element with `showModal()`. Two buttons, resolves a promise with the user's choice.
