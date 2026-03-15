@@ -34,6 +34,11 @@ export class DrawingCanvas extends LitElement {
       background: transparent;
       cursor: crosshair;
     }
+
+    :host(.drop-target) #main {
+      outline: 3px dashed #4a90d9;
+      outline-offset: -3px;
+    }
   `;
 
   private _ctx = new ContextConsumer(this, {
@@ -1580,9 +1585,53 @@ export class DrawingCanvas extends LitElement {
     return this._floatIsExternalImage && this._float !== null;
   }
 
+  private _onDragOver = (e: DragEvent) => {
+    e.preventDefault();
+  };
+
+  private _onDragEnter = (e: DragEvent) => {
+    e.preventDefault();
+    this.classList.add('drop-target');
+  };
+
+  private _onDragLeave = (e: DragEvent) => {
+    // Only remove if leaving the host element (not entering a child)
+    if (e.relatedTarget && this.contains(e.relatedTarget as Node)) return;
+    this.classList.remove('drop-target');
+  };
+
+  private _onDrop = async (e: DragEvent) => {
+    e.preventDefault();
+    this.classList.remove('drop-target');
+    if (!e.dataTransfer?.files.length) return;
+
+    for (const file of Array.from(e.dataTransfer.files)) {
+      if (!file.type.startsWith('image/')) continue;
+      const url = URL.createObjectURL(file);
+      const name = file.name.replace(/\.[^.]+$/, '') || 'Dropped Image';
+      try {
+        const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const el = new Image();
+          el.onload = () => resolve(el);
+          el.onerror = () => reject(new Error('Image load failed'));
+          el.src = url;
+        });
+        URL.revokeObjectURL(url);
+        await this._handleExternalImage(img, name);
+      } catch {
+        URL.revokeObjectURL(url);
+      }
+      return; // Use first image file
+    }
+  };
+
   override connectedCallback() {
     super.connectedCallback();
     this.addEventListener('wheel', this._onWheel, { passive: false });
+    this.addEventListener('dragover', this._onDragOver);
+    this.addEventListener('dragenter', this._onDragEnter);
+    this.addEventListener('dragleave', this._onDragLeave);
+    this.addEventListener('drop', this._onDrop);
   }
 
   override disconnectedCallback() {
@@ -1591,6 +1640,10 @@ export class DrawingCanvas extends LitElement {
     this._resizeObserver = null;
     this._stopSelectionAnimation();
     this.removeEventListener('wheel', this._onWheel);
+    this.removeEventListener('dragover', this._onDragOver);
+    this.removeEventListener('dragenter', this._onDragEnter);
+    this.removeEventListener('dragleave', this._onDragLeave);
+    this.removeEventListener('drop', this._onDrop);
   }
 
   override render() {
