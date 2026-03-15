@@ -1598,6 +1598,21 @@ export class DrawingCanvas extends LitElement {
   }
 
   public clearSelection() {
+    // Finalize any in-progress brush/shape stroke so _drawing doesn't
+    // leak into the next tool and cause stale history entries.
+    if (this._drawing) {
+      this._drawing = false;
+      this._lastPoint = null;
+      this._startPoint = null;
+      this._pushDrawHistory();
+      this.composite();
+    }
+    if (this._moveTempCanvas) {
+      this._moveTempCanvas = null;
+      this._moveStartPoint = null;
+      this._pushDrawHistory();
+      this.composite();
+    }
     this._commitFloat();
   }
 
