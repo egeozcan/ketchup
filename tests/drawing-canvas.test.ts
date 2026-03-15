@@ -1319,3 +1319,62 @@ describe('DrawingCanvas setHistory bounds', () => {
     expect(canvas.getHistoryIndex()).toBe(-1);
   });
 });
+
+describe('DrawingCanvas pointerup with _drawing false', () => {
+  it('does not push a phantom history entry when _drawing is false on pointerup', () => {
+    const canvas = new DrawingCanvas();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 100;
+    layerCanvas.height = 100;
+
+    // Tool is fill — fill handles everything in pointerdown and never sets _drawing
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          activeTool: 'fill',
+          strokeColor: '#ff0000',
+          fillColor: '#000000',
+          useFill: false,
+          brushSize: 4,
+          stampImage: null,
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+          activeLayerId: 'l1',
+          documentWidth: 100,
+          documentHeight: 100,
+          layersPanelOpen: true,
+        },
+      },
+    };
+
+    (canvas as any).composite = vi.fn();
+
+    Object.defineProperty(canvas, 'mainCanvas', {
+      configurable: true,
+      value: {
+        setPointerCapture: vi.fn(),
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }),
+        style: { cursor: '' },
+      },
+    });
+
+    (canvas as any)._panX = 0;
+    (canvas as any)._panY = 0;
+    (canvas as any)._zoom = 1;
+
+    // Simulate a stale _beforeDrawData (e.g. from a previous operation)
+    (canvas as any)._beforeDrawData = new ImageData(100, 100);
+
+    // _drawing is false (fill tool never sets it)
+    expect((canvas as any)._drawing).toBe(false);
+
+    const upEvent = { clientX: 50, clientY: 50, pointerId: 1 } as unknown as PointerEvent;
+    (canvas as any)._onPointerUp(upEvent);
+
+    // No history entry should be pushed — _drawing was false, so no
+    // brush/shape operation was in progress.
+    expect((canvas as any)._history).toHaveLength(0);
+    // _beforeDrawData should NOT be consumed by a phantom push
+    expect((canvas as any)._beforeDrawData).not.toBeNull();
+  });
+});

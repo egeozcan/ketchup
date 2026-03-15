@@ -933,6 +933,8 @@ export class DrawingCanvas extends LitElement {
       this._handleSelectPointerUp(e);
       return;
     }
+
+    if (!this._drawing) return;
     const p = this._getDocPoint(e);
 
     if (
