@@ -897,6 +897,16 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
+    // Same for the move tool: if a move drag was in progress but the tool
+    // changed, finalize it so the partial move is recorded in history.
+    if (this._moveTempCanvas && activeTool !== 'move') {
+      this._moveTempCanvas = null;
+      this._moveStartPoint = null;
+      this._pushDrawHistory();
+      this.composite();
+      return;
+    }
+
     if (activeTool === 'move' && this._moveTempCanvas) {
       this._moveTempCanvas = null;
       this._moveStartPoint = null;

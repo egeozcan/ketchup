@@ -979,7 +979,70 @@ describe('DrawingCanvas fill tool bounds check', () => {
   });
 });
 
-describe('DrawingCanvas mid-stroke tool switch', () => {
+describe('DrawingCanvas mid-operation tool switch', () => {
+  it('cleans up move state when switching tools during a move drag', () => {
+    const canvas = new DrawingCanvas();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 100;
+    layerCanvas.height = 100;
+
+    // Start with move tool
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          activeTool: 'move',
+          strokeColor: '#000000',
+          fillColor: '#ff0000',
+          useFill: false,
+          brushSize: 4,
+          stampImage: null,
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+          activeLayerId: 'l1',
+          documentWidth: 100,
+          documentHeight: 100,
+          layersPanelOpen: true,
+        },
+      },
+    };
+
+    (canvas as any).composite = vi.fn();
+
+    Object.defineProperty(canvas, 'mainCanvas', {
+      configurable: true,
+      value: {
+        setPointerCapture: vi.fn(),
+        releasePointerCapture: vi.fn(),
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }),
+        style: { cursor: '' },
+      },
+    });
+
+    (canvas as any)._panX = 0;
+    (canvas as any)._panY = 0;
+    (canvas as any)._zoom = 1;
+
+    // Simulate pointerdown on the move tool
+    const downEvent = { button: 0, clientX: 50, clientY: 50, pointerId: 1 } as unknown as PointerEvent;
+    (canvas as any)._onPointerDown(downEvent);
+
+    expect((canvas as any)._moveTempCanvas).not.toBeNull();
+    expect((canvas as any)._beforeDrawData).not.toBeNull();
+
+    // User switches tool mid-drag (e.g. keyboard shortcut)
+    (canvas as any)._ctx.value.state.activeTool = 'pencil';
+
+    // Simulate pointerup — now activeTool is 'pencil'
+    const upEvent = { clientX: 60, clientY: 60, pointerId: 1 } as unknown as PointerEvent;
+    (canvas as any)._onPointerUp(upEvent);
+
+    // Move state must be cleaned up and the partial move recorded in history
+    expect((canvas as any)._moveTempCanvas).toBeNull();
+    expect((canvas as any)._moveStartPoint).toBeNull();
+    // A history entry should have been pushed so the move is undoable
+    expect((canvas as any)._history.length).toBeGreaterThan(0);
+  });
+
   it('cleans up drawing state when switching tools during a brush stroke', () => {
     const canvas = new DrawingCanvas();
 
