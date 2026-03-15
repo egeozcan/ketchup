@@ -979,6 +979,62 @@ describe('DrawingCanvas fill tool bounds check', () => {
   });
 });
 
+describe('DrawingCanvas move tool click without drag', () => {
+  it('does not push a no-op history entry when clicking without moving', () => {
+    const canvas = new DrawingCanvas();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 100;
+    layerCanvas.height = 100;
+
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          activeTool: 'move',
+          strokeColor: '#000000',
+          fillColor: '#ff0000',
+          useFill: false,
+          brushSize: 4,
+          stampImage: null,
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+          activeLayerId: 'l1',
+          documentWidth: 100,
+          documentHeight: 100,
+          layersPanelOpen: true,
+        },
+      },
+    };
+
+    (canvas as any).composite = vi.fn();
+
+    Object.defineProperty(canvas, 'mainCanvas', {
+      configurable: true,
+      value: {
+        setPointerCapture: vi.fn(),
+        releasePointerCapture: vi.fn(),
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }),
+        style: { cursor: '' },
+      },
+    });
+
+    (canvas as any)._panX = 0;
+    (canvas as any)._panY = 0;
+    (canvas as any)._zoom = 1;
+
+    expect((canvas as any)._history).toHaveLength(0);
+
+    // Click and immediately release at the same position (no drag)
+    const downEvent = { button: 0, clientX: 50, clientY: 50, pointerId: 1 } as unknown as PointerEvent;
+    (canvas as any)._onPointerDown(downEvent);
+
+    const upEvent = { clientX: 50, clientY: 50, pointerId: 1 } as unknown as PointerEvent;
+    (canvas as any)._onPointerUp(upEvent);
+
+    // No pixels were moved, so no history entry should be pushed
+    expect((canvas as any)._history).toHaveLength(0);
+  });
+});
+
 describe('DrawingCanvas mid-operation tool switch', () => {
   it('cleans up move state when switching tools during a move drag', () => {
     const canvas = new DrawingCanvas();

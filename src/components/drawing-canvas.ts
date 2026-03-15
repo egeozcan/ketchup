@@ -908,9 +908,17 @@ export class DrawingCanvas extends LitElement {
     }
 
     if (activeTool === 'move' && this._moveTempCanvas) {
+      const p = this._getDocPoint(e);
+      const dx = Math.round(p.x - this._moveStartPoint!.x);
+      const dy = Math.round(p.y - this._moveStartPoint!.y);
       this._moveTempCanvas = null;
       this._moveStartPoint = null;
-      this._pushDrawHistory();
+      if (dx === 0 && dy === 0) {
+        // Click without drag — discard the no-op history entry
+        this._beforeDrawData = null;
+      } else {
+        this._pushDrawHistory();
+      }
       this.composite();
       return;
     }
