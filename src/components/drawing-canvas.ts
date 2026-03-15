@@ -9,6 +9,8 @@ import { drawEraserSegment } from '../tools/eraser.js';
 import { drawShapePreview } from '../tools/shapes.js';
 import { floodFill } from '../tools/fill.js';
 import { drawSelectionRect } from '../tools/select.js';
+import './resize-dialog.js';
+import type { ResizeDialog } from './resize-dialog.js';
 
 type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
@@ -45,6 +47,7 @@ export class DrawingCanvas extends LitElement {
 
   @query('#main') mainCanvas!: HTMLCanvasElement;
   @query('#preview') previewCanvas!: HTMLCanvasElement;
+  @query('resize-dialog') private _resizeDialog!: ResizeDialog;
 
   private _checkerboardPattern: CanvasPattern | null = null;
   private _resizeObserver: ResizeObserver | null = null;
@@ -1206,6 +1209,75 @@ export class DrawingCanvas extends LitElement {
     this._startSelectionAnimation();
   }
 
+  /**
+   * Shared handler for external images from paste or drag-and-drop.
+   * Creates a new layer, optionally shows resize dialog, places a float.
+   * Note: calls _commitFloat() directly (not clearSelection) to commit any
+   * prior float — clearSelection is the general-purpose public API that
+   * many callers use and must always commit.
+   */
+  private async _handleExternalImage(img: HTMLImageElement, name: string) {
+    // Commit any active float first
+    this._commitFloat();
+
+    let w = img.naturalWidth;
+    let h = img.naturalHeight;
+    const canvasW = this._docWidth;
+    const canvasH = this._docHeight;
+
+    // Show resize dialog if image exceeds canvas
+    if (w > canvasW || h > canvasH) {
+      const shouldScale = await this._resizeDialog.show(w, h, canvasW, canvasH);
+      if (shouldScale) {
+        const scale = Math.min(canvasW / w, canvasH / h);
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+      }
+    }
+
+    // Create new layer via context
+    this.ctx.addLayer(name);
+    await this.updateComplete;
+
+    // Capture before-draw state on the new empty layer (blank ImageData for undo)
+    this._captureBeforeDraw();
+
+    // Create the float
+    this._floatIsExternalImage = true;
+    this._createFloatFromImageDirect(img, w, h);
+  }
+
+  /**
+   * Read system clipboard for an image and handle it as a new layer.
+   * Called by drawing-app when Ctrl+V is pressed and no internal clipboard data exists.
+   */
+  public async pasteExternalImage() {
+    try {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const imageType = item.types.find(t => t.startsWith('image/'));
+        if (!imageType) continue;
+        const blob = await item.getType(imageType);
+        const url = URL.createObjectURL(blob);
+        try {
+          const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const el = new Image();
+            el.onload = () => resolve(el);
+            el.onerror = () => reject(new Error('Image load failed'));
+            el.src = url;
+          });
+          URL.revokeObjectURL(url);
+          await this._handleExternalImage(img, 'Pasted Image');
+        } catch {
+          URL.revokeObjectURL(url);
+        }
+        return; // Use first image found
+      }
+    } catch {
+      // Clipboard API denied or unavailable — silently ignore
+    }
+  }
+
   private _commitFloat() {
     if (!this._float) return;
     const layerCtx = this._getActiveLayerCtx();
@@ -1483,6 +1555,31 @@ export class DrawingCanvas extends LitElement {
     this._commitFloat();
   }
 
+  /**
+   * Cancel an external image float: discard without drawing, delete the empty layer.
+   * Called exclusively by the Escape handler in drawing-app for external image floats.
+   * clearSelection() is NOT modified — it always commits, which is correct for
+   * tool switches, layer switches, project switches, etc.
+   */
+  public cancelExternalFloat() {
+    if (!this._floatIsExternalImage || !this._float) return;
+    const layerId = this.ctx.state.activeLayerId;
+    this._clearFloatState();
+    this._beforeDrawData = null;
+    this.composite();
+    this.ctx.deleteLayer(layerId);
+  }
+
+  /** Whether the internal clipboard has data (used by drawing-app to decide paste path) */
+  public get hasClipboardData(): boolean {
+    return this._clipboard !== null;
+  }
+
+  /** Whether an external image float is active (used by drawing-app for Escape handling) */
+  public get hasExternalFloat(): boolean {
+    return this._floatIsExternalImage && this._float !== null;
+  }
+
   override connectedCallback() {
     super.connectedCallback();
     this.addEventListener('wheel', this._onWheel, { passive: false });
@@ -1509,6 +1606,7 @@ export class DrawingCanvas extends LitElement {
         id="preview"
         style="position:absolute;top:0;left:0;pointer-events:none;"
       ></canvas>
+      <resize-dialog></resize-dialog>
     `;
   }
 }
