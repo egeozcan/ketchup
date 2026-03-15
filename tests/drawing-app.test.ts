@@ -453,6 +453,77 @@ describe('DrawingApp', () => {
     loadSpy.mockRestore();
   });
 
+  it('snapshots document dimensions before async serialization in _save', async () => {
+    const app = new DrawingApp();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 200;
+    layerCanvas.height = 150;
+
+    (app as any)._currentProject = { id: 'p1', name: 'P', createdAt: 0, updatedAt: 0, thumbnail: null };
+    (app as any)._state = {
+      activeTool: 'pencil',
+      strokeColor: '#000000',
+      fillColor: '#ff0000',
+      useFill: false,
+      brushSize: 4,
+      stampImage: null,
+      layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+      activeLayerId: 'l1',
+      layersPanelOpen: true,
+      documentWidth: 200,
+      documentHeight: 150,
+    };
+    (app as any)._dirty = true;
+    (app as any)._dirtyVersion = 1;
+
+    Object.defineProperty(app, 'canvas', {
+      configurable: true,
+      value: {
+        getFloatSnapshot: () => null,
+        getHistory: () => [],
+        getHistoryIndex: () => -1,
+        getHistoryVersion: () => 0,
+        mainCanvas: null,
+        clearSelection: vi.fn(),
+      },
+    });
+
+    // Intercept saveProjectState to capture the stateRecord
+    let savedRecord: any = null;
+    const projectStore = await import('../src/project-store.js');
+    const saveSpy = vi.spyOn(projectStore, 'saveProjectState').mockImplementation(
+      async (_pid, record) => { savedRecord = record; },
+    );
+    vi.spyOn(projectStore, 'listProjects').mockResolvedValue([]);
+    // Mock serialization to avoid canvas.toBlob hanging in jsdom
+    vi.spyOn(projectStore, 'serializeLayerFromImageData').mockResolvedValue(
+      { id: 'l1', name: 'Layer 1', visible: true, opacity: 1, imageBlob: new Blob() },
+    );
+
+    // Start the save with flushing=true to skip the 1500ms indicator delay.
+    const savePromise = (app as any)._save(true);
+
+    // WHILE the save is in progress, change the document dimensions.
+    // This simulates the user resizing the document during async serialization.
+    (app as any)._state = {
+      ...(app as any)._state,
+      documentWidth: 800,
+      documentHeight: 600,
+    };
+
+    await savePromise;
+
+    // The saved record must use the ORIGINAL dimensions (200×150),
+    // not the modified ones (800×600), because the snapshot was taken
+    // before the async serialization.
+    expect(savedRecord).not.toBeNull();
+    expect(savedRecord.canvasWidth).toBe(200);
+    expect(savedRecord.canvasHeight).toBe(150);
+
+    saveSpy.mockRestore();
+  });
+
   it('composites active float into layer snapshot during save', () => {
     const app = new DrawingApp();
 

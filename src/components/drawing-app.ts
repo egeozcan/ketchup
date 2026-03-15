@@ -203,6 +203,20 @@ export class DrawingApp extends LitElement {
           const skipDelay = flushingThisRun || forceFlush;
 
           // Synchronously snapshot all mutable data before any awaits.
+          // Tool settings and dimensions must be captured here so they stay
+          // consistent with the layer snapshots if the user edits mid-save.
+          const snapshotToolSettings = {
+            activeTool: this._state.activeTool,
+            strokeColor: this._state.strokeColor,
+            fillColor: this._state.fillColor,
+            useFill: this._state.useFill,
+            brushSize: this._state.brushSize,
+          };
+          const snapshotWidth = this._state.documentWidth;
+          const snapshotHeight = this._state.documentHeight;
+          const snapshotActiveLayerId = this._state.activeLayerId;
+          const snapshotLayersPanelOpen = this._state.layersPanelOpen;
+
           // If a floating selection is active, composite it into the owning
           // layer's snapshot so persisted data never has a hole from the lift.
           const floatSnap = this.canvas?.getFloatSnapshot() ?? null;
@@ -241,18 +255,12 @@ export class DrawingApp extends LitElement {
 
           const stateRecord = {
             projectId,
-            toolSettings: {
-              activeTool: this._state.activeTool,
-              strokeColor: this._state.strokeColor,
-              fillColor: this._state.fillColor,
-              useFill: this._state.useFill,
-              brushSize: this._state.brushSize,
-            },
-            canvasWidth: this._state.documentWidth,
-            canvasHeight: this._state.documentHeight,
+            toolSettings: snapshotToolSettings,
+            canvasWidth: snapshotWidth,
+            canvasHeight: snapshotHeight,
             layers,
-            activeLayerId: this._state.activeLayerId,
-            layersPanelOpen: this._state.layersPanelOpen,
+            activeLayerId: snapshotActiveLayerId,
+            layersPanelOpen: snapshotLayersPanelOpen,
             historyIndex,
           };
 
