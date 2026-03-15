@@ -89,6 +89,55 @@ describe('LayersPanel rename', () => {
   });
 });
 
+describe('LayersPanel drop cleanup', () => {
+  it('clears drop indicators when an external drop has no dragged layer', () => {
+    const panel = new LayersPanel();
+
+    (panel as any)._ctx = {
+      value: {
+        state: {
+          layers: [
+            { id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: document.createElement('canvas') },
+            { id: 'l2', name: 'Layer 2', visible: true, opacity: 1, canvas: document.createElement('canvas') },
+          ],
+          activeLayerId: 'l1',
+          layersPanelOpen: true,
+        },
+      },
+    };
+
+    // Simulate: an external file drag entered a layer row and left
+    // drop indicators via _onDragOver, then the file was dropped on
+    // the panel. _draggedLayerId is null (drag didn't start from a row).
+
+    // Create a fake row with a lingering indicator
+    const row = document.createElement('div');
+    row.classList.add('layer-row', 'drop-above');
+    row.dataset.layerId = 'l1';
+
+    // Stub shadowRoot.querySelectorAll so _clearDropIndicators finds the row
+    Object.defineProperty(panel, 'shadowRoot', {
+      configurable: true,
+      value: { querySelectorAll: (sel: string) => sel === '.layer-row' ? [row] : [] },
+    });
+
+    // No dragged layer — simulates an external file drop
+    (panel as any)._draggedLayerId = null;
+
+    const dropEvent = {
+      preventDefault: vi.fn(),
+      target: row,
+      clientY: 50,
+    } as unknown as DragEvent;
+
+    (panel as any)._onDrop(dropEvent);
+
+    // BUG: _onDrop returns early without clearing indicators when
+    // _draggedLayerId is null. The 'drop-above' class stays stuck.
+    expect(row.classList.contains('drop-above')).toBe(false);
+  });
+});
+
 describe('LayersPanel opacity', () => {
   it('commits opacity history when changed via keyboard (no pointerdown)', () => {
     const panel = new LayersPanel();

@@ -478,7 +478,10 @@ export class LayersPanel extends LitElement {
   private _onDrop(e: DragEvent) {
     e.preventDefault();
     const draggedId = this._draggedLayerId;
-    if (!draggedId) return;
+    if (!draggedId) {
+      this._clearDropIndicators();
+      return;
+    }
 
     const row = (e.target as HTMLElement).closest('.layer-row') as HTMLElement | null;
     if (!row) return;
