@@ -540,17 +540,20 @@ export class DrawingCanvas extends LitElement {
     exportCanvas.width = this._docWidth;
     exportCanvas.height = this._docHeight;
     const exportCtx = exportCanvas.getContext('2d')!;
-    const layers = this._ctx.value?.state.layers ?? [];
+    const state = this._ctx.value?.state;
+    const layers = state?.layers ?? [];
+    const activeLayerId = state?.activeLayerId ?? null;
     for (const layer of layers) {
       if (!layer.visible) continue;
       exportCtx.globalAlpha = layer.opacity;
       exportCtx.drawImage(layer.canvas, 0, 0);
+      // Draw the float right after its owning layer so it composites
+      // at the correct z-position instead of on top of everything.
+      if (this._float && layer.id === activeLayerId) {
+        const { currentRect, tempCanvas } = this._float;
+        exportCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y));
+      }
       exportCtx.globalAlpha = 1.0;
-    }
-    // Include active floating selection so the export matches what the user sees
-    if (this._float) {
-      const { currentRect, tempCanvas } = this._float;
-      exportCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y));
     }
     const link = document.createElement('a');
     link.download = 'drawing.png';

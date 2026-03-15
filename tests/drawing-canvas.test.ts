@@ -118,6 +118,76 @@ describe('DrawingCanvas saveCanvas', () => {
   });
 });
 
+describe('DrawingCanvas saveCanvas float z-order', () => {
+  it('draws the float at the active layer z-position, not on top of all layers', () => {
+    const canvas = new DrawingCanvas();
+
+    // Two layers: L1 (bottom, active) and L2 (top)
+    const l1Canvas = document.createElement('canvas');
+    l1Canvas.width = 100;
+    l1Canvas.height = 100;
+    const l2Canvas = document.createElement('canvas');
+    l2Canvas.width = 100;
+    l2Canvas.height = 100;
+
+    // Float belongs to L1 (active layer)
+    const floatTemp = document.createElement('canvas');
+    floatTemp.width = 50;
+    floatTemp.height = 50;
+    (canvas as any)._float = {
+      originalImageData: new ImageData(50, 50),
+      currentRect: { x: 10, y: 10, w: 50, h: 50 },
+      tempCanvas: floatTemp,
+    };
+
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          layers: [
+            { id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: l1Canvas },
+            { id: 'l2', name: 'Layer 2', visible: true, opacity: 1, canvas: l2Canvas },
+          ],
+          activeLayerId: 'l1',
+          documentWidth: 100,
+          documentHeight: 100,
+        },
+      },
+    };
+
+    // Track drawImage call order on the export canvas
+    const drawOrder: string[] = [];
+    const realCreate = document.createElement.bind(document);
+    let canvasCount = 0;
+    vi.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
+      const el = realCreate(tag);
+      if (tag === 'canvas') {
+        canvasCount++;
+        if (canvasCount === 1) {
+          const ctx = (el as HTMLCanvasElement).getContext('2d')!;
+          const origDrawImage = ctx.drawImage.bind(ctx);
+          ctx.drawImage = vi.fn((...args: any[]) => {
+            const src = args[0] as HTMLCanvasElement;
+            if (src === l1Canvas) drawOrder.push('l1');
+            else if (src === l2Canvas) drawOrder.push('l2');
+            else if (src === floatTemp) drawOrder.push('float');
+            origDrawImage(...(args as Parameters<typeof ctx.drawImage>));
+          }) as typeof ctx.drawImage;
+        }
+      }
+      if (tag === 'a') {
+        Object.defineProperty(el, 'click', { value: vi.fn() });
+      }
+      return el;
+    }) as typeof document.createElement);
+
+    canvas.saveCanvas();
+
+    // Float must be drawn AFTER L1 (its owner) but BEFORE L2 (above it)
+    // BUG: currently float is drawn after all layers → ['l1', 'l2', 'float']
+    expect(drawOrder).toEqual(['l1', 'float', 'l2']);
+  });
+});
+
 describe('DrawingCanvas _commitFloat after clearCanvas', () => {
   beforeEach(() => {
     vi.useFakeTimers();
