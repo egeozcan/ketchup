@@ -619,6 +619,7 @@ export class DrawingCanvas extends LitElement {
     if (e.ctrlKey || e.metaKey) {
       // Zoom anchored to cursor position
       e.preventDefault();
+      if (e.deltaY === 0) return; // Pure horizontal scroll — don't zoom
       const rect = this.mainCanvas.getBoundingClientRect();
       const viewportX = e.clientX - rect.left;
       const viewportY = e.clientY - rect.top;

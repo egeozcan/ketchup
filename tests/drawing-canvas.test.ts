@@ -1219,3 +1219,59 @@ describe('DrawingCanvas clearSelection resets drawing state', () => {
     expect((canvas as any)._drawing).toBe(false);
   });
 });
+
+describe('DrawingCanvas wheel zoom', () => {
+  it('does not zoom when Ctrl+wheel has deltaY === 0 (horizontal scroll)', () => {
+    const canvas = new DrawingCanvas();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 800;
+    layerCanvas.height = 600;
+
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+          activeLayerId: 'l1',
+          documentWidth: 800,
+          documentHeight: 600,
+        },
+      },
+    };
+
+    (canvas as any).composite = vi.fn();
+
+    Object.defineProperty(canvas, 'mainCanvas', {
+      configurable: true,
+      value: {
+        getContext: () => ({
+          fillRect: vi.fn(), fillStyle: '', save: vi.fn(), restore: vi.fn(),
+          translate: vi.fn(), scale: vi.fn(), beginPath: vi.fn(), rect: vi.fn(),
+          clip: vi.fn(), strokeStyle: '', lineWidth: 0, strokeRect: vi.fn(),
+          drawImage: vi.fn(), globalAlpha: 1,
+        }),
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+        width: 800,
+        height: 600,
+      },
+    });
+
+    const zoomBefore = (canvas as any)._zoom;
+
+    // Ctrl + horizontal scroll: deltaY === 0, deltaX !== 0
+    const event = {
+      ctrlKey: true,
+      metaKey: false,
+      deltaX: 50,
+      deltaY: 0,
+      clientX: 400,
+      clientY: 300,
+      preventDefault: vi.fn(),
+    } as unknown as WheelEvent;
+
+    (canvas as any)._onWheel(event);
+
+    // Zoom must not change — the user only scrolled horizontally
+    expect((canvas as any)._zoom).toBe(zoomBefore);
+  });
+});
