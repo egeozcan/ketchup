@@ -335,7 +335,11 @@ export class DrawingApp extends LitElement {
       this.canvas?.cutSelection();
     } else if (ctrl && key === 'v') {
       e.preventDefault();
-      this.canvas?.pasteSelection();
+      if (this.canvas?.hasClipboardData) {
+        this.canvas.pasteSelection();
+      } else {
+        this.canvas?.pasteExternalImage();
+      }
     } else if (
       (e.key === 'Delete' || e.key === 'Backspace') &&
       (this._state.activeTool === 'select' || this._state.activeTool === 'stamp')
@@ -343,7 +347,11 @@ export class DrawingApp extends LitElement {
       e.preventDefault();
       this.canvas?.deleteSelection();
     } else if (e.key === 'Escape') {
-      this.canvas?.clearSelection();
+      if (this.canvas?.hasExternalFloat) {
+        this.canvas.cancelExternalFloat();
+      } else {
+        this.canvas?.clearSelection();
+      }
     } else if (e.key === '0' && ctrl) {
       e.preventDefault();
       this.canvas?.zoomToFit();
