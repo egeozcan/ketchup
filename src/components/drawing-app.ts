@@ -202,14 +202,26 @@ export class DrawingApp extends LitElement {
           this._saveRequested = false;
           const skipDelay = flushingThisRun || forceFlush;
 
-          // Synchronously snapshot all mutable data before any awaits
-          const layerSnapshots = this._state.layers.map(l => ({
-            id: l.id,
-            name: l.name,
-            visible: l.visible,
-            opacity: l.opacity,
-            imageData: l.canvas.getContext('2d')!.getImageData(0, 0, l.canvas.width, l.canvas.height),
-          }));
+          // Synchronously snapshot all mutable data before any awaits.
+          // If a floating selection is active, composite it into the owning
+          // layer's snapshot so persisted data never has a hole from the lift.
+          const floatSnap = this.canvas?.getFloatSnapshot() ?? null;
+          const layerSnapshots = this._state.layers.map(l => {
+            const ctx = l.canvas.getContext('2d')!;
+            const imageData = ctx.getImageData(0, 0, l.canvas.width, l.canvas.height);
+            if (floatSnap && l.id === floatSnap.layerId) {
+              // Draw the float onto a temp canvas copy so the live canvas is untouched.
+              const tmp = document.createElement('canvas');
+              tmp.width = l.canvas.width;
+              tmp.height = l.canvas.height;
+              const tmpCtx = tmp.getContext('2d')!;
+              tmpCtx.putImageData(imageData, 0, 0);
+              tmpCtx.drawImage(floatSnap.tempCanvas, floatSnap.x, floatSnap.y);
+              return { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity,
+                imageData: tmpCtx.getImageData(0, 0, tmp.width, tmp.height) };
+            }
+            return { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, imageData };
+          });
           const historySnapshot = this.canvas?.getHistory() ?? [];
           const historyIndex = this.canvas?.getHistoryIndex() ?? -1;
           const historyVersion = this.canvas?.getHistoryVersion() ?? 0;

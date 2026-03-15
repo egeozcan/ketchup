@@ -1694,6 +1694,15 @@ export class DrawingCanvas extends LitElement {
     return this._floatIsExternalImage && this._float !== null;
   }
 
+  /** Returns active float info for persistence, or null if no float. */
+  public getFloatSnapshot(): { layerId: string; tempCanvas: HTMLCanvasElement; x: number; y: number } | null {
+    if (!this._float) return null;
+    const layerId = this._ctx.value?.state.activeLayerId;
+    if (!layerId) return null;
+    const { currentRect, tempCanvas } = this._float;
+    return { layerId, tempCanvas, x: Math.round(currentRect.x), y: Math.round(currentRect.y) };
+  }
+
   private _onDragOver = (e: DragEvent) => {
     e.preventDefault();
   };
