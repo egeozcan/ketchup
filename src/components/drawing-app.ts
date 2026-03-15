@@ -507,7 +507,11 @@ export class DrawingApp extends LitElement {
       addLayer: (name?: string) => {
         this.canvas?.clearSelection();
         const layer = this._createLayer(this._state.documentWidth, this._state.documentHeight);
-        if (name) layer.name = name;
+        if (name) {
+          layer.name = name;
+          // Undo the counter increment since the generated name was discarded.
+          this._layerCounter--;
+        }
         const activeIdx = this._state.layers.findIndex(l => l.id === this._state.activeLayerId);
         const insertIdx = activeIdx + 1;
         const newLayers = [...this._state.layers];

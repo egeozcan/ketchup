@@ -259,4 +259,24 @@ describe('DrawingApp', () => {
     expect((app as any)._state.activeTool).toBe('select');
     expect(event.preventDefault).not.toHaveBeenCalled();
   });
+
+  it('does not skip layer counter numbers when addLayer is called with a custom name', () => {
+    const app = createAppWithCanvasSpies();
+    // Counter starts at 1 (one initial "Layer 1")
+    expect((app as any)._layerCounter).toBe(1);
+
+    const ctx = (app as any)._buildContextValue();
+
+    // Add a layer with a custom name (as external image paste does)
+    ctx.addLayer('Pasted Image');
+    // The counter should NOT have incremented since the generated name was discarded
+    expect((app as any)._layerCounter).toBe(1);
+
+    // Now add a layer without a name — should be "Layer 2", not "Layer 3"
+    ctx.addLayer();
+    expect((app as any)._layerCounter).toBe(2);
+    const layers = (app as any)._state.layers;
+    const lastLayer = layers[layers.length - 1];
+    expect(lastLayer.name).toBe('Layer 2');
+  });
 });
