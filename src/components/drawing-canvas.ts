@@ -882,6 +882,21 @@ export class DrawingCanvas extends LitElement {
 
     const { activeTool } = this.ctx.state;
 
+    // If a brush/shape stroke was in progress but the tool changed mid-stroke
+    // (e.g. via keyboard shortcut), finalize the orphaned stroke now.
+    // Select, stamp, move, hand, and fill never set _drawing, so _drawing
+    // being true here means the tool switched away from a brush/shape tool.
+    if (this._drawing && activeTool !== 'pencil' && activeTool !== 'marker' &&
+        activeTool !== 'eraser' && activeTool !== 'rectangle' &&
+        activeTool !== 'circle' && activeTool !== 'line' && activeTool !== 'triangle') {
+      this._drawing = false;
+      this._lastPoint = null;
+      this._startPoint = null;
+      this._pushDrawHistory();
+      this.composite();
+      return;
+    }
+
     if (activeTool === 'move' && this._moveTempCanvas) {
       this._moveTempCanvas = null;
       this._moveStartPoint = null;
@@ -899,8 +914,6 @@ export class DrawingCanvas extends LitElement {
       this._handleSelectPointerUp(e);
       return;
     }
-
-    if (!this._drawing) return;
     const p = this._getDocPoint(e);
 
     if (
