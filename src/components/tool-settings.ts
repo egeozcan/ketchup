@@ -642,6 +642,7 @@ export class ToolSettings extends LitElement {
   }
 
   private _commitRename(e: Event, id: string) {
+    if (this._renamingProjectId !== id) return;
     const input = e.target as HTMLInputElement;
     const name = input.value.trim();
     if (name) {

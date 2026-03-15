@@ -479,6 +479,7 @@ export class DrawingApp extends LitElement {
       saveCanvas: () => this.canvas?.saveCanvas(),
       // Layer operations
       addLayer: () => {
+        this.canvas?.clearSelection();
         const layer = this._createLayer(this._state.documentWidth, this._state.documentHeight);
         const activeIdx = this._state.layers.findIndex(l => l.id === this._state.activeLayerId);
         const insertIdx = activeIdx + 1;
@@ -584,6 +585,9 @@ export class DrawingApp extends LitElement {
       switchProject: (id: string) => {
         if (id === this._currentProject?.id) return;
         const doSwitch = async () => {
+          // Commit any float so the save captures the layer with
+          // the float content (no hole from a pending selection lift).
+          this.canvas?.clearSelection();
           if (this._savePromise || this._dirty) {
             await this._flushPendingSaveAndWait();
           }

@@ -100,7 +100,7 @@ describe('DrawingCanvas saveCanvas', () => {
         canvasCount++;
         // The first canvas created by saveCanvas is the export canvas
         if (canvasCount === 1) {
-          exportCtx = el.getContext('2d');
+          exportCtx = (el as HTMLCanvasElement).getContext('2d');
         }
       }
       // Prevent actual navigation for the anchor
@@ -215,6 +215,99 @@ describe('DrawingCanvas _applyResize', () => {
     // Aspect ratio must be preserved (2:1), not become 1:1
     expect(resultAspect).toBeCloseTo(origAspect, 5);
     // Both dimensions must still meet the minimum
+    expect(result.w).toBeGreaterThanOrEqual(20);
+    expect(result.h).toBeGreaterThanOrEqual(20);
+  });
+
+  it('preserves the east-edge anchor when W handle minSize clamp activates', () => {
+    const canvas = new DrawingCanvas();
+
+    const orig = { x: 50, y: 50, w: 200, h: 100 };
+    (canvas as any)._float = {
+      originalImageData: new ImageData(200, 100),
+      currentRect: { ...orig },
+      tempCanvas: document.createElement('canvas'),
+    };
+    (canvas as any)._floatSrcCanvas = document.createElement('canvas');
+    (canvas as any)._floatResizeHandle = 'w';
+    (canvas as any)._floatResizeOrigin = {
+      rect: { ...orig },
+      point: { x: 50, y: 100 }, // W edge midpoint
+    };
+
+    // minSize = 4 / 0.2 = 20
+    (canvas as any)._zoom = 0.2;
+
+    // Drag W handle 190px to the right → newW = 200 - 190 = 10, clamped to 20
+    (canvas as any)._applyResize({ x: 50 + 190, y: 100 });
+
+    const result = (canvas as any)._float.currentRect;
+    const eastEdge = result.x + result.w;
+
+    // The east edge must stay anchored at orig.x + orig.w = 250
+    // BUG: without fix, eastEdge = 240 + 20 = 260
+    expect(eastEdge).toBe(orig.x + orig.w);
+    expect(result.w).toBeGreaterThanOrEqual(20);
+  });
+
+  it('preserves the south-edge anchor when N handle minSize clamp activates', () => {
+    const canvas = new DrawingCanvas();
+
+    const orig = { x: 50, y: 50, w: 200, h: 100 };
+    (canvas as any)._float = {
+      originalImageData: new ImageData(200, 100),
+      currentRect: { ...orig },
+      tempCanvas: document.createElement('canvas'),
+    };
+    (canvas as any)._floatSrcCanvas = document.createElement('canvas');
+    (canvas as any)._floatResizeHandle = 'n';
+    (canvas as any)._floatResizeOrigin = {
+      rect: { ...orig },
+      point: { x: 150, y: 50 }, // N edge midpoint
+    };
+
+    (canvas as any)._zoom = 0.2;
+
+    // Drag N handle 90px down → newH = 100 - 90 = 10, clamped to 20
+    (canvas as any)._applyResize({ x: 150, y: 50 + 90 });
+
+    const result = (canvas as any)._float.currentRect;
+    const southEdge = result.y + result.h;
+
+    // The south edge must stay anchored at orig.y + orig.h = 150
+    expect(southEdge).toBe(orig.y + orig.h);
+    expect(result.h).toBeGreaterThanOrEqual(20);
+  });
+
+  it('preserves the SE-corner anchor when NW handle minSize clamp activates', () => {
+    const canvas = new DrawingCanvas();
+
+    const orig = { x: 0, y: 0, w: 200, h: 100 };
+    (canvas as any)._float = {
+      originalImageData: new ImageData(200, 100),
+      currentRect: { ...orig },
+      tempCanvas: document.createElement('canvas'),
+    };
+    (canvas as any)._floatSrcCanvas = document.createElement('canvas');
+    (canvas as any)._floatResizeHandle = 'nw';
+    (canvas as any)._floatResizeOrigin = {
+      rect: { ...orig },
+      point: { x: 0, y: 0 }, // NW corner
+    };
+
+    // minSize = 4 / 0.2 = 20
+    (canvas as any)._zoom = 0.2;
+
+    // Drag NW handle far toward SE → both dimensions shrink below minSize
+    // dx=190 → newW = 200-190 = 10, dy=95 → newH = 100-95 = 5
+    // After aspect + re-anchor + clamp: newW=40, newH=20
+    (canvas as any)._applyResize({ x: 190, y: 95 });
+
+    const result = (canvas as any)._float.currentRect;
+
+    // The SE corner must stay anchored at (orig.x + orig.w, orig.y + orig.h) = (200, 100)
+    expect(result.x + result.w).toBe(orig.x + orig.w);
+    expect(result.y + result.h).toBe(orig.y + orig.h);
     expect(result.w).toBeGreaterThanOrEqual(20);
     expect(result.h).toBeGreaterThanOrEqual(20);
   });
@@ -334,6 +427,50 @@ describe('DrawingCanvas stamp tool', () => {
   });
 });
 
+describe('DrawingCanvas _createFloatFromImage', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('does not crash on a narrow image that rounds to zero width', () => {
+    const canvas = new DrawingCanvas();
+
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: document.createElement('canvas') }],
+          activeLayerId: 'l1',
+          documentWidth: 800,
+          documentHeight: 600,
+        },
+      },
+    };
+
+    (canvas as any).composite = vi.fn();
+    (canvas as any)._stopSelectionAnimation = vi.fn();
+
+    // A 1×100 image with size=40: scale = 40/100 = 0.4
+    // w = Math.round(1 * 0.4) = 0 → zero-width canvas → crash
+    const img = new Image();
+    Object.defineProperty(img, 'naturalWidth', { value: 1 });
+    Object.defineProperty(img, 'naturalHeight', { value: 100 });
+
+    expect(() => {
+      (canvas as any)._createFloatFromImage(img, 400, 300, 40);
+    }).not.toThrow();
+
+    // Float should be created with w >= 1
+    expect((canvas as any)._float).not.toBeNull();
+    expect((canvas as any)._float.currentRect.w).toBeGreaterThanOrEqual(1);
+    expect((canvas as any)._float.currentRect.h).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe('DrawingCanvas selection rounding', () => {
   it('rounds endpoints before computing width/height for _liftToFloat', () => {
     const canvas = new DrawingCanvas();
@@ -358,6 +495,37 @@ describe('DrawingCanvas selection rounding', () => {
     expect(ry).toBe(20);
     expect(rw).toBe(3);
     expect(rh).toBe(3);
+  });
+});
+
+describe('DrawingCanvas canUndo with active float', () => {
+  it('reports canUndo=true when a float exists even with empty history', () => {
+    const canvas = new DrawingCanvas();
+
+    // Empty history
+    (canvas as any)._history = [];
+    (canvas as any)._historyIndex = -1;
+
+    // Active float
+    const floatTemp = document.createElement('canvas');
+    floatTemp.width = 20;
+    floatTemp.height = 20;
+    (canvas as any)._float = {
+      originalImageData: new ImageData(20, 20),
+      currentRect: { x: 0, y: 0, w: 20, h: 20 },
+      tempCanvas: floatTemp,
+    };
+
+    let detail: { canUndo: boolean; canRedo: boolean } | null = null;
+    canvas.addEventListener('history-change', (e: Event) => {
+      detail = (e as CustomEvent).detail;
+    });
+
+    (canvas as any)._notifyHistory();
+
+    // With a float active, undo can discard it — button must be enabled
+    expect(detail).not.toBeNull();
+    expect(detail!.canUndo).toBe(true);
   });
 });
 
@@ -395,5 +563,269 @@ describe('DrawingCanvas _endPan cursor', () => {
 
     // After pan ends with the move tool active, cursor must be 'move', not 'crosshair'
     expect(mockMainCanvas.style.cursor).toBe('move');
+  });
+});
+
+describe('DrawingCanvas undo with float on empty history', () => {
+  it('discards the float even when there is no history to undo', () => {
+    const canvas = new DrawingCanvas();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 100;
+    layerCanvas.height = 100;
+
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+          activeLayerId: 'l1',
+          documentWidth: 100,
+          documentHeight: 100,
+        },
+      },
+    };
+
+    (canvas as any).composite = vi.fn();
+    (canvas as any)._stopSelectionAnimation = vi.fn();
+
+    // Empty history — nothing to undo
+    (canvas as any)._history = [];
+    (canvas as any)._historyIndex = -1;
+
+    // Active float (user just selected a region)
+    const floatTemp = document.createElement('canvas');
+    floatTemp.width = 20;
+    floatTemp.height = 20;
+    (canvas as any)._float = {
+      originalImageData: new ImageData(20, 20),
+      currentRect: { x: 10, y: 10, w: 20, h: 20 },
+      tempCanvas: floatTemp,
+    };
+    (canvas as any)._beforeDrawData = new ImageData(100, 100);
+
+    canvas.undo();
+
+    // The float must be discarded — Ctrl+Z should cancel the selection
+    expect((canvas as any)._float).toBeNull();
+    // History should remain empty (no entry was pushed)
+    expect((canvas as any)._history).toHaveLength(0);
+  });
+});
+
+describe('DrawingCanvas redo with active float', () => {
+  it('does not crash when redo entries exist and a float is active', () => {
+    const canvas = new DrawingCanvas();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 100;
+    layerCanvas.height = 100;
+
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+          activeLayerId: 'l1',
+          documentWidth: 100,
+          documentHeight: 100,
+        },
+      },
+    };
+
+    (canvas as any).composite = vi.fn();
+    (canvas as any)._stopSelectionAnimation = vi.fn();
+
+    // History with a redo entry: [E0, E1, E2], index=1 → E2 is redoable
+    const img = () => new ImageData(100, 100);
+    (canvas as any)._history = [
+      { type: 'draw', layerId: 'l1', before: img(), after: img() },
+      { type: 'draw', layerId: 'l1', before: img(), after: img() },
+      { type: 'draw', layerId: 'l1', before: img(), after: img() },
+    ];
+    (canvas as any)._historyIndex = 1;
+
+    // Active float (e.g. user just made a selection)
+    const floatTemp = document.createElement('canvas');
+    floatTemp.width = 20;
+    floatTemp.height = 20;
+    (canvas as any)._float = {
+      originalImageData: new ImageData(20, 20),
+      currentRect: { x: 10, y: 10, w: 20, h: 20 },
+      tempCanvas: floatTemp,
+    };
+    (canvas as any)._beforeDrawData = img();
+
+    // BUG: _commitFloat inside redo() pushes a new history entry,
+    // truncating E2. Then redo increments past the array → crash.
+    expect(() => canvas.redo()).not.toThrow();
+
+    // After redo, the float should be gone and E2 should have been applied
+    expect((canvas as any)._float).toBeNull();
+    expect((canvas as any)._historyIndex).toBe(2);
+  });
+});
+
+describe('DrawingCanvas clearCanvas with active float', () => {
+  it('preserves original pre-lift layer state in undo history', () => {
+    const canvas = new DrawingCanvas();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 100;
+    layerCanvas.height = 100;
+
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+          activeLayerId: 'l1',
+          documentWidth: 100,
+          documentHeight: 100,
+        },
+      },
+    };
+
+    // Simulate a float with _beforeDrawData set (as _liftToFloat does)
+    const floatTemp = document.createElement('canvas');
+    floatTemp.width = 20;
+    floatTemp.height = 20;
+    (canvas as any)._float = {
+      originalImageData: new ImageData(20, 20),
+      currentRect: { x: 10, y: 10, w: 20, h: 20 },
+      tempCanvas: floatTemp,
+    };
+
+    // A distinct ImageData object representing the pre-lift layer state.
+    // We check identity (===) to confirm it ends up in history[0].before.
+    const preLiftState = new ImageData(100, 100);
+    (canvas as any)._beforeDrawData = preLiftState;
+
+    // Stub methods that touch DOM/rendering not available in test env
+    (canvas as any).composite = vi.fn();
+    (canvas as any)._stopSelectionAnimation = vi.fn();
+
+    canvas.clearCanvas();
+
+    // With the fix, _commitFloat runs first and pushes a history entry
+    // whose "before" is the pre-lift state (preLiftState).
+    // Without the fix, clearCanvas overwrites _beforeDrawData via
+    // _captureBeforeDraw, so the pre-lift state is lost.
+    const history: any[] = (canvas as any)._history;
+    expect(history.length).toBeGreaterThanOrEqual(1);
+    expect(history[0].before).toBe(preLiftState);
+  });
+});
+
+describe('DrawingCanvas fill tool bounds check', () => {
+  it('does not push a phantom history entry when rounded coords are out of bounds', () => {
+    const canvas = new DrawingCanvas();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 800;
+    layerCanvas.height = 600;
+
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          activeTool: 'fill',
+          strokeColor: '#ff0000',
+          fillColor: '#000000',
+          useFill: false,
+          brushSize: 4,
+          stampImage: null,
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+          activeLayerId: 'l1',
+          documentWidth: 800,
+          documentHeight: 600,
+          layersPanelOpen: true,
+        },
+      },
+    };
+
+    (canvas as any).composite = vi.fn();
+
+    // Mock mainCanvas for setPointerCapture and _getDocPoint
+    Object.defineProperty(canvas, 'mainCanvas', {
+      configurable: true,
+      value: {
+        setPointerCapture: vi.fn(),
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+      },
+    });
+
+    // Simulate a click at viewport coords that map to doc coords (799.6, 300)
+    // at zoom=1, pan=0: docX = clientX - 0 - 0 = clientX
+    (canvas as any)._panX = 0;
+    (canvas as any)._panY = 0;
+    (canvas as any)._zoom = 1;
+
+    const event = {
+      button: 0,
+      clientX: 799.6,
+      clientY: 300,
+      pointerId: 1,
+    } as unknown as PointerEvent;
+
+    (canvas as any)._onPointerDown(event);
+
+    // Math.round(799.6) = 800, which is >= canvas width (800).
+    // floodFill returns early without modifying anything.
+    // BUG: the outer bounds check passes (799.6 < 800), so _captureBeforeDraw
+    // and _pushDrawHistory still run, creating a no-op history entry.
+    expect((canvas as any)._history).toHaveLength(0);
+  });
+
+  it('does not push a no-op history entry when floodFill changes nothing', () => {
+    const canvas = new DrawingCanvas();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 100;
+    layerCanvas.height = 100;
+
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          activeTool: 'fill',
+          strokeColor: '#ff0000',
+          fillColor: '#000000',
+          useFill: false,
+          brushSize: 4,
+          stampImage: null,
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+          activeLayerId: 'l1',
+          documentWidth: 100,
+          documentHeight: 100,
+          layersPanelOpen: true,
+        },
+      },
+    };
+
+    (canvas as any).composite = vi.fn();
+
+    Object.defineProperty(canvas, 'mainCanvas', {
+      configurable: true,
+      value: {
+        setPointerCapture: vi.fn(),
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }),
+      },
+    });
+
+    (canvas as any)._panX = 0;
+    (canvas as any)._panY = 0;
+    (canvas as any)._zoom = 1;
+
+    // In the jsdom/canvas-mock environment, getImageData returns all zeros
+    // and parseColor also returns {r:0,g:0,b:0,a:0} (mock doesn't render).
+    // So floodFill hits the "same color" early return — no pixels change.
+    const event = {
+      button: 0,
+      clientX: 50,
+      clientY: 50,
+      pointerId: 1,
+    } as unknown as PointerEvent;
+
+    (canvas as any)._onPointerDown(event);
+
+    // floodFill returned without modifying the layer.
+    // No history entry should be pushed for a no-op fill.
+    expect((canvas as any)._history).toHaveLength(0);
   });
 });

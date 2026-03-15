@@ -341,7 +341,7 @@ export class DrawingCanvas extends LitElement {
         bubbles: true,
         composed: true,
         detail: {
-          canUndo: this._historyIndex >= 0,
+          canUndo: this._historyIndex >= 0 || this._float !== null,
           canRedo: this._historyIndex < this._history.length - 1,
         },
       }),
@@ -349,11 +349,13 @@ export class DrawingCanvas extends LitElement {
   }
 
   public undo() {
+    // Discard the active float first — this counts as its own undo step
+    // (the float lift is a user action even though it has no history entry).
+    if (this._float) {
+      this._discardFloat();
+      return;
+    }
     if (this._historyIndex < 0) return;
-    // Commit the active float first. This pushes a new history entry for the
-    // lift+commit, which the undo below then immediately reverses — effectively
-    // cancelling the float and restoring the layer to its pre-lift state.
-    this._commitFloat();
     const entry = this._history[this._historyIndex];
     this._historyIndex--;
     this._applyUndo(entry);
@@ -363,7 +365,7 @@ export class DrawingCanvas extends LitElement {
 
   public redo() {
     if (this._historyIndex >= this._history.length - 1) return;
-    this._commitFloat();
+    this._discardFloat();
     this._historyIndex++;
     const entry = this._history[this._historyIndex];
     this._applyRedo(entry);
@@ -504,6 +506,7 @@ export class DrawingCanvas extends LitElement {
   }
 
   public clearCanvas() {
+    this._commitFloat();
     this._captureBeforeDraw();
     const ctx = this._getActiveLayerCtx();
     if (ctx) {
@@ -728,15 +731,22 @@ export class DrawingCanvas extends LitElement {
     }
 
     if (activeTool === 'fill') {
-      // Only fill if the click is within document bounds
-      if (p.x >= 0 && p.y >= 0 && p.x < this._docWidth && p.y < this._docHeight) {
-        this._captureBeforeDraw();
+      // Round to pixel coordinates first so the bounds check matches
+      // what floodFill uses internally (Math.round).
+      const fx = Math.round(p.x);
+      const fy = Math.round(p.y);
+      if (fx >= 0 && fy >= 0 && fx < this._docWidth && fy < this._docHeight) {
         const layerCtx = this._getActiveLayerCtx();
         if (layerCtx) {
-          floodFill(layerCtx, p.x, p.y, this.ctx.state.strokeColor);
+          this._captureBeforeDraw();
+          const modified = floodFill(layerCtx, fx, fy, this.ctx.state.strokeColor);
+          if (modified) {
+            this._pushDrawHistory();
+            this.composite();
+          } else {
+            this._beforeDrawData = null;
+          }
         }
-        this._pushDrawHistory();
-        this.composite();
       }
       return;
     }
@@ -1138,8 +1148,8 @@ export class DrawingCanvas extends LitElement {
 
   private _createFloatFromImage(img: HTMLImageElement, centerX: number, centerY: number, size: number) {
     const scale = size / Math.max(img.naturalWidth, img.naturalHeight);
-    const w = Math.round(img.naturalWidth * scale);
-    const h = Math.round(img.naturalHeight * scale);
+    const w = Math.max(1, Math.round(img.naturalWidth * scale));
+    const h = Math.max(1, Math.round(img.naturalHeight * scale));
     const x = Math.round(centerX - w / 2);
     const y = Math.round(centerY - h / 2);
 
@@ -1178,6 +1188,23 @@ export class DrawingCanvas extends LitElement {
     this._pushDrawHistory();
     this.composite();
     this._clearFloatState();
+  }
+
+  /** Discard the active float by restoring the layer from _beforeDrawData
+   *  without pushing a history entry. Used by undo/redo to avoid truncating
+   *  the redo stack. */
+  private _discardFloat() {
+    if (!this._float) return;
+    if (this._beforeDrawData) {
+      const ctx = this._getActiveLayerCtx();
+      if (ctx) {
+        ctx.putImageData(this._beforeDrawData, 0, 0);
+      }
+      this._beforeDrawData = null;
+    }
+    this._clearFloatState();
+    this.composite();
+    this._notifyHistory();
   }
 
   private _clearFloatState() {
@@ -1254,6 +1281,8 @@ export class DrawingCanvas extends LitElement {
     }
 
     // Flip if dragged past opposite edge (after aspect ratio so flipped dimensions are correct)
+    const wFlipped = newW < 0;
+    const hFlipped = newH < 0;
     if (newW < 0) { newX += newW; newW = -newW; }
     if (newH < 0) { newY += newH; newH = -newH; }
 
@@ -1271,6 +1300,16 @@ export class DrawingCanvas extends LitElement {
     } else {
       if (newW < minSize) { newW = minSize; }
       if (newH < minSize) { newH = minSize; }
+    }
+
+    // Re-anchor after minSize clamp: handles that move the left/top edge
+    // must keep the opposite (right/bottom) edge fixed. Flipped handles
+    // already have their anchor set correctly by the flip logic above.
+    if (!wFlipped && (handle === 'nw' || handle === 'w' || handle === 'sw')) {
+      newX = orig.x + orig.w - newW;
+    }
+    if (!hFlipped && (handle === 'nw' || handle === 'n' || handle === 'ne')) {
+      newY = orig.y + orig.h - newH;
     }
 
     cur.x = newX;
@@ -1327,6 +1366,8 @@ export class DrawingCanvas extends LitElement {
 
   private _startSelectionAnimation() {
     this._stopSelectionAnimation();
+    // Float was just created — undo button should reflect this
+    this._notifyHistory();
     const animate = () => {
       this._selectionDashOffset = (this._selectionDashOffset + 0.5) % 12;
       this._redrawFloatPreview();

@@ -7,7 +7,7 @@ export function floodFill(
   startY: number,
   fillColor: string,
   tolerance: number = 32,
-) {
+): boolean {
   const { width, height } = ctx.canvas;
   const imageData = ctx.getImageData(0, 0, width, height);
   const data = imageData.data;
@@ -15,7 +15,7 @@ export function floodFill(
   const sx = Math.round(startX);
   const sy = Math.round(startY);
 
-  if (sx < 0 || sx >= width || sy < 0 || sy >= height) return;
+  if (sx < 0 || sx >= width || sy < 0 || sy >= height) return false;
 
   // Parse fill color
   const fc = parseColor(fillColor);
@@ -26,7 +26,7 @@ export function floodFill(
   const ta = data[targetIdx + 3];
 
   // Don't fill if target is the same color
-  if (tr === fc.r && tg === fc.g && tb === fc.b && ta === fc.a) return;
+  if (tr === fc.r && tg === fc.g && tb === fc.b && ta === fc.a) return false;
 
   const visited = new Uint8Array(width * height);
 
@@ -74,6 +74,7 @@ export function floodFill(
   }
 
   ctx.putImageData(imageData, 0, 0);
+  return true;
 }
 
 function colorMatch(

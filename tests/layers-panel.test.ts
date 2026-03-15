@@ -47,3 +47,44 @@ describe('LayersPanel thumbnails', () => {
     expect(alphasAtDraw[alphasAtDraw.length - 1]).toBe(0.3);
   });
 });
+
+describe('LayersPanel rename', () => {
+  it('does not commit rename when Escape is pressed', () => {
+    const panel = new LayersPanel();
+
+    const renameLayerSpy = vi.fn();
+
+    (panel as any)._ctx = {
+      value: {
+        state: {
+          layers: [{ id: 'l1', name: 'Original', visible: true, opacity: 1, canvas: document.createElement('canvas') }],
+          activeLayerId: 'l1',
+          layersPanelOpen: true,
+        },
+        renameLayer: renameLayerSpy,
+      },
+    };
+
+    // Enter rename mode
+    (panel as any)._editingLayerId = 'l1';
+
+    // Simulate: user typed a new name, then pressed Escape
+    const fakeInput = { value: 'Changed Name' } as HTMLInputElement;
+    const escapeEvent = new KeyboardEvent('keydown', { key: 'Escape' });
+    Object.defineProperty(escapeEvent, 'target', { value: fakeInput });
+
+    (panel as any)._onRenameKeyDown('l1', escapeEvent);
+
+    // _editingLayerId should be cleared (cancel)
+    expect((panel as any)._editingLayerId).toBeNull();
+
+    // Now simulate the blur that fires when Lit removes the input from DOM
+    const blurEvent = new FocusEvent('blur');
+    Object.defineProperty(blurEvent, 'target', { value: fakeInput });
+
+    (panel as any)._onRenameBlur('l1', blurEvent);
+
+    // The rename must NOT have been committed
+    expect(renameLayerSpy).not.toHaveBeenCalled();
+  });
+});

@@ -32,6 +32,7 @@ function createAppWithCanvasSpies() {
     setHistory: vi.fn(),
     centerDocument: vi.fn(),
     composite: vi.fn(),
+    pushLayerOperation: vi.fn(),
   };
   Object.defineProperty(app, 'canvas', {
     configurable: true,
@@ -160,6 +161,56 @@ describe('DrawingApp', () => {
 
     expect((app as any)._state.activeLayerId).toBe(layer2.id);
     expect((app as any)._dirty).toBe(true);
+  });
+
+  it('commits the floating selection before adding a new layer', () => {
+    const app = createAppWithCanvasSpies();
+
+    const ctx = (app as any)._buildContextValue();
+
+    // clearSelection was not called yet
+    expect((app as any).canvas.clearSelection).not.toHaveBeenCalled();
+
+    ctx.addLayer();
+
+    // addLayer changes the active layer, so any float from the old layer
+    // must be committed first — just like setActiveLayer does.
+    expect((app as any).canvas.clearSelection).toHaveBeenCalled();
+  });
+
+  it('commits the float before flushing the save when switching projects', async () => {
+    const app = createAppWithCanvasSpies();
+
+    // Set up a "current project" so switchProject doesn't bail on the guard
+    (app as any)._currentProject = { id: 'old', name: 'Old', createdAt: 0, updatedAt: 0, thumbnail: null };
+    (app as any)._projectList = [
+      { id: 'old', name: 'Old', createdAt: 0, updatedAt: 0, thumbnail: null },
+      { id: 'new', name: 'New', createdAt: 0, updatedAt: 0, thumbnail: null },
+    ];
+
+    // Track call ordering
+    const callOrder: string[] = [];
+    (app as any).canvas.clearSelection = vi.fn(() => callOrder.push('clearSelection'));
+
+    // Stub _flushPendingSaveAndWait to record the call and resolve immediately
+    (app as any)._flushPendingSaveAndWait = vi.fn(async () => callOrder.push('flush'));
+    // Make the dirty flag true so the flush path is entered
+    (app as any)._dirty = true;
+
+    // Stub _loadProject to not do real work
+    (app as any)._loadProject = vi.fn(async () => {});
+
+    const ctx = (app as any)._buildContextValue();
+    ctx.switchProject('new');
+
+    // switchProject is fire-and-forget async — wait for its internal promise
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The float must be committed BEFORE the save flush, so the save
+    // captures the layer with the float content (no hole).
+    expect(callOrder).toContain('clearSelection');
+    expect(callOrder).toContain('flush');
+    expect(callOrder.indexOf('clearSelection')).toBeLessThan(callOrder.indexOf('flush'));
   });
 
   it('clears the floating selection when resetting to a fresh project', async () => {

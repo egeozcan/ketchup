@@ -389,6 +389,7 @@ export class LayersPanel extends LitElement {
   }
 
   private _commitRename(layerId: string, input: HTMLInputElement) {
+    if (this._editingLayerId !== layerId) return;
     const newName = input.value.trim();
     if (newName && newName !== this._getLayerById(layerId)?.name) {
       this.ctx.renameLayer(layerId, newName);
