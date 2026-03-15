@@ -539,11 +539,11 @@ export class DrawingApp extends LitElement {
         this._markDirty();
       },
       setActiveLayer: (id: string) => {
-        if (this._state.layers.some(l => l.id === id)) {
-          this.canvas?.clearSelection();
-          this._state = { ...this._state, activeLayerId: id };
-          this._markDirty();
-        }
+        if (!this._state.layers.some(l => l.id === id)) return;
+        if (id === this._state.activeLayerId) return;
+        this.canvas?.clearSelection();
+        this._state = { ...this._state, activeLayerId: id };
+        this._markDirty();
       },
       setLayerVisibility: (id: string, visible: boolean) => {
         const layer = this._state.layers.find(l => l.id === id);

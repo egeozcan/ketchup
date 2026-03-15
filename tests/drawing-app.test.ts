@@ -293,4 +293,30 @@ describe('DrawingApp', () => {
     expect((app as any)._state.activeTool).toBe('select');
     expect(event.preventDefault).not.toHaveBeenCalled();
   });
+
+  it('does not call clearSelection when selecting the already-active layer', () => {
+    const app = createAppWithCanvasSpies();
+
+    // Add a second layer so we have something to distinguish
+    const layer2 = (app as any)._createLayer(800, 600);
+    (app as any)._state = {
+      ...(app as any)._state,
+      layers: [...(app as any)._state.layers, layer2],
+    };
+
+    // Set activeLayerId to the first layer
+    const layer1Id = (app as any)._state.layers[0].id;
+    (app as any)._state = { ...(app as any)._state, activeLayerId: layer1Id };
+    (app as any).canvas.clearSelection.mockClear();
+
+    const ctx = (app as any)._buildContextValue();
+
+    // Select the already-active layer (e.g. clicking the layer row or opacity slider)
+    ctx.setActiveLayer(layer1Id);
+
+    // clearSelection must NOT be called — the layer didn't change, so
+    // there's no reason to commit a float or finalize a stroke.
+    // BUG: currently clearSelection IS called, destroying any active float.
+    expect((app as any).canvas.clearSelection).not.toHaveBeenCalled();
+  });
 });
