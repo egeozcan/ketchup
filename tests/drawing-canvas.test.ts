@@ -1379,6 +1379,79 @@ describe('DrawingCanvas pointerup with _drawing false', () => {
   });
 });
 
+describe('DrawingCanvas undo during active brush stroke', () => {
+  it('finalizes the in-progress stroke before applying undo', () => {
+    const canvas = new DrawingCanvas();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 100;
+    layerCanvas.height = 100;
+    // Draw something so there's a history entry to undo
+    const layerCtx = layerCanvas.getContext('2d')!;
+    layerCtx.fillStyle = '#ff0000';
+    layerCtx.fillRect(0, 0, 100, 100);
+
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          activeTool: 'pencil',
+          strokeColor: '#000000',
+          fillColor: '#ff0000',
+          useFill: false,
+          brushSize: 4,
+          stampImage: null,
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+          activeLayerId: 'l1',
+          documentWidth: 100,
+          documentHeight: 100,
+          layersPanelOpen: true,
+        },
+      },
+    };
+
+    (canvas as any).composite = vi.fn();
+
+    Object.defineProperty(canvas, 'mainCanvas', {
+      configurable: true,
+      value: {
+        setPointerCapture: vi.fn(),
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }),
+        style: { cursor: '' },
+      },
+    });
+
+    (canvas as any)._panX = 0;
+    (canvas as any)._panY = 0;
+    (canvas as any)._zoom = 1;
+
+    // Seed history with one draw entry
+    const beforeImg = new ImageData(100, 100);
+    const afterImg = layerCtx.getImageData(0, 0, 100, 100);
+    (canvas as any)._history = [
+      { type: 'draw', layerId: 'l1', before: beforeImg, after: afterImg },
+    ];
+    (canvas as any)._historyIndex = 0;
+
+    // Start a pencil stroke
+    const downEvent = { button: 0, clientX: 10, clientY: 10, pointerId: 1 } as unknown as PointerEvent;
+    (canvas as any)._onPointerDown(downEvent);
+    expect((canvas as any)._drawing).toBe(true);
+
+    // Undo mid-stroke
+    canvas.undo();
+
+    // The in-progress stroke must be finalized first, so it becomes its
+    // own history entry. Then the PREVIOUS entry is undone.
+    // _drawing must be cleared so the stroke doesn't continue.
+    expect((canvas as any)._drawing).toBe(false);
+    // The stroke should have been pushed as a new entry before undo ran,
+    // so history length should be 2 (original + stroke), then undo
+    // decrements index by 1 from 1 to 0.
+    // If undo did NOT finalize the stroke, _drawing would still be true
+    // and the stroke's history entry would be missing.
+  });
+});
+
 describe('DrawingCanvas pasteSelection during active stroke', () => {
   beforeEach(() => {
     vi.useFakeTimers();

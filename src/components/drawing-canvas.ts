@@ -367,6 +367,22 @@ export class DrawingCanvas extends LitElement {
   }
 
   public undo() {
+    // Finalize any in-progress brush/shape/move so it becomes its own
+    // history entry before we undo. Without this, the undo modifies the
+    // layer under the stroke, corrupting _beforeDrawData and the history.
+    if (this._drawing) {
+      this._drawing = false;
+      this._lastPoint = null;
+      this._startPoint = null;
+      this._pushDrawHistory();
+      this.composite();
+    }
+    if (this._moveTempCanvas) {
+      this._moveTempCanvas = null;
+      this._moveStartPoint = null;
+      this._pushDrawHistory();
+      this.composite();
+    }
     // Discard the active float first — this counts as its own undo step
     // (the float lift is a user action even though it has no history entry).
     if (this._float) {
@@ -382,6 +398,19 @@ export class DrawingCanvas extends LitElement {
   }
 
   public redo() {
+    if (this._drawing) {
+      this._drawing = false;
+      this._lastPoint = null;
+      this._startPoint = null;
+      this._pushDrawHistory();
+      this.composite();
+    }
+    if (this._moveTempCanvas) {
+      this._moveTempCanvas = null;
+      this._moveStartPoint = null;
+      this._pushDrawHistory();
+      this.composite();
+    }
     if (this._historyIndex >= this._history.length - 1) return;
     this._discardFloat();
     this._historyIndex++;
