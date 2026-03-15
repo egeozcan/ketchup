@@ -373,4 +373,49 @@ describe('DrawingApp', () => {
 
     loadSpy.mockRestore();
   });
+
+  it('resets to fresh project if saved layers array is empty', async () => {
+    const app = createAppWithCanvasSpies();
+
+    Object.defineProperty(app, 'updateComplete', {
+      configurable: true,
+      get: () => Promise.resolve(true),
+    });
+
+    const fakeRecord = {
+      toolSettings: {
+        activeTool: 'pencil' as const,
+        strokeColor: '#000000',
+        fillColor: '#ff0000',
+        useFill: false,
+        brushSize: 4,
+      },
+      canvasWidth: 100,
+      canvasHeight: 100,
+      layers: [],           // empty — corrupted data
+      activeLayerId: 'gone',
+      layersPanelOpen: true,
+      historyIndex: -1,
+    };
+
+    const projectStore = await import('../src/project-store.js');
+    const loadSpy = vi.spyOn(projectStore, 'loadProjectState').mockResolvedValue({
+      state: fakeRecord as any,
+      history: [],
+      historyIndex: -1,
+    });
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Must not crash — should fall back to a fresh project
+    await (app as any)._loadProject('test-project');
+
+    // Should have at least one layer after recovery
+    expect((app as any)._state.layers.length).toBeGreaterThanOrEqual(1);
+    // The recovery should be clean — no error logged
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+
+    loadSpy.mockRestore();
+  });
 });

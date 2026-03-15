@@ -424,6 +424,10 @@ export class DrawingApp extends LitElement {
       const layers: Layer[] = await Promise.all(
         record.layers.map(sl => deserializeLayer(sl, record.canvasWidth, record.canvasHeight)),
       );
+      if (layers.length === 0) {
+        await this._resetToFreshProject();
+        return;
+      }
       // Restore layer counter to max existing layer number
       const maxNum = layers.reduce((max, l) => {
         const match = l.name.match(/^Layer (\d+)$/);
