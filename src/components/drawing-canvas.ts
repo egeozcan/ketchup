@@ -375,6 +375,9 @@ export class DrawingCanvas extends LitElement {
       this._lastPoint = null;
       this._startPoint = null;
       this._pushDrawHistory();
+      if (this.previewCanvas) {
+        this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
+      }
       this.composite();
     }
     if (this._moveTempCanvas) {
@@ -403,6 +406,9 @@ export class DrawingCanvas extends LitElement {
       this._lastPoint = null;
       this._startPoint = null;
       this._pushDrawHistory();
+      if (this.previewCanvas) {
+        this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
+      }
       this.composite();
     }
     if (this._moveTempCanvas) {
@@ -1641,6 +1647,11 @@ export class DrawingCanvas extends LitElement {
       this._lastPoint = null;
       this._startPoint = null;
       this._pushDrawHistory();
+      // Clear the preview canvas — shape tools draw live previews there
+      // that would otherwise persist as ghost outlines.
+      if (this.previewCanvas) {
+        this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
+      }
       this.composite();
     }
     if (this._moveTempCanvas) {

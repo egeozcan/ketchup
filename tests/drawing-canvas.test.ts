@@ -1585,3 +1585,73 @@ describe('DrawingCanvas pasteSelection during active stroke', () => {
     expect((canvas as any)._beforeDrawData).toBe(preBrushData);
   });
 });
+
+describe('DrawingCanvas preview cleanup on drawing cancel', () => {
+  it('clears the preview canvas when a shape draw is abandoned via clearSelection', () => {
+    const canvas = new DrawingCanvas();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 100;
+    layerCanvas.height = 100;
+
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          activeTool: 'rectangle',
+          strokeColor: '#000000',
+          fillColor: '#ff0000',
+          useFill: false,
+          brushSize: 4,
+          stampImage: null,
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+          activeLayerId: 'l1',
+          documentWidth: 100,
+          documentHeight: 100,
+          layersPanelOpen: true,
+        },
+      },
+    };
+
+    (canvas as any).composite = vi.fn();
+
+    const previewCanvas = document.createElement('canvas');
+    previewCanvas.width = 100;
+    previewCanvas.height = 100;
+    Object.defineProperty(canvas, 'previewCanvas', {
+      configurable: true,
+      value: previewCanvas,
+    });
+
+    Object.defineProperty(canvas, 'mainCanvas', {
+      configurable: true,
+      value: {
+        setPointerCapture: vi.fn(),
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }),
+        style: { cursor: '' },
+      },
+    });
+
+    (canvas as any)._panX = 0;
+    (canvas as any)._panY = 0;
+    (canvas as any)._zoom = 1;
+
+    // Start a rectangle draw
+    const downEvent = { button: 0, clientX: 10, clientY: 10, pointerId: 1 } as unknown as PointerEvent;
+    (canvas as any)._onPointerDown(downEvent);
+    expect((canvas as any)._drawing).toBe(true);
+
+    // Simulate shape preview drawn on preview canvas (as _onPointerMove would)
+    const previewCtx = previewCanvas.getContext('2d')!;
+    previewCtx.fillRect(10, 10, 50, 50); // simulate preview content
+
+    // Spy on clearRect to verify the preview is cleared
+    const clearRectSpy = vi.spyOn(previewCtx, 'clearRect');
+
+    // Abandon the draw via clearSelection (e.g. tool switch)
+    canvas.clearSelection();
+
+    expect((canvas as any)._drawing).toBe(false);
+    // Preview canvas must be cleared so the ghost shape preview doesn't persist
+    expect(clearRectSpy).toHaveBeenCalled();
+  });
+});
