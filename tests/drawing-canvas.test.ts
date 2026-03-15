@@ -714,6 +714,85 @@ describe('DrawingCanvas clearCanvas with active float', () => {
   });
 });
 
+describe('DrawingCanvas cancelExternalFloat history', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('does not leave orphan history entries after canceling an external image paste', () => {
+    const canvas = new DrawingCanvas();
+
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 800;
+    layerCanvas.height = 600;
+
+    const pastedLayerCanvas = document.createElement('canvas');
+    pastedLayerCanvas.width = 800;
+    pastedLayerCanvas.height = 600;
+
+    let layers = [
+      { id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas },
+      { id: 'l2', name: 'Pasted Image', visible: true, opacity: 1, canvas: pastedLayerCanvas },
+    ];
+
+    const deleteLayerSpy = vi.fn((id: string) => {
+      layers = layers.filter(l => l.id !== id);
+    });
+
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          layers,
+          activeLayerId: 'l2',
+          documentWidth: 800,
+          documentHeight: 600,
+        },
+        deleteLayer: deleteLayerSpy,
+      },
+    };
+
+    (canvas as any).composite = vi.fn();
+    (canvas as any)._stopSelectionAnimation = vi.fn();
+
+    // Simulate the state after _handleExternalImage completed:
+    // - There's an active float marked as external image
+    // - _beforeDrawData is set
+    // - An add-layer history entry was pushed
+    const floatTemp = document.createElement('canvas');
+    floatTemp.width = 100;
+    floatTemp.height = 100;
+    (canvas as any)._float = {
+      originalImageData: new ImageData(100, 100),
+      currentRect: { x: 350, y: 250, w: 100, h: 100 },
+      tempCanvas: floatTemp,
+    };
+    (canvas as any)._floatIsExternalImage = true;
+    (canvas as any)._beforeDrawData = new ImageData(800, 600);
+
+    // Push an add-layer history entry (as addLayer would have done)
+    (canvas as any)._pushHistoryEntry({
+      type: 'add-layer',
+      layer: { id: 'l2', name: 'Pasted Image', visible: true, opacity: 1, imageData: new ImageData(800, 600) },
+      index: 1,
+    });
+    const historyLenAfterAdd = (canvas as any)._history.length;
+    expect(historyLenAfterAdd).toBe(1);
+
+    // Cancel the external float
+    canvas.cancelExternalFloat();
+
+    // The add-layer entry should have been removed from history, and
+    // deleteLayer should NOT push another entry — the net result on
+    // history should be zero new entries.
+    expect((canvas as any)._history.length).toBeLessThanOrEqual(historyLenAfterAdd - 1);
+  });
+});
+
 describe('DrawingCanvas fill tool bounds check', () => {
   it('does not push a phantom history entry when rounded coords are out of bounds', () => {
     const canvas = new DrawingCanvas();

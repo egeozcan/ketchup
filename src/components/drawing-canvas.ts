@@ -1578,8 +1578,25 @@ export class DrawingCanvas extends LitElement {
     const layerId = this.ctx.state.activeLayerId;
     this._clearFloatState();
     this._beforeDrawData = null;
+
+    // Roll back the add-layer history entry that _handleExternalImage pushed,
+    // so canceling leaves the undo stack clean (as if the paste never happened).
+    if (this._historyIndex >= 0) {
+      const top = this._history[this._historyIndex];
+      if (top.type === 'add-layer' && top.layer.id === layerId) {
+        this._history = this._history.slice(0, this._historyIndex);
+        this._historyIndex--;
+        this._historyVersion++;
+      }
+    }
+
+    // Remove the layer without pushing a delete-layer history entry.
+    this.dispatchEvent(new CustomEvent('layer-undo', {
+      bubbles: true, composed: true,
+      detail: { action: 'remove-layer', layerId },
+    }));
     this.composite();
-    this.ctx.deleteLayer(layerId);
+    this._notifyHistory();
   }
 
   /** Whether the internal clipboard has data (used by drawing-app to decide paste path) */
