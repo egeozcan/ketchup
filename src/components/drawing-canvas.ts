@@ -9,6 +9,7 @@ import { drawEraserSegment } from '../tools/eraser.js';
 import { drawShapePreview } from '../tools/shapes.js';
 import { floodFill } from '../tools/fill.js';
 import { drawSelectionRect } from '../tools/select.js';
+import { drawCropOverlay, hitTestCropHandle, parseAspectRatio, constrainCropToRatio, type CropRect, type CropHandle } from '../tools/crop.js';
 import './resize-dialog.js';
 import type { ResizeDialog } from './resize-dialog.js';
 
@@ -101,6 +102,13 @@ export class DrawingCanvas extends LitElement {
   private _floatResizeHandle: ResizeHandle | null = null;
   private _floatDragOffset: Point | null = null;
   private _floatResizeOrigin: { rect: { x: number; y: number; w: number; h: number }; point: Point } | null = null;
+
+  // --- Crop tool state ---
+  private _cropRect: CropRect | null = null;
+  private _cropDragging = false;
+  private _cropHandle: CropHandle | null = null;
+  private _cropDragOrigin: Point | null = null;
+  private _cropRectOrigin: CropRect | null = null;
 
   // --- Document dimension accessors (from context state) ---
   private get _docWidth(): number {
@@ -323,6 +331,19 @@ export class DrawingCanvas extends LitElement {
     const ctx = this._getActiveLayerCtx();
     if (!ctx || !state || !this._beforeDrawData) return;
     const after = ctx.getImageData(0, 0, this._docWidth, this._docHeight);
+    // Skip no-op: if before and after are identical, discard without pushing.
+    const beforeBuf = this._beforeDrawData.data;
+    const afterBuf = after.data;
+    if (beforeBuf.length === afterBuf.length) {
+      let same = true;
+      for (let i = 0; i < beforeBuf.length; i++) {
+        if (beforeBuf[i] !== afterBuf[i]) { same = false; break; }
+      }
+      if (same) {
+        this._beforeDrawData = null;
+        return;
+      }
+    }
     this._pushHistoryEntry({
       type: 'draw',
       layerId: state.activeLayerId,
@@ -351,6 +372,24 @@ export class DrawingCanvas extends LitElement {
       this._historyIndex++;
     }
     this._notifyHistory();
+  }
+
+  /** Extract the layer ID referenced by a history entry, or null if not layer-specific. */
+  private _getEntryLayerId(entry: HistoryEntry): string | null {
+    switch (entry.type) {
+      case 'draw':
+      case 'visibility':
+      case 'opacity':
+      case 'rename':
+        return entry.layerId;
+      case 'add-layer':
+      case 'delete-layer':
+        return entry.layer.id;
+      case 'reorder':
+        return null;
+      case 'crop':
+        return null;
+    }
   }
 
   private _notifyHistory() {
@@ -489,6 +528,18 @@ export class DrawingCanvas extends LitElement {
         }
         break;
       }
+      case 'crop': {
+        this.dispatchEvent(new CustomEvent('layer-undo', {
+          bubbles: true, composed: true,
+          detail: {
+            action: 'crop-restore',
+            layers: entry.beforeLayers,
+            width: entry.beforeWidth,
+            height: entry.beforeHeight,
+          },
+        }));
+        break;
+      }
     }
   }
 
@@ -553,6 +604,18 @@ export class DrawingCanvas extends LitElement {
             detail: { action: 'refresh' },
           }));
         }
+        break;
+      }
+      case 'crop': {
+        this.dispatchEvent(new CustomEvent('layer-undo', {
+          bubbles: true, composed: true,
+          detail: {
+            action: 'crop-restore',
+            layers: entry.afterLayers,
+            width: entry.afterWidth,
+            height: entry.afterHeight,
+          },
+        }));
         break;
       }
     }
@@ -761,6 +824,13 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
+    if (activeTool === 'crop') {
+      this.mainCanvas.setPointerCapture(e.pointerId);
+      const p = this._getDocPoint(e);
+      this._handleCropPointerDown(p);
+      return;
+    }
+
     // Move tool → translate active layer
     if (activeTool === 'move') {
       this.mainCanvas.setPointerCapture(e.pointerId);
@@ -844,6 +914,11 @@ export class DrawingCanvas extends LitElement {
 
     const { activeTool } = this.ctx.state;
 
+    if (activeTool === 'crop') {
+      this._handleCropPointerMove(e);
+      return;
+    }
+
     if (activeTool === 'move' && this._moveTempCanvas && this._moveStartPoint) {
       const p = this._getDocPoint(e);
       let dx = p.x - this._moveStartPoint.x;
@@ -917,6 +992,11 @@ export class DrawingCanvas extends LitElement {
     }
 
     const { activeTool } = this.ctx.state;
+
+    if (activeTool === 'crop') {
+      this._handleCropPointerUp();
+      return;
+    }
 
     // If a brush/shape stroke was in progress but the tool changed mid-stroke
     // (e.g. via keyboard shortcut), finalize the orphaned stroke now.
@@ -1100,6 +1180,27 @@ export class DrawingCanvas extends LitElement {
     this._startPoint = p;
   }
 
+  private _handleCropPointerDown(p: Point) {
+    if (this._cropRect) {
+      const handle = hitTestCropHandle(this._cropRect, p, this._zoom);
+      if (handle && handle !== 'move') {
+        this._cropHandle = handle;
+        this._cropDragOrigin = { x: p.x, y: p.y };
+        this._cropRectOrigin = { ...this._cropRect };
+        return;
+      }
+      if (handle === 'move') {
+        this._cropHandle = 'move';
+        this._cropDragOrigin = { x: p.x, y: p.y };
+        this._cropRectOrigin = { ...this._cropRect };
+        return;
+      }
+    }
+    this._cropRect = { x: p.x, y: p.y, w: 0, h: 0 };
+    this._cropDragging = true;
+    this._cropDragOrigin = { x: p.x, y: p.y };
+  }
+
   private _handleSelectPointerMove(e: PointerEvent) {
     const p = this._getDocPoint(e);
 
@@ -1199,6 +1300,123 @@ export class DrawingCanvas extends LitElement {
       }
       this._liftToFloat(rx, ry, rw, rh);
     }
+  }
+
+  private _handleCropPointerMove(e: PointerEvent) {
+    const p = this._getDocPoint(e);
+    const ratio = parseAspectRatio(this.ctx.state.cropAspectRatio);
+
+    if (this._cropDragging && this._cropDragOrigin) {
+      let rect: CropRect = {
+        x: this._cropDragOrigin.x,
+        y: this._cropDragOrigin.y,
+        w: p.x - this._cropDragOrigin.x,
+        h: p.y - this._cropDragOrigin.y,
+      };
+      if (ratio) {
+        rect = constrainCropToRatio(rect, ratio, 'draw');
+      }
+      this._cropRect = rect;
+      this._drawCropPreview();
+      return;
+    }
+
+    if (this._cropHandle && this._cropDragOrigin && this._cropRectOrigin) {
+      const dx = p.x - this._cropDragOrigin.x;
+      const dy = p.y - this._cropDragOrigin.y;
+      const orig = this._cropRectOrigin;
+
+      if (this._cropHandle === 'move') {
+        let nx = orig.x + dx;
+        let ny = orig.y + dy;
+        const nw = Math.abs(orig.w);
+        const nh = Math.abs(orig.h);
+        nx = Math.max(0, Math.min(nx, this._docWidth - nw));
+        ny = Math.max(0, Math.min(ny, this._docHeight - nh));
+        this._cropRect = { x: nx, y: ny, w: nw, h: nh };
+      } else {
+        let rect = this._resizeCropRect(orig, this._cropHandle, dx, dy);
+        if (ratio) {
+          rect = constrainCropToRatio(rect, ratio, this._cropHandle);
+        }
+        this._cropRect = rect;
+      }
+      this._drawCropPreview();
+      return;
+    }
+
+    if (this._cropRect) {
+      const handle = hitTestCropHandle(this._cropRect, p, this._zoom);
+      if (handle && handle !== 'move') {
+        this.mainCanvas.style.cursor = this._cropHandleCursor(handle);
+      } else if (handle === 'move') {
+        this.mainCanvas.style.cursor = 'move';
+      } else {
+        this.mainCanvas.style.cursor = 'crosshair';
+      }
+    }
+  }
+
+  private _cropHandleCursor(handle: CropHandle): string {
+    const cursors: Record<string, string> = {
+      nw: 'nwse-resize', n: 'ns-resize', ne: 'nesw-resize', e: 'ew-resize',
+      se: 'nwse-resize', s: 'ns-resize', sw: 'nesw-resize', w: 'ew-resize',
+    };
+    return cursors[handle] ?? 'crosshair';
+  }
+
+  private _resizeCropRect(orig: CropRect, handle: CropHandle, dx: number, dy: number): CropRect {
+    let { x, y, w, h } = orig;
+    switch (handle) {
+      case 'nw': x += dx; y += dy; w -= dx; h -= dy; break;
+      case 'n':  y += dy; h -= dy; break;
+      case 'ne': w += dx; y += dy; h -= dy; break;
+      case 'e':  w += dx; break;
+      case 'se': w += dx; h += dy; break;
+      case 's':  h += dy; break;
+      case 'sw': x += dx; w -= dx; h += dy; break;
+      case 'w':  x += dx; w -= dx; break;
+    }
+    return { x, y, w, h };
+  }
+
+  private _handleCropPointerUp() {
+    if (this._cropDragging && this._cropRect) {
+      this._cropRect = this._normalizeCropRect(this._cropRect);
+      if (this._cropRect.w < 1 || this._cropRect.h < 1) {
+        this._cropRect = null;
+      }
+    }
+    this._cropDragging = false;
+    this._cropHandle = null;
+    this._cropDragOrigin = null;
+    this._cropRectOrigin = null;
+    if (this._cropRect) {
+      this._cropRect = this._normalizeCropRect(this._cropRect);
+      this._drawCropPreview();
+    }
+  }
+
+  private _normalizeCropRect(rect: CropRect): CropRect {
+    let { x, y, w, h } = rect;
+    if (w < 0) { x += w; w = -w; }
+    if (h < 0) { y += h; h = -h; }
+    x = Math.max(0, x);
+    y = Math.max(0, y);
+    w = Math.min(w, this._docWidth - x);
+    h = Math.min(h, this._docHeight - y);
+    return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
+  }
+
+  private _drawCropPreview() {
+    if (!this.previewCanvas || !this._cropRect) return;
+    const previewCtx = this.previewCanvas.getContext('2d')!;
+    previewCtx.clearRect(0, 0, this._vw, this._vh);
+    previewCtx.save();
+    previewCtx.translate(this._panX, this._panY);
+    previewCtx.scale(this._zoom, this._zoom);
+    drawCropOverlay(previewCtx, this._cropRect, this._docWidth, this._docHeight, this._zoom);
+    previewCtx.restore();
   }
 
   // --- Float lifecycle methods ---
@@ -1517,10 +1735,22 @@ export class DrawingCanvas extends LitElement {
     if (!this._float) return;
     const { currentRect, tempCanvas } = this._float;
 
+    // Look up owning layer's compositing state.
+    const state = this._ctx.value?.state;
+    const activeLayer = state?.layers.find(l => l.id === state.activeLayerId);
+
     previewCtx.save();
     previewCtx.translate(this._panX, this._panY);
     previewCtx.scale(this._zoom, this._zoom);
-    previewCtx.drawImage(tempCanvas, currentRect.x, currentRect.y, currentRect.w, currentRect.h);
+
+    // Only draw the float image if the owning layer is visible; apply its opacity.
+    if (!activeLayer || activeLayer.visible) {
+      previewCtx.globalAlpha = activeLayer?.opacity ?? 1.0;
+      previewCtx.drawImage(tempCanvas, currentRect.x, currentRect.y, currentRect.w, currentRect.h);
+      previewCtx.globalAlpha = 1.0;
+    }
+
+    // Always draw marching ants + handles so the user can interact with the float bounds.
     drawSelectionRect(previewCtx, currentRect.x, currentRect.y, currentRect.w, currentRect.h, this._selectionDashOffset);
     previewCtx.restore();
 
@@ -1675,13 +1905,27 @@ export class DrawingCanvas extends LitElement {
     this._clearFloatState();
     this._beforeDrawData = null;
 
-    // Roll back the add-layer history entry that _handleExternalImage pushed,
-    // so canceling leaves the undo stack clean (as if the paste never happened).
+    // Roll back the add-layer entry and any subsequent entries that target
+    // this layer (rename, visibility, opacity, etc.), so canceling leaves
+    // the undo stack clean as if the paste never happened.
     if (this._historyIndex >= 0) {
-      const top = this._history[this._historyIndex];
-      if (top.type === 'add-layer' && top.layer.id === layerId) {
-        this._history = this._history.slice(0, this._historyIndex);
-        this._historyIndex--;
+      let addLayerIdx = -1;
+      for (let i = this._historyIndex; i >= 0; i--) {
+        const entry = this._history[i];
+        if (entry.type === 'add-layer' && entry.layer.id === layerId) {
+          addLayerIdx = i;
+          break;
+        }
+      }
+      if (addLayerIdx >= 0) {
+        const before = this._history.slice(0, addLayerIdx);
+        const inspected = this._history.slice(addLayerIdx, this._historyIndex + 1);
+        const kept = inspected.filter(entry => {
+          const entryLayerId = this._getEntryLayerId(entry);
+          return entryLayerId !== null && entryLayerId !== layerId;
+        });
+        this._history = [...before, ...kept];
+        this._historyIndex = this._history.length - 1;
         this._historyVersion++;
       }
     }
