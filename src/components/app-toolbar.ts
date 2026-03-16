@@ -6,7 +6,7 @@ import type { ToolType } from '../types.js';
 import { toolIcons, toolLabels, toolShortcuts, actionIcons } from './tool-icons.js';
 
 const toolGroups: ToolType[][] = [
-  ['select', 'move', 'hand'],
+  ['select', 'move', 'crop', 'hand'],
   ['pencil', 'marker', 'eraser'],
   ['line', 'rectangle', 'circle', 'triangle'],
   ['fill', 'stamp'],
