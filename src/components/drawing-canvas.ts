@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, query } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import type { Point, HistoryEntry, Layer, FloatingSelection } from '../types.js';
+import type { Point, HistoryEntry, Layer, FloatingSelection, LayerSnapshot } from '../types.js';
 import { drawPencilSegment } from '../tools/pencil.js';
 import { drawMarkerSegment } from '../tools/marker.js';
 import { drawEraserSegment } from '../tools/eraser.js';
@@ -1419,6 +1419,89 @@ export class DrawingCanvas extends LitElement {
     previewCtx.restore();
   }
 
+  /** Commit the active crop: trim all layers, push history, dispatch dimension change. */
+  public commitCrop() {
+    if (!this._cropRect) return;
+    const rect = this._cropRect;
+    const state = this._ctx.value?.state;
+    if (!state) return;
+
+    // Snapshot before-state
+    const beforeWidth = this._docWidth;
+    const beforeHeight = this._docHeight;
+    const beforeLayers: LayerSnapshot[] = state.layers.map(l => {
+      const ctx = l.canvas.getContext('2d')!;
+      return {
+        id: l.id, name: l.name, visible: l.visible, opacity: l.opacity,
+        imageData: ctx.getImageData(0, 0, l.canvas.width, l.canvas.height),
+      };
+    });
+
+    // Crop each layer's canvas
+    for (const layer of state.layers) {
+      const ctx = layer.canvas.getContext('2d')!;
+      const cropped = ctx.getImageData(rect.x, rect.y, rect.w, rect.h);
+      const newCanvas = document.createElement('canvas');
+      newCanvas.width = rect.w;
+      newCanvas.height = rect.h;
+      newCanvas.getContext('2d')!.putImageData(cropped, 0, 0);
+      layer.canvas = newCanvas;
+    }
+
+    // Snapshot after-state BEFORE dispatching event (avoids coupling with drawing-app state updates)
+    const afterLayers: LayerSnapshot[] = state.layers.map(l => {
+      const ctx = l.canvas.getContext('2d')!;
+      return {
+        id: l.id, name: l.name, visible: l.visible, opacity: l.opacity,
+        imageData: ctx.getImageData(0, 0, l.canvas.width, l.canvas.height),
+      };
+    });
+
+    // Dispatch dimension change to drawing-app (also triggers layers array refresh)
+    this.dispatchEvent(new CustomEvent('crop-commit', {
+      bubbles: true, composed: true,
+      detail: { width: rect.w, height: rect.h },
+    }));
+
+    // Push crop history entry
+    this._pushHistoryEntry({
+      type: 'crop',
+      beforeLayers,
+      afterLayers,
+      beforeWidth,
+      beforeHeight,
+      afterWidth: rect.w,
+      afterHeight: rect.h,
+    });
+
+    // Clear crop state and recomposite
+    this._cropRect = null;
+    this._clearCropPreview();
+    this.composite();
+  }
+
+  /** Cancel the active crop, clearing the overlay. */
+  public cancelCrop() {
+    if (!this._cropRect) return;
+    this._cropRect = null;
+    this._cropDragging = false;
+    this._cropHandle = null;
+    this._cropDragOrigin = null;
+    this._cropRectOrigin = null;
+    this._clearCropPreview();
+  }
+
+  /** Whether a crop rect is currently active (used by drawing-app for keyboard dispatch). */
+  public get hasCropRect(): boolean {
+    return this._cropRect !== null;
+  }
+
+  private _clearCropPreview() {
+    if (this.previewCanvas) {
+      this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
+    }
+  }
+
   // --- Float lifecycle methods ---
 
   private _liftToFloat(x: number, y: number, w: number, h: number) {
@@ -1870,6 +1953,11 @@ export class DrawingCanvas extends LitElement {
   }
 
   public clearSelection() {
+    // Cancel any pending crop rect
+    if (this._cropRect) {
+      this.cancelCrop();
+    }
+
     // Finalize any in-progress brush/shape stroke so _drawing doesn't
     // leak into the next tool and cause stale history entries.
     if (this._drawing) {
