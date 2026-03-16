@@ -565,8 +565,10 @@ export class ToolSettings extends LitElement {
       if (!lastEntry) return;
       const url = this._thumbUrls.get(lastEntry.id);
       if (!url) return;
+      const capturedProjectId = this._lastProjectId;
       const img = new Image();
       img.onload = () => {
+        if (this._lastProjectId !== capturedProjectId) return;
         this.ctx.setStampImage(img);
         this._activeStampId = lastEntry!.id;
       };
@@ -578,8 +580,10 @@ export class ToolSettings extends LitElement {
   private _selectStamp(entry: StampEntry) {
     const url = this._thumbUrls.get(entry.id);
     if (!url) return;
+    const capturedProjectId = this._lastProjectId;
     const img = new Image();
     img.onload = () => {
+      if (this._lastProjectId !== capturedProjectId) return;
       this.ctx.setStampImage(img);
       this._activeStampId = entry.id;
     };
@@ -863,6 +867,29 @@ export class ToolSettings extends LitElement {
                     />
                   `
             : ''}
+            </div>
+          `
+        : ''}
+
+      ${activeTool === 'crop'
+        ? html`
+            <div class="separator"></div>
+            <div class="section">
+              <label>Ratio</label>
+              <select
+                .value=${this.ctx.state.cropAspectRatio}
+                @change=${(e: Event) => this.ctx.setCropAspectRatio((e.target as HTMLSelectElement).value)}
+                style="background:#444;color:#ddd;border:1px solid #555;border-radius:0.25rem;padding:0.25rem 0.375rem;font-size:0.8125rem;cursor:pointer;"
+              >
+                <option value="free">Free</option>
+                <option value="1:1">1:1</option>
+                <option value="4:3">4:3</option>
+                <option value="3:2">3:2</option>
+                <option value="16:9">16:9</option>
+                <option value="3:4">3:4</option>
+                <option value="2:3">2:3</option>
+                <option value="9:16">9:16</option>
+              </select>
             </div>
           `
         : ''}
