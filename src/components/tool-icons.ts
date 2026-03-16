@@ -95,6 +95,15 @@ export const toolIcons: Record<ToolType, ReturnType<typeof svg>> = {
       <path d="M10 10.5V6a2 2 0 0 0-4 0v8"/>
       <path d="M18 8a2 2 0 0 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>
     </svg>`,
+
+  // Crop — overlapping L-shaped corners
+  crop: svg`
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 2v4H2"/>
+      <path d="M6 6h12v12"/>
+      <path d="M18 22v-4h4"/>
+      <path d="M2 6h4v12h12"/>
+    </svg>`,
 };
 
 export const actionIcons = {
@@ -138,6 +147,7 @@ export const toolShortcuts: Record<ToolType, string> = {
   triangle: 'T',
   fill: 'G',
   stamp: 'S',
+  crop: 'R',
 };
 
 const shortcutToTool = new Map<string, ToolType>(
@@ -161,4 +171,5 @@ export const toolLabels: Record<ToolType, string> = {
   fill: 'Fill',
   stamp: 'Stamp',
   hand: 'Hand (Pan)',
+  crop: 'Crop',
 };
