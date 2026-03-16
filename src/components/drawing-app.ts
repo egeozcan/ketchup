@@ -111,6 +111,7 @@ export class DrawingApp extends LitElement {
       layersPanelOpen: true,
       documentWidth: 800,
       documentHeight: 600,
+      cropAspectRatio: 'free',
     };
     this._provider = new ContextProvider(this, {
       context: drawingContext,
@@ -420,6 +421,7 @@ export class DrawingApp extends LitElement {
       layersPanelOpen: true,
       documentWidth: w,
       documentHeight: h,
+      cropAspectRatio: 'free',
     };
     await this.updateComplete;
     this.canvas?.setHistory([], -1);
@@ -471,6 +473,7 @@ export class DrawingApp extends LitElement {
         layersPanelOpen: record.layersPanelOpen,
         documentWidth: record.canvasWidth,
         documentHeight: record.canvasHeight,
+        cropAspectRatio: 'free',
       };
       await this.updateComplete;
       this.canvas?.setHistory(history, historyIndex);
@@ -637,6 +640,10 @@ export class DrawingApp extends LitElement {
         this.canvas?.composite();
         this._markDirty();
       },
+      setCropAspectRatio: (ratio: string) => {
+        this._state = { ...this._state, cropAspectRatio: ratio };
+        this._markDirty();
+      },
       canUndo: this._canUndo,
       canRedo: this._canRedo,
       // Project operations
@@ -675,6 +682,10 @@ export class DrawingApp extends LitElement {
       },
       deleteProject: (id: string) => {
         const doDelete = async () => {
+          this.canvas?.clearSelection();
+          if (this._savePromise || this._dirty) {
+            await this._flushPendingSaveAndWait();
+          }
           await deleteProjectInDB(id);
           this._projectList = await listProjects();
           if (id === this._currentProject?.id) {

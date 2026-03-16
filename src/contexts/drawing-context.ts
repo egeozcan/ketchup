@@ -23,6 +23,7 @@ export interface DrawingContextValue {
   renameLayer: (id: string, name: string) => void;
   toggleLayersPanel: () => void;
   setDocumentSize: (width: number, height: number) => void;
+  setCropAspectRatio: (ratio: string) => void;
   canUndo: boolean;
   canRedo: boolean;
   // Project operations
