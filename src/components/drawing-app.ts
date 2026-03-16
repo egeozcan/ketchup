@@ -346,6 +346,15 @@ export class DrawingApp extends LitElement {
     this._markDirty();
   }
 
+  private _onCropCommit(e: CustomEvent) {
+    const { width, height } = e.detail;
+    this._applyDocumentDimensions(width, height);
+    // Force Lit re-render by creating new layers array reference
+    // (layer.canvas was mutated in-place by drawing-canvas commitCrop)
+    this._state = { ...this._state, layers: [...this._state.layers] };
+    this._markDirty();
+  }
+
   private _onKeyDown = (e: KeyboardEvent) => {
     if (this._isTextEntryTarget(e)) {
       return;
@@ -377,8 +386,13 @@ export class DrawingApp extends LitElement {
     ) {
       e.preventDefault();
       this.canvas?.deleteSelection();
+    } else if (e.key === 'Enter' && this._state.activeTool === 'crop' && this.canvas?.hasCropRect) {
+      e.preventDefault();
+      this.canvas.commitCrop();
     } else if (e.key === 'Escape') {
-      if (this.canvas?.hasExternalFloat) {
+      if (this._state.activeTool === 'crop' && this.canvas?.hasCropRect) {
+        this.canvas.cancelCrop();
+      } else if (this.canvas?.hasExternalFloat) {
         this.canvas.cancelExternalFloat();
       } else {
         this.canvas?.clearSelection();
@@ -396,6 +410,7 @@ export class DrawingApp extends LitElement {
       const tool = toolForShortcut(key);
       if (tool && tool !== this._state.activeTool) {
         e.preventDefault();
+        this.canvas?.cancelCrop();
         this.canvas?.clearSelection();
         this._state = { ...this._state, activeTool: tool };
         this._markDirty();
@@ -501,11 +516,17 @@ export class DrawingApp extends LitElement {
     }
   }
 
+  /** Set document dimensions without clearing history (used by crop commit/undo). */
+  private _applyDocumentDimensions(width: number, height: number) {
+    this._state = { ...this._state, documentWidth: width, documentHeight: height };
+  }
+
   private _buildContextValue(): DrawingContextValue {
     return {
       state: this._state,
       setTool: (tool: ToolType) => {
         if (this._state.activeTool !== tool) {
+          this.canvas?.cancelCrop();
           this.canvas?.clearSelection();
         }
         this._state = { ...this._state, activeTool: tool };
@@ -772,6 +793,24 @@ export class DrawingApp extends LitElement {
         this._state = { ...this._state, layers: [...this._state.layers] };
         break;
       }
+      case 'crop-restore': {
+        const snapshots = detail.layers as LayerSnapshot[];
+        const width = detail.width as number;
+        const height = detail.height as number;
+        // Replace all layer canvases from snapshots
+        const newLayers = this._state.layers.map(layer => {
+          const snap = snapshots.find(s => s.id === layer.id);
+          if (!snap) return layer;
+          const canvas = document.createElement('canvas');
+          canvas.width = snap.imageData.width;
+          canvas.height = snap.imageData.height;
+          canvas.getContext('2d')!.putImageData(snap.imageData, 0, 0);
+          return { ...layer, canvas, visible: snap.visible, opacity: snap.opacity, name: snap.name };
+        });
+        this._applyDocumentDimensions(width, height);
+        this._state = { ...this._state, layers: newLayers };
+        break;
+      }
     }
     this._markDirty();
   }
@@ -805,6 +844,7 @@ export class DrawingApp extends LitElement {
         <drawing-canvas
           @history-change=${this._onHistoryChange}
           @layer-undo=${this._onLayerUndo}
+          @crop-commit=${this._onCropCommit}
         ></drawing-canvas>
         <layers-panel @commit-opacity=${this._onCommitOpacity}></layers-panel>
       </div>
