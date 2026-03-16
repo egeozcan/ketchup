@@ -10,7 +10,8 @@ export type ToolType =
   | 'triangle'
   | 'fill'
   | 'stamp'
-  | 'hand';
+  | 'hand'
+  | 'crop';
 
 export interface Point {
   x: number;
@@ -54,6 +55,7 @@ export interface DrawingState {
   layersPanelOpen: boolean;
   documentWidth: number;
   documentHeight: number;
+  cropAspectRatio: string;
 }
 
 export type HistoryEntry =
@@ -63,7 +65,16 @@ export type HistoryEntry =
   | { type: 'reorder'; fromIndex: number; toIndex: number }
   | { type: 'visibility'; layerId: string; before: boolean; after: boolean }
   | { type: 'opacity'; layerId: string; before: number; after: number }
-  | { type: 'rename'; layerId: string; before: string; after: string };
+  | { type: 'rename'; layerId: string; before: string; after: string }
+  | {
+      type: 'crop';
+      beforeLayers: LayerSnapshot[];
+      afterLayers: LayerSnapshot[];
+      beforeWidth: number;
+      beforeHeight: number;
+      afterWidth: number;
+      afterHeight: number;
+    };
 
 export interface ProjectMeta {
   id: string;
@@ -86,7 +97,16 @@ export type SerializedHistoryEntry =
   | { type: 'reorder'; fromIndex: number; toIndex: number }
   | { type: 'visibility'; layerId: string; before: boolean; after: boolean }
   | { type: 'opacity'; layerId: string; before: number; after: number }
-  | { type: 'rename'; layerId: string; before: string; after: string };
+  | { type: 'rename'; layerId: string; before: string; after: string }
+  | {
+      type: 'crop';
+      beforeLayers: SerializedLayerSnapshot[];
+      afterLayers: SerializedLayerSnapshot[];
+      beforeWidth: number;
+      beforeHeight: number;
+      afterWidth: number;
+      afterHeight: number;
+    };
 
 export interface SerializedLayerSnapshot {
   id: string;
