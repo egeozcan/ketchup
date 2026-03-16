@@ -216,6 +216,21 @@ export async function serializeHistoryEntry(
         layer: await serializeLayerSnapshot(entry.layer),
         index: entry.index,
       };
+    case 'crop': {
+      const [beforeLayers, afterLayers] = await Promise.all([
+        Promise.all(entry.beforeLayers.map(serializeLayerSnapshot)),
+        Promise.all(entry.afterLayers.map(serializeLayerSnapshot)),
+      ]);
+      return {
+        type: 'crop',
+        beforeLayers,
+        afterLayers,
+        beforeWidth: entry.beforeWidth,
+        beforeHeight: entry.beforeHeight,
+        afterWidth: entry.afterWidth,
+        afterHeight: entry.afterHeight,
+      };
+    }
     case 'reorder':
     case 'visibility':
     case 'opacity':
@@ -248,6 +263,21 @@ export async function deserializeHistoryEntry(
         layer: await deserializeLayerSnapshot(entry.layer),
         index: entry.index,
       };
+    case 'crop': {
+      const [beforeLayers, afterLayers] = await Promise.all([
+        Promise.all(entry.beforeLayers.map(deserializeLayerSnapshot)),
+        Promise.all(entry.afterLayers.map(deserializeLayerSnapshot)),
+      ]);
+      return {
+        type: 'crop',
+        beforeLayers,
+        afterLayers,
+        beforeWidth: entry.beforeWidth,
+        beforeHeight: entry.beforeHeight,
+        afterWidth: entry.afterWidth,
+        afterHeight: entry.afterHeight,
+      };
+    }
     case 'reorder':
     case 'visibility':
     case 'opacity':
@@ -394,51 +424,57 @@ export async function saveProjectState(
       'readwrite',
     );
 
-    // Write state record.
-    tx.objectStore(STATE_STORE).put(state);
-
-    const historyStore = tx.objectStore(HISTORY_STORE);
-
-    if (clearExistingHistory) {
-      // Clear existing history entries for this project, then write new ones.
-      const historyIdx = historyStore.index('projectId');
-      const cursorReq = historyIdx.openCursor(IDBKeyRange.only(projectId));
-      cursorReq.onsuccess = () => {
-        const cursor = cursorReq.result;
-        if (cursor) {
-          cursor.delete();
-          cursor.continue();
-        } else {
-          // All old entries deleted — write new ones.
-          for (const record of serializedEntries) {
-            historyStore.add(record);
-          }
-        }
-      };
-      cursorReq.onerror = () => reject(cursorReq.error);
-    } else if (serializedEntries.length > 0) {
-      // Append new entries only.
-      for (const record of serializedEntries) {
-        historyStore.add(record);
-      }
-    }
-
-    // Update project metadata timestamp & thumbnail.
+    // Check that the project still exists before writing state/history.
+    // If it was deleted, abort to avoid orphaned records.
     const projectsStore = tx.objectStore(PROJECTS_STORE);
-    const getReq = projectsStore.get(projectId);
-    getReq.onsuccess = () => {
-      const meta = getReq.result as ProjectMeta | undefined;
-      if (meta) {
-        meta.updatedAt = Date.now();
-        if (thumbnail !== null) {
-          meta.thumbnail = thumbnail;
-        }
-        projectsStore.put(meta);
+    const checkReq = projectsStore.get(projectId);
+    checkReq.onsuccess = () => {
+      const meta = checkReq.result as ProjectMeta | undefined;
+      if (!meta) {
+        tx.abort();
+        return;
       }
+
+      // Write state record.
+      tx.objectStore(STATE_STORE).put(state);
+
+      const historyStore = tx.objectStore(HISTORY_STORE);
+
+      if (clearExistingHistory) {
+        // Clear existing history entries for this project, then write new ones.
+        const historyIdx = historyStore.index('projectId');
+        const cursorReq = historyIdx.openCursor(IDBKeyRange.only(projectId));
+        cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result;
+          if (cursor) {
+            cursor.delete();
+            cursor.continue();
+          } else {
+            // All old entries deleted — write new ones.
+            for (const record of serializedEntries) {
+              historyStore.add(record);
+            }
+          }
+        };
+        cursorReq.onerror = () => reject(cursorReq.error);
+      } else if (serializedEntries.length > 0) {
+        // Append new entries only.
+        for (const record of serializedEntries) {
+          historyStore.add(record);
+        }
+      }
+
+      // Update project metadata timestamp & thumbnail.
+      meta.updatedAt = Date.now();
+      if (thumbnail !== null) {
+        meta.thumbnail = thumbnail;
+      }
+      projectsStore.put(meta);
     };
-    getReq.onerror = () => reject(getReq.error);
+    checkReq.onerror = () => reject(checkReq.error);
 
     tx.oncomplete = () => resolve();
+    tx.onabort = () => resolve(); // Project deleted — nothing to save
     tx.onerror = () => reject(tx.error);
   });
 }
