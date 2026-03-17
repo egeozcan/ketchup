@@ -1,20 +1,16 @@
 import { LitElement, html, css } from 'lit';
-import { customElement, query, state } from 'lit/decorators.js';
+import { customElement, property, query, state } from 'lit/decorators.js';
 import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import type { DrawingState, Layer, LayerSnapshot, ToolType, ProjectMeta } from '../types.js';
+import type { DrawingState, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
+import { IndexedDBBackend, ProjectService, storageBackendContext, projectServiceContext } from '../storage/index.js';
+import type { StorageBackend, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord } from '../storage/types.js';
+import { canvasToBlob } from '../utils/canvas-helpers.js';
 import {
-  listProjects,
-  createProject as createProjectInDB,
-  deleteProject as deleteProjectInDB,
-  renameProject as renameProjectInDB,
-  saveProjectState,
-  loadProjectState,
-  canvasToBlob,
-  serializeLayerFromImageData,
-  deserializeLayer,
-} from '../project-store.js';
+  serializeLayerFromImageData, deserializeLayer,
+  serializeHistoryEntry, deserializeHistoryEntry,
+} from '../utils/storage-serialization.js';
 import { toolForShortcut } from './tool-icons.js';
 import './app-toolbar.js';
 import './tool-settings.js';
@@ -64,8 +60,19 @@ export class DrawingApp extends LitElement {
   @state() private _canUndo = false;
   @state() private _canRedo = false;
   @state() private _saving = false;
-  @state() private _currentProject: ProjectMeta | null = null;
-  @state() private _projectList: ProjectMeta[] = [];
+  @state() private _currentProject: StorageProjectMeta | null = null;
+  @state() private _projectList: StorageProjectMeta[] = [];
+
+  @property({ attribute: false })
+  storageBackend?: StorageBackend;
+
+  @state() private _storageState: 'loading' | 'ready' | 'error' = 'loading';
+  @state() private _storageError?: string;
+  @state() private _backend?: StorageBackend;
+  @state() private _projectService?: ProjectService;
+
+  private _storageProvider?: ContextProvider<typeof storageBackendContext>;
+  private _serviceProvider?: ContextProvider<typeof projectServiceContext>;
 
   /** Sentinel value that never matches a real _historyVersion, forcing full history rewrite. */
   private static readonly FORCE_FULL_HISTORY_SAVE = -1;
@@ -250,8 +257,9 @@ export class DrawingApp extends LitElement {
           const startIndex = versionChanged ? 0 : this._lastSavedHistoryLength;
 
           // Async serialization from snapshots (not live canvas)
+          const blobs = this._backend!.blobs;
           const layers = await Promise.all(
-            layerSnapshots.map(snap => serializeLayerFromImageData(snap, snap.imageData)),
+            layerSnapshots.map(snap => serializeLayerFromImageData(snap, snap.imageData, blobs)),
           );
 
           const stateRecord = {
@@ -270,14 +278,32 @@ export class DrawingApp extends LitElement {
             try { thumbnail = await canvasToBlob(this.canvas.mainCanvas); } catch { /* non-critical */ }
           }
 
-          await saveProjectState(
-            projectId,
-            stateRecord,
-            entriesToSave,
-            startIndex,
-            clearExistingHistory,
-            thumbnail,
+          // Serialize history entries with BlobRef
+          const serializedEntries: ProjectHistoryRecord[] = await Promise.all(
+            entriesToSave.map(async (entry, i) => ({
+              projectId,
+              index: startIndex + i,
+              entry: await serializeHistoryEntry(entry, blobs),
+            })),
           );
+
+          // Save state
+          await this._backend!.state.save(stateRecord);
+
+          // Save history
+          if (clearExistingHistory) {
+            await this._backend!.history.replaceAll(projectId, serializedEntries);
+          } else if (serializedEntries.length > 0) {
+            await this._backend!.history.putEntries(projectId, serializedEntries);
+          }
+
+          // Update project metadata
+          if (thumbnail) {
+            const thumbRef = await blobs.put(thumbnail);
+            await this._backend!.projects.update(projectId, { thumbnailRef: thumbRef });
+          } else {
+            await this._backend!.projects.update(projectId, {});
+          }
 
           // Only apply save cursors if we are still on the same project.
           if (this._currentProject?.id === projectId) {
@@ -289,7 +315,7 @@ export class DrawingApp extends LitElement {
             }
           }
 
-          this._projectList = await listProjects();
+          this._projectList = await this._backend!.projects.list();
 
           // Show saving indicator for a minimum duration so it doesn't flash,
           // but skip the delay when flushing (beforeunload/visibilitychange)
@@ -452,19 +478,26 @@ export class DrawingApp extends LitElement {
   private async _loadProject(projectId: string) {
     try {
       this.canvas?.clearSelection();
-      const result = await loadProjectState(projectId);
-      if (!result) {
+      const record = await this._backend!.state.get(projectId);
+      if (!record) {
         await this._resetToFreshProject();
         return;
       }
-      const { state: record, history, historyIndex } = result;
+
+      const blobs = this._backend!.blobs;
       const layers: Layer[] = await Promise.all(
-        record.layers.map(sl => deserializeLayer(sl, record.canvasWidth, record.canvasHeight)),
+        record.layers.map(sl => deserializeLayer(sl, record.canvasWidth, record.canvasHeight, blobs)),
       );
       if (layers.length === 0) {
         await this._resetToFreshProject();
         return;
       }
+
+      const historyRecords = await this._backend!.history.getEntries(projectId);
+      const history = await Promise.all(
+        historyRecords.map(r => deserializeHistoryEntry(r.entry, blobs)),
+      );
+
       // Restore layer counter to max existing layer number
       const maxNum = layers.reduce((max, l) => {
         const match = l.name.match(/^Layer (\d+)$/);
@@ -491,7 +524,7 @@ export class DrawingApp extends LitElement {
         cropAspectRatio: 'free',
       };
       await this.updateComplete;
-      this.canvas?.setHistory(history, historyIndex);
+      this.canvas?.setHistory(history, record.historyIndex ?? (history.length - 1));
       this._dirty = false;
       this._lastSavedHistoryLength = history.length;
       this._lastSavedHistoryVersion = 0;
@@ -504,12 +537,13 @@ export class DrawingApp extends LitElement {
   }
 
   override async firstUpdated() {
-    this._projectList = await listProjects();
+    if (!this._backend) return; // safety guard
+    this._projectList = await this._backend.projects.list();
     if (this._projectList.length > 0) {
       this._currentProject = this._projectList[0];
       await this._loadProject(this._currentProject.id);
     } else {
-      const meta = await createProjectInDB('Untitled');
+      const meta = await this._backend.projects.create({ name: 'Untitled', thumbnailRef: null });
       this._currentProject = meta;
       this._projectList = [meta];
       this._markDirty();
@@ -668,8 +702,8 @@ export class DrawingApp extends LitElement {
       canUndo: this._canUndo,
       canRedo: this._canRedo,
       // Project operations
-      currentProject: this._currentProject,
-      projectList: this._projectList,
+      currentProject: this._currentProject as any,
+      projectList: this._projectList as any,
       saving: this._saving,
       switchProject: (id: string) => {
         if (id === this._currentProject?.id) return;
@@ -693,9 +727,9 @@ export class DrawingApp extends LitElement {
           if (this._savePromise || this._dirty) {
             await this._flushPendingSaveAndWait();
           }
-          const meta = await createProjectInDB(name);
+          const meta = await this._backend!.projects.create({ name, thumbnailRef: null });
           this._currentProject = meta;
-          this._projectList = await listProjects();
+          this._projectList = await this._backend!.projects.list();
           await this._resetToFreshProject();
           this._markDirty();
         };
@@ -707,14 +741,14 @@ export class DrawingApp extends LitElement {
           if (this._savePromise || this._dirty) {
             await this._flushPendingSaveAndWait();
           }
-          await deleteProjectInDB(id);
-          this._projectList = await listProjects();
+          await this._projectService!.deleteProject(id);
+          this._projectList = await this._backend!.projects.list();
           if (id === this._currentProject?.id) {
             if (this._projectList.length > 0) {
               this._currentProject = this._projectList[0];
               await this._loadProject(this._currentProject.id);
             } else {
-              const meta = await createProjectInDB('Untitled');
+              const meta = await this._backend!.projects.create({ name: 'Untitled', thumbnailRef: null });
               this._currentProject = meta;
               this._projectList = [meta];
               await this._resetToFreshProject();
@@ -726,11 +760,11 @@ export class DrawingApp extends LitElement {
       },
       renameProject: (id: string, name: string) => {
         const doRename = async () => {
-          await renameProjectInDB(id, name);
+          const updated = await this._backend!.projects.update(id, { name });
           if (this._currentProject?.id === id) {
-            this._currentProject = { ...this._currentProject, name };
+            this._currentProject = updated;
           }
-          this._projectList = await listProjects();
+          this._projectList = await this._backend!.projects.list();
         };
         doRename().catch(err => console.error('Rename project failed:', err));
       },
@@ -817,9 +851,31 @@ export class DrawingApp extends LitElement {
 
   override connectedCallback() {
     super.connectedCallback();
+    this._initStorage();
     this.addEventListener('keydown', this._onKeyDown);
     window.addEventListener('beforeunload', this._onBeforeUnload);
     document.addEventListener('visibilitychange', this._onVisibilityChange);
+  }
+
+  private async _initStorage() {
+    try {
+      const backend = this.storageBackend ?? new IndexedDBBackend();
+      await backend.init();
+      this._backend = backend;
+      this._projectService = new ProjectService(backend);
+      this._storageProvider = new ContextProvider(this, {
+        context: storageBackendContext,
+        initialValue: this._backend,
+      });
+      this._serviceProvider = new ContextProvider(this, {
+        context: projectServiceContext,
+        initialValue: this._projectService,
+      });
+      this._storageState = 'ready';
+    } catch (e) {
+      this._storageState = 'error';
+      this._storageError = e instanceof Error ? e.message : 'Unknown storage error';
+    }
   }
 
   override disconnectedCallback() {
@@ -834,9 +890,19 @@ export class DrawingApp extends LitElement {
       clearTimeout(this._saveTimer);
       this._saveTimer = null;
     }
+    this._backend?.dispose();
   }
 
   override render() {
+    if (this._storageState === 'loading') {
+      return html`<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#888;">Loading...</div>`;
+    }
+    if (this._storageState === 'error') {
+      return html`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:#ff6b6b;gap:8px;">
+        <p>Failed to initialize storage</p>
+        <p style="font-size:0.85em;color:#999;">${this._storageError}</p>
+      </div>`;
+    }
     return html`
       <tool-settings></tool-settings>
       <div class="main-area">
