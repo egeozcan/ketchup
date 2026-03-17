@@ -25,8 +25,12 @@ function createAppWithCanvasSpies() {
     copySelection: vi.fn(),
     cutSelection: vi.fn(),
     pasteSelection: vi.fn(),
+    pasteExternalImage: vi.fn(),
     deleteSelection: vi.fn(),
     clearSelection: vi.fn(),
+    cancelCrop: vi.fn(),
+    commitCrop: vi.fn(),
+    cancelExternalFloat: vi.fn(),
     zoomToFit: vi.fn(),
     zoomIn: vi.fn(),
     zoomOut: vi.fn(),
@@ -34,6 +38,9 @@ function createAppWithCanvasSpies() {
     centerDocument: vi.fn(),
     composite: vi.fn(),
     pushLayerOperation: vi.fn(),
+    hasClipboardData: false,
+    hasCropRect: false,
+    hasExternalFloat: false,
   };
   Object.defineProperty(app, 'canvas', {
     configurable: true,

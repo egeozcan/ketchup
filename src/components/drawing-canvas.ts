@@ -326,22 +326,24 @@ export class DrawingCanvas extends LitElement {
   }
 
   /** Call after a drawing operation completes (pointerup) */
-  private _pushDrawHistory() {
+  private _pushDrawHistory(force = false) {
     const state = this._ctx.value?.state;
     const ctx = this._getActiveLayerCtx();
     if (!ctx || !state || !this._beforeDrawData) return;
     const after = ctx.getImageData(0, 0, this._docWidth, this._docHeight);
     // Skip no-op: if before and after are identical, discard without pushing.
-    const beforeBuf = this._beforeDrawData.data;
-    const afterBuf = after.data;
-    if (beforeBuf.length === afterBuf.length) {
-      let same = true;
-      for (let i = 0; i < beforeBuf.length; i++) {
-        if (beforeBuf[i] !== afterBuf[i]) { same = false; break; }
-      }
-      if (same) {
-        this._beforeDrawData = null;
-        return;
+    if (!force) {
+      const beforeBuf = this._beforeDrawData.data;
+      const afterBuf = after.data;
+      if (beforeBuf.length === afterBuf.length) {
+        let same = true;
+        for (let i = 0; i < beforeBuf.length; i++) {
+          if (beforeBuf[i] !== afterBuf[i]) { same = false; break; }
+        }
+        if (same) {
+          this._beforeDrawData = null;
+          return;
+        }
       }
     }
     this._pushHistoryEntry({
@@ -622,13 +624,20 @@ export class DrawingCanvas extends LitElement {
   }
 
   public clearCanvas() {
+    // Finalize any in-progress brush stroke before clearing
+    if (this._drawing) {
+      this._drawing = false;
+      this._lastPoint = null;
+      this._startPoint = null;
+      this._pushDrawHistory(true);
+    }
     this.clearSelection();
     this._captureBeforeDraw();
     const ctx = this._getActiveLayerCtx();
     if (ctx) {
       ctx.clearRect(0, 0, this._docWidth, this._docHeight);
     }
-    this._pushDrawHistory();
+    this._pushDrawHistory(true);
     this.composite();
   }
 
@@ -1008,7 +1017,7 @@ export class DrawingCanvas extends LitElement {
       this._drawing = false;
       this._lastPoint = null;
       this._startPoint = null;
-      this._pushDrawHistory();
+      this._pushDrawHistory(true);
       this.composite();
       return;
     }
@@ -1018,7 +1027,7 @@ export class DrawingCanvas extends LitElement {
     if (this._moveTempCanvas && activeTool !== 'move') {
       this._moveTempCanvas = null;
       this._moveStartPoint = null;
-      this._pushDrawHistory();
+      this._pushDrawHistory(true);
       this.composite();
       return;
     }
@@ -1677,7 +1686,7 @@ export class DrawingCanvas extends LitElement {
     const { currentRect, tempCanvas } = this._float;
     layerCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y));
 
-    this._pushDrawHistory();
+    this._pushDrawHistory(true);
     this.composite();
     this._clearFloatState();
   }
