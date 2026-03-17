@@ -5,7 +5,7 @@ import { drawingContext, type DrawingContextValue } from '../contexts/drawing-co
 import type { DrawingState, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
 import { IndexedDBBackend, ProjectService, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
-import type { StorageBackend, BlobRef, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord } from '../storage/types.js';
+import type { StorageBackend, BlobStore, BlobRef, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord } from '../storage/types.js';
 import { canvasToBlob } from '../utils/canvas-helpers.js';
 import {
   serializeLayerFromImageData, deserializeLayer,
@@ -273,10 +273,41 @@ export class DrawingApp extends LitElement {
           const oldLayerRefs = oldState?.layers.map(l => l.imageBlobRef) ?? [];
           const oldThumbRef = oldProject.thumbnailRef ?? null;
 
-          // Async serialization from snapshots (not live canvas)
-          const layers = await Promise.all(
-            layerSnapshots.map(snap => serializeLayerFromImageData(snap, snap.imageData, blobs)),
-          );
+          // Track blob refs as they're created during serialization so partial
+          // failures (e.g. quota hit on the Nth blob) can still be rolled back.
+          const pendingBlobRefs: BlobRef[] = [];
+          const trackingBlobs: BlobStore = {
+            ...blobs,
+            async put(data: Blob | ArrayBuffer): Promise<BlobRef> {
+              const ref = await blobs.put(data);
+              pendingBlobRefs.push(ref);
+              return ref;
+            },
+          };
+
+          // Async serialization from snapshots (not live canvas).
+          // Uses trackingBlobs so every blobs.put() is recorded.
+          let layers;
+          let serializedEntries: ProjectHistoryRecord[];
+          try {
+            layers = await Promise.all(
+              layerSnapshots.map(snap => serializeLayerFromImageData(snap, snap.imageData, trackingBlobs)),
+            );
+
+            serializedEntries = await Promise.all(
+              entriesToSave.map(async (entry, i) => ({
+                projectId,
+                index: startIndex + i,
+                entry: await serializeHistoryEntry(entry, trackingBlobs),
+              })),
+            );
+          } catch (serializeErr) {
+            // Partial serialization — clean up any blobs already written.
+            if (pendingBlobRefs.length > 0) {
+              blobs.deleteMany(pendingBlobRefs).catch(() => {});
+            }
+            throw serializeErr;
+          }
 
           const stateRecord = {
             projectId,
@@ -294,23 +325,9 @@ export class DrawingApp extends LitElement {
             try { thumbnail = await canvasToBlob(this.canvas.mainCanvas); } catch { /* non-critical */ }
           }
 
-          // Serialize history entries with BlobRef
-          const serializedEntries: ProjectHistoryRecord[] = await Promise.all(
-            entriesToSave.map(async (entry, i) => ({
-              projectId,
-              index: startIndex + i,
-              entry: await serializeHistoryEntry(entry, blobs),
-            })),
-          );
-
-          // Collect all blob refs produced by serialization so we can clean
-          // them up if the save fails (prevents progressive blob leaks on
-          // repeated failures, e.g. quota pressure).
-          const newBlobRefSet = new Set<BlobRef>(layers.map(l => l.imageBlobRef));
-          for (const h of serializedEntries) collectBlobRefsFromEntry(h.entry, newBlobRefSet);
-          const newBlobRefs = [...newBlobRefSet];
-
-          // Save state + history. If either fails, roll back the new blobs.
+          // Save state + history atomically: if either fails, restore the
+          // previous state record (so the project doesn't point at deleted
+          // blob refs) and clean up the new blobs.
           try {
             await this._backend!.state.save(stateRecord);
             if (clearExistingHistory) {
@@ -319,8 +336,12 @@ export class DrawingApp extends LitElement {
               await this._backend!.history.putEntries(projectId, serializedEntries);
             }
           } catch (saveErr) {
-            // Roll back freshly written blobs that will never be referenced.
-            blobs.deleteMany(newBlobRefs).catch(() => {});
+            // Restore the previous state record so the project isn't left
+            // pointing at blob refs we're about to delete.
+            if (oldState) {
+              this._backend!.state.save(oldState).catch(() => {});
+            }
+            blobs.deleteMany(pendingBlobRefs).catch(() => {});
             throw saveErr;
           }
 
