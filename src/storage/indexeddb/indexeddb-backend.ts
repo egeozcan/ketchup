@@ -1,5 +1,6 @@
 // src/storage/indexeddb/indexeddb-backend.ts
 import type { StorageBackend, BlobStore, ProjectStore, ProjectStateStore, ProjectHistoryStore, StampStore } from '../types.js';
+import { StorageError } from '../errors.js';
 import { IndexedDBBlobStore } from './indexeddb-blobs.js';
 import { IndexedDBProjectStore } from './indexeddb-projects.js';
 import { IndexedDBStateStore } from './indexeddb-state.js';
@@ -16,11 +17,32 @@ const DEFAULT_DB_NAME = 'ketchup-projects';
 const DEFAULT_VERSION = 4;
 
 export class IndexedDBBackend implements StorageBackend {
-  readonly projects!: ProjectStore;
-  readonly state!: ProjectStateStore;
-  readonly history!: ProjectHistoryStore;
-  readonly stamps!: StampStore;
-  readonly blobs!: BlobStore;
+  private _projects?: ProjectStore;
+  private _state?: ProjectStateStore;
+  private _history?: ProjectHistoryStore;
+  private _stamps?: StampStore;
+  private _blobs?: BlobStore;
+
+  get projects(): ProjectStore {
+    if (!this._projects) throw new StorageError('Backend not initialized — call init() first');
+    return this._projects;
+  }
+  get state(): ProjectStateStore {
+    if (!this._state) throw new StorageError('Backend not initialized — call init() first');
+    return this._state;
+  }
+  get history(): ProjectHistoryStore {
+    if (!this._history) throw new StorageError('Backend not initialized — call init() first');
+    return this._history;
+  }
+  get stamps(): StampStore {
+    if (!this._stamps) throw new StorageError('Backend not initialized — call init() first');
+    return this._stamps;
+  }
+  get blobs(): BlobStore {
+    if (!this._blobs) throw new StorageError('Backend not initialized — call init() first');
+    return this._blobs;
+  }
 
   private _db: IDBDatabase | null = null;
   private _dbName: string;
@@ -76,11 +98,11 @@ export class IndexedDBBackend implements StorageBackend {
     // Wire sub-stores
     const db = this._db;
     const blobs = new IndexedDBBlobStore(db);
-    (this as any).blobs = blobs;
-    (this as any).projects = new IndexedDBProjectStore(db);
-    (this as any).state = new IndexedDBStateStore(db);
-    (this as any).history = new IndexedDBHistoryStore(db);
-    (this as any).stamps = new IndexedDBStampStore(db, blobs);
+    this._blobs = blobs;
+    this._projects = new IndexedDBProjectStore(db);
+    this._state = new IndexedDBStateStore(db);
+    this._history = new IndexedDBHistoryStore(db);
+    this._stamps = new IndexedDBStampStore(db, blobs);
   }
 
   async dispose(): Promise<void> {

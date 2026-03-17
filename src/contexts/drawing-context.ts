@@ -23,7 +23,6 @@ export interface DrawingContextValue {
   reorderLayer: (id: string, newIndex: number) => void;
   renameLayer: (id: string, name: string) => void;
   toggleLayersPanel: () => void;
-  setDocumentSize: (width: number, height: number) => void;
   setCropAspectRatio: (ratio: string) => void;
   canUndo: boolean;
   canRedo: boolean;
@@ -32,7 +31,7 @@ export interface DrawingContextValue {
   projectList: ProjectMeta[];
   saving: boolean;
   switchProject: (id: string) => void;
-  createProject: (name: string) => void;
+  createProject: (name: string, width: number, height: number) => void;
   deleteProject: (id: string) => void;
   renameProject: (id: string, name: string) => void;
 }

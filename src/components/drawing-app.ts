@@ -4,7 +4,7 @@ import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { DrawingState, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
-import { IndexedDBBackend, ProjectService, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
+import { IndexedDBBackend, ProjectService, StorageQuotaError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
 import type { StorageBackend, BlobStore, BlobRef, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord } from '../storage/types.js';
 import { canvasToBlob } from '../utils/canvas-helpers.js';
 import {
@@ -75,6 +75,7 @@ export class DrawingApp extends LitElement {
 
   private _storageProvider?: ContextProvider<typeof storageBackendContext>;
   private _serviceProvider?: ContextProvider<typeof projectServiceContext>;
+  private _initPromise?: Promise<void>;
 
   /** Sentinel value that never matches a real _historyVersion, forcing full history rewrite. */
   private static readonly FORCE_FULL_HISTORY_SAVE = -1;
@@ -197,6 +198,7 @@ export class DrawingApp extends LitElement {
       return this._savePromise;
     }
     if (!this._currentProject || !this._dirty) return;
+    if (!this._backend) return;
 
     this._savePromise = (async () => {
       this._saveInProgress = true;
@@ -246,6 +248,7 @@ export class DrawingApp extends LitElement {
             }
             return { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, imageData };
           });
+          const viewport = this.canvas?.getViewport() ?? { zoom: 1, panX: 0, panY: 0 };
           const historySnapshot = this.canvas?.getHistory() ?? [];
           const historyIndex = this.canvas?.getHistoryIndex() ?? -1;
           const historyVersion = this.canvas?.getHistoryVersion() ?? 0;
@@ -277,7 +280,10 @@ export class DrawingApp extends LitElement {
           // failures (e.g. quota hit on the Nth blob) can still be rolled back.
           const pendingBlobRefs: BlobRef[] = [];
           const trackingBlobs: BlobStore = {
-            ...blobs,
+            get: (ref) => blobs.get(ref),
+            delete: (ref) => blobs.delete(ref),
+            deleteMany: (refs) => blobs.deleteMany(refs),
+            gc: blobs.gc ? (activeRefs) => blobs.gc!(activeRefs) : undefined,
             async put(data: Blob | ArrayBuffer): Promise<BlobRef> {
               const ref = await blobs.put(data);
               pendingBlobRefs.push(ref);
@@ -318,6 +324,9 @@ export class DrawingApp extends LitElement {
             activeLayerId: snapshotActiveLayerId,
             layersPanelOpen: snapshotLayersPanelOpen,
             historyIndex,
+            zoom: viewport.zoom,
+            panX: viewport.panX,
+            panY: viewport.panY,
           };
 
           let thumbnail: Blob | null = null;
@@ -339,7 +348,9 @@ export class DrawingApp extends LitElement {
             // Restore the previous state record so the project isn't left
             // pointing at blob refs we're about to delete.
             if (oldState) {
-              this._backend!.state.save(oldState).catch(() => {});
+              this._backend!.state.save(oldState).catch((rollbackErr) => {
+                console.error('Failed to rollback state after save failure:', rollbackErr);
+              });
             }
             blobs.deleteMany(pendingBlobRefs).catch(() => {});
             throw saveErr;
@@ -365,6 +376,10 @@ export class DrawingApp extends LitElement {
           } catch {
             // Thumbnail/metadata update failed — state+history are already saved,
             // cursors already advanced. Stale thumbnail is cosmetic.
+            // Clean up orphaned thumbnail blob if it was written but update failed.
+            if (newThumbRef !== oldThumbRef && newThumbRef) {
+              blobs.delete(newThumbRef).catch(() => {});
+            }
           }
 
           // Reclaim superseded blob refs (layers + thumbnail + replaced history).
@@ -412,7 +427,7 @@ export class DrawingApp extends LitElement {
           flushingThisRun = false;
         }
       } catch (err) {
-        if (err instanceof DOMException && err.name === 'QuotaExceededError') {
+        if (err instanceof StorageQuotaError) {
           console.error('Storage quota exceeded. Consider deleting old projects to free space.');
         } else {
           console.error('Save failed:', err);
@@ -523,11 +538,11 @@ export class DrawingApp extends LitElement {
     }
   };
 
-  private async _resetToFreshProject() {
+  private async _resetToFreshProject(width = 800, height = 600) {
     this.canvas?.clearSelection();
     this._layerCounter = 0;
-    const w = this._state.documentWidth;
-    const h = this._state.documentHeight;
+    const w = width;
+    const h = height;
     const layer = this._createLayer(w, h);
     this._state = {
       activeTool: 'pencil',
@@ -559,6 +574,14 @@ export class DrawingApp extends LitElement {
       this.canvas?.clearSelection();
       const record = await this._backend!.state.get(projectId);
       if (!record) {
+        await this._resetToFreshProject();
+        return;
+      }
+
+      const MAX_DIMENSION = 16384;
+      if (record.canvasWidth <= 0 || record.canvasWidth > MAX_DIMENSION ||
+          record.canvasHeight <= 0 || record.canvasHeight > MAX_DIMENSION) {
+        console.error('Invalid canvas dimensions in saved state:', record.canvasWidth, record.canvasHeight);
         await this._resetToFreshProject();
         return;
       }
@@ -607,8 +630,13 @@ export class DrawingApp extends LitElement {
       this._dirty = false;
       this._lastSavedHistoryLength = history.length;
       this._lastSavedHistoryVersion = 0;
-      this.canvas?.centerDocument();
-      this.canvas?.composite();
+      // Restore saved viewport or fall back to centering for legacy records
+      if (record.zoom != null && record.panX != null && record.panY != null) {
+        this.canvas?.setViewport(record.zoom, record.panX, record.panY);
+      } else {
+        this.canvas?.centerDocument();
+        this.canvas?.composite();
+      }
     } catch (err) {
       console.error('Failed to load project:', err);
       await this._resetToFreshProject();
@@ -740,27 +768,6 @@ export class DrawingApp extends LitElement {
         this._state = { ...this._state, layersPanelOpen: !this._state.layersPanelOpen };
         this._markDirty();
       },
-      setDocumentSize: (width: number, height: number) => {
-        if (width === this._state.documentWidth && height === this._state.documentHeight) return;
-        this.canvas?.clearSelection();
-        // Resize all layer canvases, preserving content
-        for (const layer of this._state.layers) {
-          const ctx = layer.canvas.getContext('2d')!;
-          const imageData = ctx.getImageData(0, 0, layer.canvas.width, layer.canvas.height);
-          layer.canvas.width = width;
-          layer.canvas.height = height;
-          ctx.putImageData(imageData, 0, 0);
-        }
-        this._state = { ...this._state, documentWidth: width, documentHeight: height };
-        // Clear history — old ImageData dimensions are incompatible
-        this.canvas?.setHistory([], -1);
-        // Force persistence to clear incompatible on-disk history entries.
-        this._lastSavedHistoryLength = 0;
-        this._lastSavedHistoryVersion = DrawingApp.FORCE_FULL_HISTORY_SAVE;
-        this.canvas?.centerDocument();
-        this.canvas?.composite();
-        this._markDirty();
-      },
       setCropAspectRatio: (ratio: string) => {
         this._state = { ...this._state, cropAspectRatio: ratio };
         this._markDirty();
@@ -787,7 +794,7 @@ export class DrawingApp extends LitElement {
         };
         doSwitch().catch(err => console.error('Switch project failed:', err));
       },
-      createProject: (name: string) => {
+      createProject: (name: string, width: number, height: number) => {
         const doCreate = async () => {
           this.canvas?.clearSelection();
           if (this._savePromise || this._dirty) {
@@ -796,7 +803,7 @@ export class DrawingApp extends LitElement {
           const meta = await this._backend!.projects.create({ name, thumbnailRef: null });
           this._currentProject = meta;
           this._projectList = await this._backend!.projects.list();
-          await this._resetToFreshProject();
+          await this._resetToFreshProject(width, height);
           this._markDirty();
         };
         doCreate().catch(err => console.error('Create project failed:', err));
@@ -844,6 +851,10 @@ export class DrawingApp extends LitElement {
   private _onHistoryChange(e: CustomEvent) {
     this._canUndo = e.detail.canUndo;
     this._canRedo = e.detail.canRedo;
+    this._markDirty();
+  }
+
+  private _onViewportChange() {
     this._markDirty();
   }
 
@@ -923,7 +934,12 @@ export class DrawingApp extends LitElement {
     document.addEventListener('visibilitychange', this._onVisibilityChange);
   }
 
-  private async _initStorage() {
+  private _initStorage() {
+    if (this._initPromise) return;
+    this._initPromise = this._doInitStorage();
+  }
+
+  private async _doInitStorage() {
     try {
       const callerSupplied = !!this.storageBackend;
       const backend = this.storageBackend ?? new IndexedDBBackend();
@@ -945,8 +961,9 @@ export class DrawingApp extends LitElement {
       // which happens before this async init completes.
       await this._bootstrapProjects();
     } catch (e) {
+      console.error('Storage initialization failed:', e);
       this._storageState = 'error';
-      this._storageError = e instanceof Error ? e.message : 'Unknown storage error';
+      this._storageError = 'Could not open local storage. Try reloading or checking browser storage settings.';
     }
   }
 
@@ -1010,6 +1027,7 @@ export class DrawingApp extends LitElement {
           @history-change=${this._onHistoryChange}
           @layer-undo=${this._onLayerUndo}
           @crop-commit=${this._onCropCommit}
+          @viewport-change=${this._onViewportChange}
         ></drawing-canvas>
         <layers-panel @commit-opacity=${this._onCommitOpacity}></layers-panel>
       </div>

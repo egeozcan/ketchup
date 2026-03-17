@@ -33,7 +33,9 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
       const tx = this._db.transaction(HISTORY_STORE, 'readwrite');
       const store = tx.objectStore(HISTORY_STORE);
       for (const entry of entries) {
-        store.add({ ...entry, projectId });
+        // Strip the auto-increment `id` to avoid ConstraintError on re-insert
+        const { id: _id, ...rest } = entry;
+        store.add({ ...rest, projectId });
       }
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(mapDOMException(tx.error));
@@ -53,7 +55,8 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
           cursor.continue();
         } else {
           for (const entry of entries) {
-            store.add({ ...entry, projectId });
+            const { id: _id, ...rest } = entry;
+            store.add({ ...rest, projectId });
           }
         }
       };

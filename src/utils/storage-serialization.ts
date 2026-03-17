@@ -7,7 +7,7 @@ import type {
   SerializedLayerSnapshot,
   SerializedHistoryEntry,
 } from '../storage/types.js';
-import { canvasToBlob, blobToCanvas, imageDataToBlob, blobToImageData } from './canvas-helpers.js';
+import { blobToCanvas, imageDataToBlob, blobToImageData } from './canvas-helpers.js';
 
 // ---------------------------------------------------------------------------
 // ImageData ↔ SerializedImageData
@@ -51,12 +51,6 @@ async function deserializeSnapshot(s: SerializedLayerSnapshot, blobs: BlobStore)
 // ---------------------------------------------------------------------------
 // Layer ↔ SerializedLayer
 // ---------------------------------------------------------------------------
-
-export async function serializeLayer(layer: Layer, blobs: BlobStore): Promise<SerializedLayer> {
-  const blob = await canvasToBlob(layer.canvas);
-  const imageBlobRef = await blobs.put(blob);
-  return { id: layer.id, name: layer.name, visible: layer.visible, opacity: layer.opacity, imageBlobRef };
-}
 
 export async function serializeLayerFromImageData(
   meta: { id: string; name: string; visible: boolean; opacity: number },

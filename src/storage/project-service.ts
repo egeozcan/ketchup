@@ -4,6 +4,7 @@ import type {
   StorageBackend,
   StampEntry,
   SerializedHistoryEntry,
+  ProjectHistoryRecord,
   ProjectServiceOptions,
 } from './types.js';
 
@@ -24,23 +25,36 @@ export class ProjectService {
   }
 
   async deleteProject(projectId: string): Promise<void> {
+    // Deterministic blob cleanup: collect all blob refs BEFORE deleting records
+    // so we know exactly which blobs to remove. This eliminates the cross-tab
+    // race inherent in mark-and-sweep GC on the delete path.
+    const blobRefs = new Set<BlobRef>();
+
+    const [state, history, stamps, project] = await Promise.all([
+      this._storage.state.get(projectId).catch(() => null),
+      this._storage.history.getEntries(projectId).catch(() => [] as ProjectHistoryRecord[]),
+      this._storage.stamps.list(projectId).catch(() => [] as StampEntry[]),
+      this._storage.projects.get(projectId).catch(() => null),
+    ]);
+
+    if (project?.thumbnailRef) blobRefs.add(project.thumbnailRef);
+    state?.layers.forEach((l) => blobRefs.add(l.imageBlobRef));
+    for (const h of history) collectBlobRefsFromEntry(h.entry, blobRefs);
+    stamps.forEach((s) => blobRefs.add(s.blobRef));
+
     // Delete root record first — prevents "zombie" projects on partial failure.
     await this._storage.projects.delete(projectId);
 
-    // Best-effort domain record cleanup. Orphans cleaned by GC.
+    // Best-effort domain record cleanup.
     await Promise.all([
       this._storage.state.delete(projectId),
       this._storage.history.deleteForProject(projectId),
       this._storage.stamps.deleteForProject(projectId),
     ]).catch((e) => console.error('Cascade delete partial failure:', e));
 
-    // Await GC instead of fire-and-forget to prevent races with subsequent
-    // writes (e.g., auto-save of a newly created project could produce blobs
-    // that the mark phase hasn't seen, causing the sweep to delete them).
-    try {
-      await this.collectGarbage();
-    } catch (e) {
-      console.error('GC failed:', e);
+    // Best-effort blob cleanup — deterministic, no GC sweep needed.
+    if (blobRefs.size > 0) {
+      this._storage.blobs.deleteMany([...blobRefs]).catch(() => {});
     }
   }
 

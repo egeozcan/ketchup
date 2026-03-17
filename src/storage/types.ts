@@ -84,6 +84,9 @@ export interface ProjectStateRecord {
   activeLayerId: string;
   layersPanelOpen: boolean;
   historyIndex: number;
+  zoom?: number;
+  panX?: number;
+  panY?: number;
 }
 
 export interface ProjectHistoryRecord {

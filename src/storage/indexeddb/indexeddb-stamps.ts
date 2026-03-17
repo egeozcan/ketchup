@@ -1,5 +1,5 @@
 // src/storage/indexeddb/indexeddb-stamps.ts
-import type { BlobStore, StampEntry, StampStore } from '../types.js';
+import type { BlobRef, BlobStore, StampEntry, StampStore } from '../types.js';
 import { mapDOMException } from './error-utils.js';
 import { generateUUID } from './migration.js';
 
@@ -50,7 +50,7 @@ export class IndexedDBStampStore implements StampStore {
 
   async delete(id: string): Promise<void> {
     // Read the stamp first to get the blobRef for cleanup
-    const blobRef = await new Promise<string | null>((resolve, reject) => {
+    const blobRef = await new Promise<BlobRef | null>((resolve, reject) => {
       const tx = this._db.transaction(STAMPS_STORE, 'readonly');
       const req = tx.objectStore(STAMPS_STORE).get(id);
       req.onsuccess = () => {
@@ -70,11 +70,13 @@ export class IndexedDBStampStore implements StampStore {
 
     // Delete the payload blob (best-effort)
     if (blobRef) {
-      this._blobs.delete(blobRef as any).catch(() => {});
+      this._blobs.delete(blobRef).catch(() => {});
     }
   }
 
   async deleteForProject(projectId: string): Promise<void> {
+    // Collect blob refs and delete records in a single cursor pass
+    const blobRefs: BlobRef[] = [];
     await new Promise<void>((resolve, reject) => {
       const tx = this._db.transaction(STAMPS_STORE, 'readwrite');
       const index = tx.objectStore(STAMPS_STORE).index('projectId');
@@ -82,6 +84,8 @@ export class IndexedDBStampStore implements StampStore {
       req.onsuccess = () => {
         const cursor = req.result;
         if (cursor) {
+          const entry = cursor.value as StampEntry;
+          blobRefs.push(entry.blobRef);
           cursor.delete();
           cursor.continue();
         }
@@ -90,5 +94,9 @@ export class IndexedDBStampStore implements StampStore {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(mapDOMException(tx.error));
     });
+    // Best-effort blob cleanup
+    if (blobRefs.length > 0) {
+      this._blobs.deleteMany(blobRefs).catch(() => {});
+    }
   }
 }

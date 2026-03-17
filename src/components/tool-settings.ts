@@ -376,11 +376,62 @@ export class ToolSettings extends LitElement {
       100% { transform: rotate(360deg); }
     }
 
-    .doc-size-section {
-      position: relative;
+    dialog {
+      background: #3a3a3a;
+      border: 1px solid #555;
+      border-radius: 0.5rem;
+      color: #ddd;
+      padding: 1.25rem;
+      min-width: 18rem;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+      font-family: system-ui, sans-serif;
+      font-size: 0.8125rem;
     }
 
-    .doc-size-btn {
+    dialog::backdrop {
+      background: rgba(0,0,0,0.5);
+    }
+
+    .dialog-title {
+      font-size: 1rem;
+      font-weight: 600;
+      margin: 0 0 1rem 0;
+    }
+
+    .dialog-field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .dialog-field label {
+      color: #aaa;
+      font-size: 0.75rem;
+    }
+
+    .dialog-field input[type="text"] {
+      background: #2a2a2a;
+      border: 1px solid #555;
+      border-radius: 0.25rem;
+      color: #ddd;
+      padding: 0.375rem 0.5rem;
+      font-size: 0.8125rem;
+      outline: none;
+    }
+
+    .dialog-field input[type="text"]:focus {
+      border-color: #5b8cf7;
+    }
+
+    .dialog-presets {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .dialog-preset-btn {
       background: #444;
       color: #ddd;
       border: 1px solid #555;
@@ -388,86 +439,72 @@ export class ToolSettings extends LitElement {
       padding: 0.25rem 0.5rem;
       cursor: pointer;
       font-size: 0.75rem;
-      display: flex;
-      align-items: center;
-      gap: 0.25rem;
-      white-space: nowrap;
+      height: auto;
     }
 
-    .doc-size-btn:hover {
+    .dialog-preset-btn:hover {
       background: #555;
     }
 
-    .doc-size-dropdown {
-      position: absolute;
-      top: 100%;
-      left: 0;
-      margin-top: 0.25rem;
-      background: #3a3a3a;
-      border: 1px solid #555;
-      border-radius: 0.375rem;
-      min-width: 15rem;
-      z-index: 100;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-      padding: 0.25rem 0;
-    }
-
-    .doc-size-preset {
-      display: block;
-      width: 100%;
-      text-align: left;
-      background: none;
-      border: none;
-      color: #ddd;
-      cursor: pointer;
-      padding: 0.375rem 0.625rem;
-      font-size: 0.8125rem;
-      height: auto;
-      border-radius: 0;
-    }
-
-    .doc-size-preset:hover {
-      background: #4a4a4a;
-    }
-
-    .doc-size-preset.active {
+    .dialog-preset-btn.active {
+      border-color: #5b8cf7;
       color: #5b8cf7;
     }
 
-    .doc-size-custom {
+    .dialog-size-row {
       display: flex;
       align-items: center;
-      gap: 0.25rem;
-      padding: 0.375rem 0.625rem;
+      gap: 0.375rem;
     }
 
-    .doc-size-input {
-      width: 4rem;
+    .dialog-size-input {
+      width: 5rem;
       background: #2a2a2a;
       border: 1px solid #555;
-      border-radius: 0.1875rem;
+      border-radius: 0.25rem;
       color: #ddd;
-      padding: 0.1875rem 0.25rem;
-      font-size: 0.75rem;
+      padding: 0.375rem 0.5rem;
+      font-size: 0.8125rem;
       text-align: center;
-    }
-
-    .doc-size-input:focus {
-      border-color: #5b8cf7;
       outline: none;
     }
 
-    .doc-size-apply {
+    .dialog-size-input:focus {
+      border-color: #5b8cf7;
+    }
+
+    .dialog-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.5rem;
+      margin-top: 1rem;
+    }
+
+    .dialog-cancel-btn {
+      background: #444;
+      color: #ddd;
+      border: 1px solid #555;
+      border-radius: 0.25rem;
+      padding: 0.375rem 0.75rem;
+      cursor: pointer;
+      font-size: 0.8125rem;
+    }
+
+    .dialog-cancel-btn:hover {
+      background: #555;
+    }
+
+    .dialog-create-btn {
       background: #5b8cf7;
       color: white;
       border: none;
       border-radius: 0.25rem;
-      padding: 0.1875rem 0.5rem;
+      padding: 0.375rem 0.75rem;
       cursor: pointer;
-      font-size: 0.75rem;
+      font-size: 0.8125rem;
     }
 
-    .doc-size-apply:hover {
+    .dialog-create-btn:hover {
       background: #4a7be6;
     }
   `;
@@ -476,9 +513,9 @@ export class ToolSettings extends LitElement {
   @state() private _activeStampId: string | null = null;
   @state() private _projectDropdownOpen = false;
   @state() private _renamingProjectId: string | null = null;
-  @state() private _docSizeDropdownOpen = false;
-  @state() private _customWidth = '';
-  @state() private _customHeight = '';
+  @state() private _newProjectName = 'Untitled';
+  @state() private _newProjectWidth = '800';
+  @state() private _newProjectHeight = '600';
   private _thumbUrls = new Map<string, string>();
   private _lastProjectId: string | null = null;
 
@@ -516,7 +553,6 @@ export class ToolSettings extends LitElement {
   override disconnectedCallback() {
     super.disconnectedCallback();
     this._closeDropdown();
-    this._closeDocSizeDropdown();
     for (const url of this._thumbUrls.values()) {
       URL.revokeObjectURL(url);
     }
@@ -583,8 +619,26 @@ export class ToolSettings extends LitElement {
       if (!currentProjectId) return;
       const service = this._serviceCtx.value;
       if (!service) return;
+      const MAX_STAMP_SIZE = 10 * 1024 * 1024; // 10MB
+      const MAX_STAMP_DIMENSION = 4096;
       let lastEntry: StampEntry | null = null;
       for (const file of files) {
+        if (file.size > MAX_STAMP_SIZE) {
+          console.warn('Stamp file too large, skipping:', file.name);
+          continue;
+        }
+        try {
+          const bitmap = await createImageBitmap(file);
+          if (bitmap.width > MAX_STAMP_DIMENSION || bitmap.height > MAX_STAMP_DIMENSION) {
+            bitmap.close();
+            console.warn('Stamp dimensions too large, skipping:', file.name);
+            continue;
+          }
+          bitmap.close();
+        } catch {
+          console.warn('Invalid image file, skipping:', file.name);
+          continue;
+        }
         lastEntry = await service.addStamp(currentProjectId, file);
       }
       await this._loadStamps(currentProjectId);
@@ -653,7 +707,42 @@ export class ToolSettings extends LitElement {
 
   private _onNewProject() {
     this._closeDropdown();
-    this.ctx.createProject('Untitled');
+    this._newProjectName = 'Untitled';
+    this._newProjectWidth = '800';
+    this._newProjectHeight = '600';
+    const dialog = this.shadowRoot?.querySelector('.new-project-dialog') as HTMLDialogElement | null;
+    dialog?.showModal();
+    this.updateComplete.then(() => {
+      const input = this.shadowRoot?.querySelector('.new-project-name-input') as HTMLInputElement | null;
+      if (input) { input.focus(); input.select(); }
+    });
+  }
+
+  private _cancelNewProject() {
+    const dialog = this.shadowRoot?.querySelector('.new-project-dialog') as HTMLDialogElement | null;
+    dialog?.close();
+  }
+
+  private _confirmNewProject() {
+    const name = this._newProjectName.trim() || 'Untitled';
+    const w = parseInt(this._newProjectWidth);
+    const h = parseInt(this._newProjectHeight);
+    if (!w || !h || w <= 0 || h <= 0 || w > 8192 || h > 8192) return;
+    const dialog = this.shadowRoot?.querySelector('.new-project-dialog') as HTMLDialogElement | null;
+    dialog?.close();
+    this.ctx.createProject(name, w, h);
+  }
+
+  private _selectNewProjectPreset(preset: { width: number; height: number }) {
+    this._newProjectWidth = String(preset.width);
+    this._newProjectHeight = String(preset.height);
+  }
+
+  private _onNewProjectKeydown(e: KeyboardEvent) {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      this._confirmNewProject();
+    }
   }
 
   private _onDeleteProject(e: Event, id: string) {
@@ -705,55 +794,6 @@ export class ToolSettings extends LitElement {
     }
   };
 
-  private _toggleDocSizeDropdown() {
-    if (this._docSizeDropdownOpen) {
-      this._closeDocSizeDropdown();
-    } else {
-      this._docSizeDropdownOpen = true;
-      this._customWidth = String(this.ctx.state.documentWidth);
-      this._customHeight = String(this.ctx.state.documentHeight);
-      document.addEventListener('click', this._onDocSizeDocumentClick);
-    }
-  }
-
-  private _closeDocSizeDropdown() {
-    if (this._docSizeDropdownOpen) {
-      this._docSizeDropdownOpen = false;
-      document.removeEventListener('click', this._onDocSizeDocumentClick);
-    }
-  }
-
-  private _onDocSizeDocumentClick = (e: MouseEvent) => {
-    if (this._docSizeDropdownOpen) {
-      const path = e.composedPath();
-      const dropdown = this.shadowRoot?.querySelector('.doc-size-section');
-      if (dropdown && !path.includes(dropdown)) {
-        this._closeDocSizeDropdown();
-      }
-    }
-  };
-
-  private _selectDocPreset(preset: { width: number; height: number }) {
-    this.ctx.setDocumentSize(preset.width, preset.height);
-    this._closeDocSizeDropdown();
-  }
-
-  private _applyCustomSize() {
-    const w = parseInt(this._customWidth);
-    const h = parseInt(this._customHeight);
-    if (w > 0 && h > 0 && w <= 8192 && h <= 8192) {
-      this.ctx.setDocumentSize(w, h);
-      this._closeDocSizeDropdown();
-    }
-  }
-
-  private _onCustomSizeKeydown(e: KeyboardEvent) {
-    e.stopPropagation();
-    if (e.key === 'Enter') {
-      this._applyCustomSize();
-    }
-  }
-
   private _showsShapeOptions(): boolean {
     const t = this.ctx.state.activeTool;
     return t === 'rectangle' || t === 'circle' || t === 'triangle';
@@ -798,46 +838,8 @@ export class ToolSettings extends LitElement {
       </div>
       <div class="separator"></div>
 
-      <div class="section doc-size-section">
-        <button class="doc-size-btn" @click=${this._toggleDocSizeDropdown}>
-          ${this.ctx.state.documentWidth} \u00d7 ${this.ctx.state.documentHeight}
-          <span class="dropdown-arrow">&#9662;</span>
-        </button>
-        ${this._docSizeDropdownOpen ? html`
-          <div class="doc-size-dropdown">
-            ${documentPresets.map(p => html`
-              <button
-                class="doc-size-preset ${p.width === this.ctx.state.documentWidth && p.height === this.ctx.state.documentHeight ? 'active' : ''}"
-                @click=${() => this._selectDocPreset(p)}
-              >${p.label}</button>
-            `)}
-            <div class="project-dropdown-divider"></div>
-            <div class="doc-size-custom">
-              <input
-                class="doc-size-input"
-                type="number"
-                min="1"
-                max="8192"
-                .value=${this._customWidth}
-                @input=${(e: Event) => { this._customWidth = (e.target as HTMLInputElement).value; }}
-                @keydown=${this._onCustomSizeKeydown}
-                placeholder="Width"
-              />
-              <span>\u00d7</span>
-              <input
-                class="doc-size-input"
-                type="number"
-                min="1"
-                max="8192"
-                .value=${this._customHeight}
-                @input=${(e: Event) => { this._customHeight = (e.target as HTMLInputElement).value; }}
-                @keydown=${this._onCustomSizeKeydown}
-                placeholder="Height"
-              />
-              <button class="doc-size-apply" @click=${this._applyCustomSize}>Apply</button>
-            </div>
-          </div>
-        ` : ''}
+      <div class="section" style="color:#888;font-size:0.75rem;">
+        ${this.ctx.state.documentWidth} \u00d7 ${this.ctx.state.documentHeight}
       </div>
       <div class="separator"></div>
 
@@ -970,6 +972,53 @@ export class ToolSettings extends LitElement {
             </div>
           `
         : ''}
+
+      <dialog class="new-project-dialog" @keydown=${this._onNewProjectKeydown}>
+        <p class="dialog-title">New Project</p>
+        <div class="dialog-field">
+          <label>Name</label>
+          <input
+            type="text"
+            class="new-project-name-input"
+            .value=${this._newProjectName}
+            @input=${(e: Event) => { this._newProjectName = (e.target as HTMLInputElement).value; }}
+          />
+        </div>
+        <div class="dialog-field">
+          <label>Canvas Size</label>
+          <div class="dialog-presets">
+            ${documentPresets.map(p => html`
+              <button
+                class="dialog-preset-btn ${String(p.width) === this._newProjectWidth && String(p.height) === this._newProjectHeight ? 'active' : ''}"
+                @click=${() => this._selectNewProjectPreset(p)}
+              >${p.label}</button>
+            `)}
+          </div>
+          <div class="dialog-size-row">
+            <input
+              class="dialog-size-input"
+              type="number"
+              min="1"
+              max="8192"
+              .value=${this._newProjectWidth}
+              @input=${(e: Event) => { this._newProjectWidth = (e.target as HTMLInputElement).value; }}
+            />
+            <span>\u00d7</span>
+            <input
+              class="dialog-size-input"
+              type="number"
+              min="1"
+              max="8192"
+              .value=${this._newProjectHeight}
+              @input=${(e: Event) => { this._newProjectHeight = (e.target as HTMLInputElement).value; }}
+            />
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button class="dialog-cancel-btn" @click=${this._cancelNewProject}>Cancel</button>
+          <button class="dialog-create-btn" @click=${this._confirmNewProject}>Create</button>
+        </div>
+      </dialog>
     `;
   }
 }

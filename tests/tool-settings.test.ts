@@ -16,18 +16,18 @@ describe('ToolSettings keyboard handling', () => {
     expect((settings as any)._renamingProjectId).toBeNull();
   });
 
-  it('stops propagation in custom size inputs and applies on Enter', () => {
+  it('stops propagation in new project dialog and confirms on Enter', () => {
     const settings = new ToolSettings();
-    const applySpy = vi.fn();
-    (settings as any)._applyCustomSize = applySpy;
+    const confirmSpy = vi.fn();
+    (settings as any)._confirmNewProject = confirmSpy;
     const event = {
       key: 'Enter',
       stopPropagation: vi.fn(),
     } as unknown as KeyboardEvent;
 
-    (settings as any)._onCustomSizeKeydown(event);
+    (settings as any)._onNewProjectKeydown(event);
 
     expect((event.stopPropagation as any)).toHaveBeenCalledTimes(1);
-    expect(applySpy).toHaveBeenCalledTimes(1);
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
   });
 });

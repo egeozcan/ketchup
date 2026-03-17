@@ -720,6 +720,7 @@ export class DrawingCanvas extends LitElement {
         this.mainCanvas.style.cursor = 'crosshair';
       }
     }
+    this._dispatchViewportChange();
   }
 
   private _onWheel = (e: WheelEvent) => {
@@ -760,6 +761,7 @@ export class DrawingCanvas extends LitElement {
     this._panY -= e.deltaY;
     this.composite();
     if (this._float) this._redrawFloatPreview();
+    this._dispatchViewportChange();
   };
 
   private _dispatchZoomChange() {
@@ -767,6 +769,14 @@ export class DrawingCanvas extends LitElement {
       bubbles: true,
       composed: true,
       detail: { zoom: this._zoom },
+    }));
+    this._dispatchViewportChange();
+  }
+
+  private _dispatchViewportChange() {
+    this.dispatchEvent(new CustomEvent('viewport-change', {
+      bubbles: true,
+      composed: true,
     }));
   }
 
@@ -792,6 +802,17 @@ export class DrawingCanvas extends LitElement {
   }
 
   public getZoom(): number { return this._zoom; }
+
+  public getViewport(): { zoom: number; panX: number; panY: number } {
+    return { zoom: this._zoom, panX: this._panX, panY: this._panY };
+  }
+
+  public setViewport(zoom: number, panX: number, panY: number) {
+    this._zoom = Math.min(DrawingCanvas.MAX_ZOOM, Math.max(DrawingCanvas.MIN_ZOOM, zoom));
+    this._panX = panX;
+    this._panY = panY;
+    this.composite();
+  }
 
   private _zoomToCenter(newZoom: number) {
     const clamped = Math.min(DrawingCanvas.MAX_ZOOM, Math.max(DrawingCanvas.MIN_ZOOM, newZoom));

@@ -95,52 +95,6 @@ describe('DrawingApp', () => {
     expect((app as any)._dirty).toBe(true);
   });
 
-  it('forces a full history rewrite after document resize', () => {
-    const app = createAppWithCanvasSpies();
-    const baseLayer = (app as any)._state.layers[0];
-    const fakeImageData = {
-      data: new Uint8ClampedArray(16),
-      width: 2,
-      height: 2,
-    } as unknown as ImageData;
-    const layerCtx = {
-      getImageData: vi.fn(() => fakeImageData),
-      putImageData: vi.fn(),
-    } as unknown as CanvasRenderingContext2D;
-    const layerCanvas = {
-      width: 10,
-      height: 10,
-      getContext: vi.fn(() => layerCtx),
-    } as unknown as HTMLCanvasElement;
-    const setHistory = vi.fn();
-
-    (app as any)._state = {
-      ...(app as any)._state,
-      documentWidth: 10,
-      documentHeight: 10,
-      layers: [{ ...baseLayer, canvas: layerCanvas }],
-    };
-    Object.defineProperty(app, 'canvas', {
-      configurable: true,
-      value: {
-        clearSelection: vi.fn(),
-        setHistory,
-        centerDocument: vi.fn(),
-        composite: vi.fn(),
-      },
-    });
-    (app as any)._lastSavedHistoryLength = 5;
-    (app as any)._lastSavedHistoryVersion = 0;
-
-    (app as any)._buildContextValue().setDocumentSize(20, 30);
-
-    expect(setHistory).toHaveBeenCalledWith([], -1);
-    expect((app as any)._lastSavedHistoryLength).toBe(0);
-    expect((app as any)._lastSavedHistoryVersion).toBe(-1);
-    expect((layerCanvas as any).width).toBe(20);
-    expect((layerCanvas as any).height).toBe(30);
-  });
-
   it('triggers redo on Ctrl+Shift+Z with uppercase key (browser default)', () => {
     const app = createAppWithCanvasSpies();
     // Browsers produce e.key='Z' (uppercase) when Shift is held
@@ -243,7 +197,7 @@ describe('DrawingApp', () => {
     };
 
     const ctx = (app as any)._buildContextValue();
-    ctx.createProject('Untitled');
+    ctx.createProject('Untitled', 800, 600);
 
     await vi.advanceTimersByTimeAsync(0);
 
@@ -499,6 +453,7 @@ describe('DrawingApp', () => {
       configurable: true,
       value: {
         getFloatSnapshot: () => null,
+        getViewport: () => ({ zoom: 1, panX: 0, panY: 0 }),
         getHistory: () => [],
         getHistoryIndex: () => -1,
         getHistoryVersion: () => 0,

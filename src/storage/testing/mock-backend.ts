@@ -19,6 +19,9 @@ let counter = 0;
 function mockUUID(): string {
   return `mock-${++counter}`;
 }
+function resetCounter(): void {
+  counter = 0;
+}
 
 class MockBlobStore implements BlobStore {
   private _blobs = new Map<string, Blob>();
@@ -70,7 +73,7 @@ class MockProjectStore implements ProjectStore {
     return this._projects.get(id) ?? null;
   }
 
-  async create(meta: any): Promise<ProjectMeta> {
+  async create(meta: Omit<ProjectMeta, 'id' | 'createdAt' | 'updatedAt'> & { thumbnailRef?: BlobRef | null }): Promise<ProjectMeta> {
     const now = Date.now();
     const record: ProjectMeta = {
       id: mockUUID(),
@@ -83,7 +86,7 @@ class MockProjectStore implements ProjectStore {
     return record;
   }
 
-  async update(id: string, changes: any): Promise<ProjectMeta> {
+  async update(id: string, changes: Partial<Pick<ProjectMeta, 'name' | 'thumbnailRef'>>): Promise<ProjectMeta> {
     const meta = this._projects.get(id);
     if (!meta) throw new StorageNotFoundError(`Project ${id}`);
     if (changes.name !== undefined) meta.name = changes.name;
@@ -148,8 +151,15 @@ class MockStampStore implements StampStore {
     this._stamps.delete(id);
   }
   async deleteForProject(projectId: string): Promise<void> {
+    const blobRefs: BlobRef[] = [];
     for (const [id, s] of this._stamps) {
-      if (s.projectId === projectId) this._stamps.delete(id);
+      if (s.projectId === projectId) {
+        blobRefs.push(s.blobRef);
+        this._stamps.delete(id);
+      }
+    }
+    if (blobRefs.length > 0) {
+      this._blobs.deleteMany(blobRefs).catch(() => {});
     }
   }
 }
@@ -162,6 +172,7 @@ export class MockBackend implements StorageBackend {
   readonly stamps: StampStore;
 
   constructor() {
+    resetCounter();
     this.blobs = new MockBlobStore();
     this.projects = new MockProjectStore();
     this.state = new MockStateStore();
