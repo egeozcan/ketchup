@@ -49,12 +49,29 @@ export class IndexedDBStampStore implements StampStore {
   }
 
   async delete(id: string): Promise<void> {
+    // Read the stamp first to get the blobRef for cleanup
+    const blobRef = await new Promise<string | null>((resolve, reject) => {
+      const tx = this._db.transaction(STAMPS_STORE, 'readonly');
+      const req = tx.objectStore(STAMPS_STORE).get(id);
+      req.onsuccess = () => {
+        const entry = req.result as StampEntry | undefined;
+        resolve(entry?.blobRef ?? null);
+      };
+      req.onerror = () => reject(mapDOMException(req.error));
+    });
+
+    // Delete the stamp record
     await new Promise<void>((resolve, reject) => {
       const tx = this._db.transaction(STAMPS_STORE, 'readwrite');
       tx.objectStore(STAMPS_STORE).delete(id);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(mapDOMException(tx.error));
     });
+
+    // Delete the payload blob (best-effort)
+    if (blobRef) {
+      this._blobs.delete(blobRef as any).catch(() => {});
+    }
   }
 
   async deleteForProject(projectId: string): Promise<void> {

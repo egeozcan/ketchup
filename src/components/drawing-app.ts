@@ -256,8 +256,14 @@ export class DrawingApp extends LitElement {
             : historySnapshot.slice(this._lastSavedHistoryLength);
           const startIndex = versionChanged ? 0 : this._lastSavedHistoryLength;
 
-          // Async serialization from snapshots (not live canvas)
+          // Capture old blob refs before serializing new ones, so we can reclaim them after save.
           const blobs = this._backend!.blobs;
+          const oldState = await this._backend!.state.get(projectId);
+          const oldLayerRefs = oldState?.layers.map(l => l.imageBlobRef) ?? [];
+          const oldProject = await this._backend!.projects.get(projectId);
+          const oldThumbRef = oldProject?.thumbnailRef ?? null;
+
+          // Async serialization from snapshots (not live canvas)
           const layers = await Promise.all(
             layerSnapshots.map(snap => serializeLayerFromImageData(snap, snap.imageData, blobs)),
           );
@@ -298,11 +304,23 @@ export class DrawingApp extends LitElement {
           }
 
           // Update project metadata
+          let newThumbRef = oldThumbRef;
           if (thumbnail) {
-            const thumbRef = await blobs.put(thumbnail);
-            await this._backend!.projects.update(projectId, { thumbnailRef: thumbRef });
+            newThumbRef = await blobs.put(thumbnail);
+            await this._backend!.projects.update(projectId, { thumbnailRef: newThumbRef });
           } else {
             await this._backend!.projects.update(projectId, {});
+          }
+
+          // Reclaim superseded blob refs (layer snapshots + thumbnail).
+          // New refs differ from old refs, so old ones are now orphaned.
+          const newLayerRefs = new Set(layers.map(l => l.imageBlobRef));
+          const staleRefs = oldLayerRefs.filter(r => !newLayerRefs.has(r));
+          if (oldThumbRef && oldThumbRef !== newThumbRef) {
+            staleRefs.push(oldThumbRef);
+          }
+          if (staleRefs.length > 0) {
+            blobs.deleteMany(staleRefs).catch(() => {/* best-effort cleanup */});
           }
 
           // Only apply save cursors if we are still on the same project.
@@ -536,19 +554,6 @@ export class DrawingApp extends LitElement {
     }
   }
 
-  override async firstUpdated() {
-    if (!this._backend) return; // safety guard
-    this._projectList = await this._backend.projects.list();
-    if (this._projectList.length > 0) {
-      this._currentProject = this._projectList[0];
-      await this._loadProject(this._currentProject.id);
-    } else {
-      const meta = await this._backend.projects.create({ name: 'Untitled', thumbnailRef: null });
-      this._currentProject = meta;
-      this._projectList = [meta];
-      this._markDirty();
-    }
-  }
 
   /** Set document dimensions without clearing history (used by crop commit/undo). */
   private _applyDocumentDimensions(width: number, height: number) {
@@ -872,9 +877,26 @@ export class DrawingApp extends LitElement {
         initialValue: this._projectService,
       });
       this._storageState = 'ready';
+      // Bootstrap project list now that storage is ready.
+      // Cannot rely on firstUpdated() because it fires after the first render,
+      // which happens before this async init completes.
+      await this._bootstrapProjects();
     } catch (e) {
       this._storageState = 'error';
       this._storageError = e instanceof Error ? e.message : 'Unknown storage error';
+    }
+  }
+
+  private async _bootstrapProjects() {
+    this._projectList = await this._backend!.projects.list();
+    if (this._projectList.length > 0) {
+      this._currentProject = this._projectList[0];
+      await this._loadProject(this._currentProject.id);
+    } else {
+      const meta = await this._backend!.projects.create({ name: 'Untitled', thumbnailRef: null });
+      this._currentProject = meta;
+      this._projectList = [meta];
+      this._markDirty();
     }
   }
 
