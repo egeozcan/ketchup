@@ -2,7 +2,8 @@ import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import { getRecentStamps, addStamp, deleteStamp, type StampEntry } from '../stamp-store.js';
+import { storageBackendContext, projectServiceContext } from '../storage/storage-context.js';
+import type { StampEntry } from '../storage/types.js';
 
 const documentPresets = [
   { label: '800 \u00d7 600', width: 800, height: 600 },
@@ -486,6 +487,9 @@ export class ToolSettings extends LitElement {
     subscribe: true,
   });
 
+  private _storageCtx = new ContextConsumer(this, { context: storageBackendContext, subscribe: true });
+  private _serviceCtx = new ContextConsumer(this, { context: projectServiceContext, subscribe: true });
+
   private get ctx(): DrawingContextValue {
     return this._ctx.value!;
   }
@@ -520,7 +524,9 @@ export class ToolSettings extends LitElement {
   }
 
   private async _loadStamps(projectId: string) {
-    const stamps = await getRecentStamps(projectId);
+    const backend = this._storageCtx.value;
+    if (!backend) return;
+    const stamps = await backend.stamps.list(projectId);
     // Guard against race: project may have changed while awaiting
     if (this._lastProjectId !== projectId) return;
     this._recentStamps = stamps;
@@ -531,12 +537,13 @@ export class ToolSettings extends LitElement {
         this._thumbUrls.delete(id);
       }
     }
-    // Create new URLs
-    for (const s of this._recentStamps) {
+    // Create new URLs (fetch blobs in parallel)
+    await Promise.all(stamps.map(async (s) => {
       if (!this._thumbUrls.has(s.id)) {
-        this._thumbUrls.set(s.id, URL.createObjectURL(s.blob));
+        const blob = await backend.blobs.get(s.blobRef);
+        this._thumbUrls.set(s.id, URL.createObjectURL(blob));
       }
-    }
+    }));
   }
 
   private _onStrokeColor(e: Event) {
@@ -568,9 +575,11 @@ export class ToolSettings extends LitElement {
       // Re-read projectId at resolution time in case user switched projects
       const currentProjectId = this._ctx.value?.currentProject?.id;
       if (!currentProjectId) return;
+      const service = this._serviceCtx.value;
+      if (!service) return;
       let lastEntry: StampEntry | null = null;
       for (const file of files) {
-        lastEntry = await addStamp(currentProjectId, file);
+        lastEntry = await service.addStamp(currentProjectId, file);
       }
       await this._loadStamps(currentProjectId);
       if (!lastEntry) return;
@@ -605,7 +614,9 @@ export class ToolSettings extends LitElement {
     e.stopPropagation();
     const projectId = this._ctx.value?.currentProject?.id;
     if (!projectId) return;
-    await deleteStamp(entry.id);
+    const backend = this._storageCtx.value;
+    if (!backend) return;
+    await backend.stamps.delete(entry.id);
     if (this._activeStampId === entry.id) {
       this._activeStampId = null;
       this.ctx.setStampImage(null);
