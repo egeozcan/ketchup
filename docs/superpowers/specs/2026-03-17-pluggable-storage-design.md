@@ -143,8 +143,10 @@ interface BlobStore {
   put(data: Blob | ArrayBuffer): Promise<BlobRef>;
   get(ref: BlobRef): Promise<Blob>;
   delete(ref: BlobRef): Promise<void>;
+  /** Bulk delete — allows adapters to optimize (e.g., single IDB transaction). */
+  deleteMany(refs: BlobRef[]): Promise<void>;
 
-  /** Delete all blobs not in the active set. Optional — adapters that don't support it throw StorageNotSupportedError. */
+  /** Delete all blobs not in the active set. Returns count of deleted blobs. Optional — adapters that don't support it throw StorageNotSupportedError. */
   gc?(activeRefs: Set<BlobRef>): Promise<number>;
 }
 ```
@@ -248,32 +250,48 @@ interface StampStore {
 Coordinates cross-domain operations. Not part of the adapter interface — provided by the library, works with any `StorageBackend`.
 
 ```ts
+interface ProjectServiceOptions {
+  maxStampsPerProject?: number;  // default: 20
+}
+
 class ProjectService {
-  constructor(private storage: StorageBackend) {}
+  private maxStamps: number;
+
+  constructor(
+    private storage: StorageBackend,
+    opts?: ProjectServiceOptions,
+  ) {
+    this.maxStamps = opts?.maxStampsPerProject ?? 20;
+  }
 
   async deleteProject(projectId: string): Promise<void> {
-    // 1. Delete domain records in parallel
+    // 1. Delete the root project record FIRST.
+    // If subsequent steps fail, the project is already hidden from the UI.
+    // Orphaned domain records are cleaned up by background sweep.
+    await this.storage.projects.delete(projectId);
+
+    // 2. Delete domain records in parallel (best-effort)
     await Promise.all([
       this.storage.state.delete(projectId),
       this.storage.history.deleteForProject(projectId),
       this.storage.stamps.deleteForProject(projectId),
-    ]);
-
-    // 2. Delete the root project record
-    await this.storage.projects.delete(projectId);
+    ]).catch(console.error);
 
     // 3. Trigger blob GC asynchronously
     this.collectGarbage().catch(console.error);
   }
 
-  /** Mark-and-sweep: collect all live BlobRefs, delete orphans. */
+  /**
+   * Mark-and-sweep: collect all live BlobRefs, delete orphans.
+   * Processes projects sequentially to avoid OOM on large collections.
+   */
   async collectGarbage(): Promise<number> {
     if (!this.storage.blobs.gc) return 0;
 
     const projects = await this.storage.projects.list();
     const activeRefs = new Set<BlobRef>();
 
-    await Promise.all(projects.map(async (p) => {
+    for (const p of projects) {
       const [state, history, stamps] = await Promise.all([
         this.storage.state.get(p.id),
         this.storage.history.getEntries(p.id),
@@ -283,12 +301,18 @@ class ProjectService {
       state?.layers.forEach(l => activeRefs.add(l.imageBlobRef));
       history.forEach(h => collectBlobRefsFromEntry(h.entry, activeRefs));
       stamps.forEach(s => activeRefs.add(s.blobRef));
-    }));
+
+      // Yield to main thread between projects so the browser GC
+      // can reclaim parsed records before processing the next project
+      await new Promise(r => setTimeout(r, 0));
+    }
 
     return this.storage.blobs.gc(activeRefs);
   }
 }
 ```
+
+**Why sequential GC:** The previous `Promise.all(projects.map(...))` pattern loaded every project's state, history, and stamps into memory simultaneously — the exact OOM risk avoided in the v3→v4 migration. Sequential processing with main-thread yields keeps memory bounded to one project at a time.
 
 ### `collectBlobRefsFromEntry`
 
@@ -316,18 +340,17 @@ function collectBlobRefsFromEntry(entry: SerializedHistoryEntry, refs: Set<BlobR
 
 ### Stamp Pruning
 
-Pruning (max 20 stamps per project) is a `ProjectService` responsibility, not an adapter concern. This keeps adapters simple and ensures consistent behavior across backends.
+Pruning is a `ProjectService` responsibility, not an adapter concern. The limit is configurable via `ProjectServiceOptions.maxStampsPerProject` (default: 20) — IndexedDB on mobile benefits from a low cap, while a desktop filesystem or S3 backend might set it higher or use `Infinity` for unlimited.
 
 ```ts
 // In ProjectService:
 async addStamp(projectId: string, data: Blob | ArrayBuffer): Promise<StampEntry> {
   const entry = await this.storage.stamps.add(projectId, data);
   const all = await this.storage.stamps.list(projectId);
-  if (all.length > MAX_STAMPS) {
-    // Prune oldest entries beyond limit
+  if (all.length > this.maxStamps) {
     const toDelete = all
       .sort((a, b) => a.createdAt - b.createdAt)
-      .slice(0, all.length - MAX_STAMPS);
+      .slice(0, all.length - this.maxStamps);
     for (const old of toDelete) {
       await this.storage.stamps.delete(old.id);
     }
@@ -346,6 +369,10 @@ async addStamp(projectId: string, data: Blob | ArrayBuffer): Promise<StampEntry>
 2. **Blob GC** — database cascades can't delete actual binary data behind `BlobRef`s. Only the app knows the total system state needed for safe cleanup.
 
 3. **UI feedback** — app orchestration enables granular progress reporting for large deletions.
+
+### Why Delete Project Record First
+
+The cascade deletes the root project record *before* domain records. This prevents "zombie" projects: if a failure occurs mid-cascade (network error, quota), the project is already hidden from `projects.list()` and the UI. Orphaned domain records (state, history, stamps) are invisible to the user and cleaned up by the next `collectGarbage()` cycle. The alternative (delete domain records first, project last) would leave a visible project that crashes when opened because its state is missing.
 
 ### Why Mark-and-Sweep GC
 
@@ -471,6 +498,8 @@ The migration extracts inline `Blob` fields into the new `blobs` object store, r
 
 **Transaction safety**: IndexedDB upgrade transactions auto-commit if the event loop goes idle for even a microsecond. All migration work must happen within the `onupgradeneeded` transaction using the raw transaction object — not the adapter's own `blobs.put()` facade (DB init hasn't finished).
 
+**Secure context**: `crypto.randomUUID()` requires a secure context (HTTPS or localhost). The app is deployed to GitHub Pages (HTTPS), but if there are edge cases (LAN testing, embedded webviews), the migration will throw. Include a lightweight UUIDv4 fallback using `crypto.getRandomValues()` which works in all contexts.
+
 **Memory safety**: Using `getAll()` to load every project's inline blobs would cause OOM on mobile. Use cursors to process records one at a time.
 
 **Atomicity**: If anything fails (e.g., quota exceeded), the entire upgrade transaction aborts and v3 data remains intact.
@@ -595,6 +624,10 @@ The adapter catches native `DOMException` errors and maps them:
 The current monolithic `project-store.ts` deletes a project and all its related data in a single multi-store IndexedDB transaction, providing atomicity. After this refactor, `ProjectService.deleteProject` issues separate calls to each sub-store, which means separate transactions for the IndexedDB adapter. If one fails mid-cascade, the project is in a partially deleted state. This is an accepted trade-off for cross-backend portability — the `ProjectService` pattern works identically whether the adapter is IndexedDB, REST, or filesystem. The IndexedDB adapter could optionally optimize this internally by using a single transaction, but the interface does not require it.
 
 The same trade-off applies to the **save path**, which is more frequent. The current `saveProjectState` writes state, history, thumbnail, and `updatedAt` in a single multi-store transaction. After the refactor, a save becomes multiple calls: `state.save()`, `history.putEntries()` or `history.replaceAll()`, and `projects.update()`. A crash between calls could leave data partially updated (e.g., state saved but thumbnail stale). This is acceptable because: (a) the app already debounces saves and the window for partial writes is small, (b) partial saves are recoverable on next load (stale thumbnail is cosmetic, history/state mismatch is detectable), and (c) the IndexedDB adapter may internally batch these into a single transaction as an optimization.
+
+### IndexedDB Internal Batching (Recommended)
+
+Opening three separate IndexedDB transactions per debounced save causes main-thread jank from transaction overhead. The `IndexedDBBackend` should implement internal batching: collect synchronous calls to `state.save()`, `history.putEntries()`, and `projects.update()` and flush them in a single multi-store transaction on the next microtask. This is an internal optimization invisible to the interface — other adapters don't need it. The batching window naturally aligns with the app's existing 500ms debounce.
 
 ### Incremental History Save Orchestration
 
