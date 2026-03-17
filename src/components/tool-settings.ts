@@ -108,13 +108,23 @@ export class ToolSettings extends LitElement {
     }
 
     .stamp-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
       background: #5b8cf7;
       color: white;
       border: none;
-      border-radius: 0.25rem;
-      padding: 0.25rem 0.625rem;
+      border-radius: 6px;
       cursor: pointer;
-      font-size: 0.75rem;
+      padding: 6px;
+      flex-shrink: 0;
+    }
+
+    .stamp-btn svg {
+      width: 15px;
+      height: 15px;
     }
 
     .stamp-btn:hover {
@@ -141,7 +151,6 @@ export class ToolSettings extends LitElement {
       gap: 0.25rem;
       overflow-x: auto;
       overflow-y: hidden;
-      max-width: 25rem;
       padding: 0.125rem 0;
       align-items: center;
       scrollbar-width: none;
@@ -897,6 +906,13 @@ export class ToolSettings extends LitElement {
       ${activeTool === 'stamp'
         ? html`
             <div class="stamp-line">
+              <button class="stamp-btn" @click=${this._uploadStamp} title="Upload Image">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+              </button>
               ${this._recentStamps.length > 0
             ? html`
                     <div class="stamp-row">
@@ -919,7 +935,6 @@ export class ToolSettings extends LitElement {
                     </div>
                   `
             : ''}
-              <button class="stamp-btn" @click=${this._uploadStamp}>Upload Image</button>
               ${stampImage
             ? html`<img class="stamp-preview" .src=${stampImage.src} alt="stamp" />`
             : ''}
