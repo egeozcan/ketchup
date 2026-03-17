@@ -163,7 +163,8 @@ interface ProjectMeta {
 interface ProjectStore {
   list(opts?: { orderBy?: 'updatedAt' | 'createdAt'; direction?: 'asc' | 'desc' }): Promise<ProjectMeta[]>;
   get(id: string): Promise<ProjectMeta | null>;
-  create(meta: Omit<ProjectMeta, 'id' | 'createdAt' | 'updatedAt'>): Promise<ProjectMeta>;
+  /** thumbnailRef defaults to null if omitted. */
+  create(meta: Omit<ProjectMeta, 'id' | 'createdAt' | 'updatedAt'> & { thumbnailRef?: BlobRef | null }): Promise<ProjectMeta>;
   update(id: string, changes: Partial<Pick<ProjectMeta, 'name' | 'thumbnailRef'>>): Promise<ProjectMeta>;
   delete(id: string): Promise<void>;
 }
@@ -211,6 +212,7 @@ interface ProjectHistoryRecord {
 }
 
 interface ProjectHistoryStore {
+  /** Returns entries sorted by index ascending. */
   getEntries(projectId: string): Promise<ProjectHistoryRecord[]>;
   putEntries(projectId: string, entries: ProjectHistoryRecord[]): Promise<void>;
   /** Replace all history for a project (full history rewrite). */
@@ -237,7 +239,7 @@ interface StampStore {
 }
 ```
 
-`StampStore.add` accepts raw blob data and internally calls `blobs.put` — callers don't manage blob refs for stamps.
+`StampStore.add` accepts raw blob data and internally calls `blobs.put` — callers don't manage blob refs for stamps. This means `StampStore` implementations require a `BlobStore` reference at construction time. The `StorageBackend` wiring class is responsible for passing it in (e.g., `new IndexedDBStampStore(db, this.blobs)` or `new RemoteStampStore(config, this.blobs)` — as shown in the adapter authoring example).
 
 ## Service Layer
 
@@ -592,15 +594,32 @@ The adapter catches native `DOMException` errors and maps them:
 
 The current monolithic `project-store.ts` deletes a project and all its related data in a single multi-store IndexedDB transaction, providing atomicity. After this refactor, `ProjectService.deleteProject` issues separate calls to each sub-store, which means separate transactions for the IndexedDB adapter. If one fails mid-cascade, the project is in a partially deleted state. This is an accepted trade-off for cross-backend portability — the `ProjectService` pattern works identically whether the adapter is IndexedDB, REST, or filesystem. The IndexedDB adapter could optionally optimize this internally by using a single transaction, but the interface does not require it.
 
+The same trade-off applies to the **save path**, which is more frequent. The current `saveProjectState` writes state, history, thumbnail, and `updatedAt` in a single multi-store transaction. After the refactor, a save becomes multiple calls: `state.save()`, `history.putEntries()` or `history.replaceAll()`, and `projects.update()`. A crash between calls could leave data partially updated (e.g., state saved but thumbnail stale). This is acceptable because: (a) the app already debounces saves and the window for partial writes is small, (b) partial saves are recoverable on next load (stale thumbnail is cosmetic, history/state mismatch is detectable), and (c) the IndexedDB adapter may internally batch these into a single transaction as an optimization.
+
+### Incremental History Save Orchestration
+
+The current `drawing-app.ts` tracks `_lastSavedHistoryLength` and `_lastSavedHistoryVersion` to decide between incremental appends and full rewrites. This logic maps to the new interface as follows:
+
+- **Incremental append** (version unchanged, new entries added): call `history.putEntries()` with only the new entries since last save
+- **Full rewrite** (version changed — e.g., undo that truncates history, or `setHistory()` call): call `history.replaceAll()` with the complete current history
+
+This orchestration lives in `drawing-app.ts` (the save coordinator), not in `ProjectService`. The version tracking mechanism remains unchanged.
+
 ## File Structure
 
 ```
 src/
+  types.ts                    # Runtime types only: ToolType, Point, Layer, LayerSnapshot,
+                              # DrawingState, HistoryEntry, FloatingSelection
+                              # (contains DOM types: HTMLCanvasElement, ImageData, etc.)
   storage/
-    types.ts                  # All interfaces, BlobRef type — zero runtime code
+    types.ts                  # Storage types: BlobRef, ToolSettings, ProjectMeta,
+                              # SerializedLayer, SerializedImageData, SerializedLayerSnapshot,
+                              # SerializedHistoryEntry, ProjectStateRecord, ProjectHistoryRecord,
+                              # StampEntry, and all store interfaces — zero runtime code
     errors.ts                 # StorageError class hierarchy — runtime code
     storage-context.ts        # Lit context definitions
-    project-service.ts        # Cross-domain coordination (cascade delete, GC)
+    project-service.ts        # Cross-domain coordination (cascade delete, GC, stamp pruning)
     indexeddb/
       indexeddb-backend.ts    # IndexedDBBackend implements StorageBackend
       indexeddb-projects.ts   # ProjectStore implementation
@@ -614,8 +633,12 @@ src/
       mock-backend.ts         # In-memory Maps/Arrays implementation
     index.ts                  # barrel export: types, errors, context, service, default backend
   utils/
-    canvas-helpers.ts         # canvasToBlob, blobToImageData, serializeLayer, etc.
+    canvas-helpers.ts         # canvasToBlob, blobToCanvas, blobToImageData, imageDataToBlob,
+                              # serializeLayerFromImageData, deserializeLayer
+                              # (these now accept/return BlobRef via a BlobStore parameter)
 ```
+
+**`src/types.ts` split:** The existing `src/types.ts` retains runtime types that depend on DOM APIs (`Layer` with `HTMLCanvasElement`, `HistoryEntry` with `ImageData`, `DrawingState` with `HTMLImageElement`, etc.). All serialized/storage types (`SerializedLayer`, `SerializedImageData`, `SerializedLayerSnapshot`, `SerializedHistoryEntry`, `ProjectMeta`, `ProjectStateRecord`, `ProjectHistoryRecord`) move to `storage/types.ts` with `BlobRef`-based definitions. The old `Blob`-based versions are deleted — the v3→v4 migration handles existing data.
 
 ### Exports
 
