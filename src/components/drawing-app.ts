@@ -263,8 +263,13 @@ export class DrawingApp extends LitElement {
             this._backend!.projects.get(projectId),
             clearExistingHistory ? this._backend!.history.getEntries(projectId) : Promise.resolve([]),
           ]);
+
+          // Abort if the project was deleted (e.g. by another tab or a custom backend).
+          // Writing state/history for a missing project creates orphaned data.
+          if (!oldProject) break;
+
           const oldLayerRefs = oldState?.layers.map(l => l.imageBlobRef) ?? [];
-          const oldThumbRef = oldProject?.thumbnailRef ?? null;
+          const oldThumbRef = oldProject.thumbnailRef ?? null;
 
           // Async serialization from snapshots (not live canvas)
           const layers = await Promise.all(
@@ -306,13 +311,26 @@ export class DrawingApp extends LitElement {
             await this._backend!.history.putEntries(projectId, serializedEntries);
           }
 
-          // Update project metadata
+          // Advance save cursors immediately after state+history succeed.
+          // If thumbnail/metadata fails later (e.g. QuotaExceededError), the
+          // next autosave won't re-append the same history entries.
+          if (this._currentProject?.id === projectId) {
+            this._lastSavedHistoryLength = historySnapshot.length;
+            this._lastSavedHistoryVersion = historyVersion;
+          }
+
+          // Update project metadata (thumbnail failure is non-fatal for data integrity)
           let newThumbRef = oldThumbRef;
-          if (thumbnail) {
-            newThumbRef = await blobs.put(thumbnail);
-            await this._backend!.projects.update(projectId, { thumbnailRef: newThumbRef });
-          } else {
-            await this._backend!.projects.update(projectId, {});
+          try {
+            if (thumbnail) {
+              newThumbRef = await blobs.put(thumbnail);
+              await this._backend!.projects.update(projectId, { thumbnailRef: newThumbRef });
+            } else {
+              await this._backend!.projects.update(projectId, {});
+            }
+          } catch {
+            // Thumbnail/metadata update failed — state+history are already saved,
+            // cursors already advanced. Stale thumbnail is cosmetic.
           }
 
           // Reclaim superseded blob refs (layers + thumbnail + replaced history).
@@ -325,7 +343,6 @@ export class DrawingApp extends LitElement {
           if (clearExistingHistory && oldHistoryEntries.length > 0) {
             const oldHistoryRefs = new Set<BlobRef>();
             for (const h of oldHistoryEntries) collectBlobRefsFromEntry(h.entry, oldHistoryRefs);
-            // Exclude refs still used by the new history entries
             const newHistoryRefs = new Set<BlobRef>();
             for (const h of serializedEntries) collectBlobRefsFromEntry(h.entry, newHistoryRefs);
             for (const ref of oldHistoryRefs) {
@@ -336,11 +353,8 @@ export class DrawingApp extends LitElement {
             blobs.deleteMany(staleRefs).catch(() => {/* best-effort cleanup */});
           }
 
-          // Only apply save cursors if we are still on the same project.
+          // Mark clean only if no new edits landed while this save was in flight.
           if (this._currentProject?.id === projectId) {
-            this._lastSavedHistoryLength = historySnapshot.length;
-            this._lastSavedHistoryVersion = historyVersion;
-            // Keep dirty=true if new edits landed while this save was in flight.
             if (this._dirtyVersion === dirtyVersionAtSnapshot) {
               this._dirty = false;
             }
@@ -923,10 +937,14 @@ export class DrawingApp extends LitElement {
     // still has open transactions would cause InvalidStateError and silently
     // drop the user's final edits.
     if (this._dirty || this._savePromise) {
+      // Capture the backend ref now — if the element reconnects before the
+      // save settles, _initStorage() will assign a new backend to this._backend
+      // and the finally callback must dispose the OLD one, not the new one.
+      const backendToDispose = this._backend;
       const savePromise = this._dirty
         ? this._flushPendingSaveAndWait()
         : this._savePromise!;
-      savePromise.finally(() => this._backend?.dispose());
+      savePromise.finally(() => backendToDispose?.dispose());
     } else {
       if (this._saveTimer) {
         clearTimeout(this._saveTimer);
