@@ -50,6 +50,70 @@ class StorageNotSupportedError extends StorageError { name = 'StorageNotSupporte
 
 Every adapter is responsible for catching its native errors and mapping them to the appropriate `Storage*Error`. For example, the IndexedDB adapter catches `DOMException` with name `QuotaExceededError` and throws `StorageQuotaError`.
 
+### `ToolSettings`
+
+```ts
+interface ToolSettings {
+  activeTool: ToolType;
+  strokeColor: string;
+  fillColor: string;
+  useFill: boolean;
+  brushSize: number;
+}
+```
+
+### `SerializedImageData`
+
+Image pixel data with dimensions, stored as a `BlobRef` instead of an inline `Blob`.
+
+```ts
+interface SerializedImageData {
+  width: number;
+  height: number;
+  blobRef: BlobRef;
+}
+```
+
+### `SerializedLayerSnapshot`
+
+Full layer snapshot used in history entries (add-layer, delete-layer, crop).
+
+```ts
+interface SerializedLayerSnapshot {
+  id: string;
+  name: string;
+  visible: boolean;
+  opacity: number;
+  imageData: SerializedImageData;
+}
+```
+
+### `SerializedHistoryEntry`
+
+Discriminated union covering all history operations. Variants that contain pixel data use `SerializedImageData` (which holds `BlobRef`, not `Blob`).
+
+```ts
+type SerializedHistoryEntry =
+  | { type: 'draw'; layerId: string; before: SerializedImageData; after: SerializedImageData }
+  | { type: 'add-layer'; layer: SerializedLayerSnapshot; index: number }
+  | { type: 'delete-layer'; layer: SerializedLayerSnapshot; index: number }
+  | { type: 'reorder'; fromIndex: number; toIndex: number }
+  | { type: 'visibility'; layerId: string; before: boolean; after: boolean }
+  | { type: 'opacity'; layerId: string; before: number; after: number }
+  | { type: 'rename'; layerId: string; before: string; after: string }
+  | {
+      type: 'crop';
+      beforeLayers: SerializedLayerSnapshot[];
+      afterLayers: SerializedLayerSnapshot[];
+      beforeWidth: number;
+      beforeHeight: number;
+      afterWidth: number;
+      afterHeight: number;
+    };
+```
+
+Variants without blob data (`reorder`, `visibility`, `opacity`, `rename`) are unchanged from the current types.
+
 ### `StorageBackend`
 
 Root interface. Single registration point with grouped sub-objects.
@@ -224,7 +288,52 @@ class ProjectService {
 }
 ```
 
-`collectBlobRefsFromEntry` walks the discriminated union of `SerializedHistoryEntry` and extracts all `BlobRef` fields.
+### `collectBlobRefsFromEntry`
+
+Walks the discriminated union and extracts all `BlobRef` fields:
+
+```ts
+function collectBlobRefsFromEntry(entry: SerializedHistoryEntry, refs: Set<BlobRef>): void {
+  switch (entry.type) {
+    case 'draw':
+      refs.add(entry.before.blobRef);
+      refs.add(entry.after.blobRef);
+      break;
+    case 'add-layer':
+    case 'delete-layer':
+      refs.add(entry.layer.imageData.blobRef);
+      break;
+    case 'crop':
+      for (const l of entry.beforeLayers) refs.add(l.imageData.blobRef);
+      for (const l of entry.afterLayers) refs.add(l.imageData.blobRef);
+      break;
+    // reorder, visibility, opacity, rename — no blobs
+  }
+}
+```
+
+### Stamp Pruning
+
+Pruning (max 20 stamps per project) is a `ProjectService` responsibility, not an adapter concern. This keeps adapters simple and ensures consistent behavior across backends.
+
+```ts
+// In ProjectService:
+async addStamp(projectId: string, data: Blob | ArrayBuffer): Promise<StampEntry> {
+  const entry = await this.storage.stamps.add(projectId, data);
+  const all = await this.storage.stamps.list(projectId);
+  if (all.length > MAX_STAMPS) {
+    // Prune oldest entries beyond limit
+    const toDelete = all
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .slice(0, all.length - MAX_STAMPS);
+    for (const old of toDelete) {
+      await this.storage.stamps.delete(old.id);
+    }
+    // Orphaned blobs cleaned up by next GC cycle
+  }
+  return entry;
+}
+```
 
 ### Why App-Orchestrated Cascade Delete
 
@@ -287,6 +396,40 @@ render() {
 }
 ```
 
+### Three-Context Model
+
+The app now provides three contexts from `drawing-app.ts`:
+
+1. **`drawingContext`** (existing) — `DrawingContextValue` with drawing state, tool settings, layer operations
+2. **`storageBackendContext`** (new) — the `StorageBackend` instance
+3. **`projectServiceContext`** (new) — the `ProjectService` instance
+
+Components that need storage add a second `ContextConsumer`. For example, `tool-settings.ts`:
+
+```ts
+// Existing
+private _drawingContext = new ContextConsumer(this, { context: drawingContext, subscribe: true });
+
+// New — for stamp operations
+private _storage = new ContextConsumer(this, { context: storageBackendContext, subscribe: true });
+```
+
+Stamp thumbnails require an async blob fetch since `StampEntry` now holds a `BlobRef` instead of an inline `Blob`. Components call `backend.blobs.get(entry.blobRef)` to obtain a `Blob` before creating an object URL with `URL.createObjectURL()`.
+
+### Shutdown Lifecycle
+
+`drawing-app.ts` wires `dispose()` in `disconnectedCallback`:
+
+```ts
+disconnectedCallback() {
+  super.disconnectedCallback();
+  // Flush pending debounced saves first (existing logic)
+  this._flushPendingSave();
+  // Then shut down the backend
+  this._backend?.dispose();
+}
+```
+
 ### Component Consumption
 
 - **Default usage** (no config): app creates `IndexedDBBackend` automatically
@@ -296,7 +439,7 @@ render() {
 
 Component access:
 - `drawing-app.ts` — uses `ProjectService` for project CRUD, cascade delete; uses `StorageBackend` for state save/load and history
-- `tool-settings.ts` — consumes `StorageBackend.stamps` from context
+- `tool-settings.ts` — consumes `StorageBackend.stamps` and `StorageBackend.blobs` from context (dual context consumer)
 - `drawing-canvas.ts` — unchanged (no direct storage access)
 
 ## IndexedDB Adapter
@@ -330,40 +473,108 @@ The migration extracts inline `Blob` fields into the new `blobs` object store, r
 
 **Atomicity**: If anything fails (e.g., quota exceeded), the entire upgrade transaction aborts and v3 data remains intact.
 
+Note: The pseudocode below uses `openDB`/`await` syntax for clarity. The current codebase uses raw `indexedDB.open()` — the migration implementation should follow the existing pattern, not introduce a new `idb` dependency.
+
 ```ts
-const db = await openDB(dbName, version, {
-  upgrade(db, oldVersion, newVersion, transaction) {
-    if (oldVersion < 4) {
-      // 1. Create the new blobs store
-      const blobStore = db.createObjectStore('blobs');
+upgrade(db, oldVersion, newVersion, transaction) {
+  if (oldVersion < 4) {
+    const blobStore = db.createObjectStore('blobs');
 
-      // 2. Migrate project-state using cursor
-      const stateStore = transaction.objectStore('project-state');
-      let stateCursor = await stateStore.openCursor();
+    // --- 1. Migrate projects (thumbnail: Blob → thumbnailRef: BlobRef) ---
+    const projStore = transaction.objectStore('projects');
+    let projCursor = await projStore.openCursor();
+    while (projCursor) {
+      const record = projCursor.value;
+      if (record.thumbnail) {
+        const ref = crypto.randomUUID();
+        blobStore.put(record.thumbnail, ref);
+        record.thumbnailRef = ref;
+        delete record.thumbnail;
+        await projCursor.update(record);
+      }
+      projCursor = await projCursor.continue();
+    }
 
-      while (stateCursor) {
-        const record = stateCursor.value;
-        let updated = false;
-
-        for (const layer of record.layers) {
-          if (layer.imageBlob) {
-            const ref = crypto.randomUUID();
-            blobStore.put(layer.imageBlob, ref);
-            layer.imageBlobRef = ref;
-            delete layer.imageBlob;
-            updated = true;
-          }
+    // --- 2. Migrate project-state (layer imageBlob → imageBlobRef) ---
+    const stateStore = transaction.objectStore('project-state');
+    let stateCursor = await stateStore.openCursor();
+    while (stateCursor) {
+      const record = stateCursor.value;
+      let updated = false;
+      for (const layer of record.layers) {
+        if (layer.imageBlob) {
+          const ref = crypto.randomUUID();
+          blobStore.put(layer.imageBlob, ref);
+          layer.imageBlobRef = ref;
+          delete layer.imageBlob;
+          updated = true;
         }
+      }
+      if (updated) await stateCursor.update(record);
+      stateCursor = await stateCursor.continue();
+    }
 
-        if (updated) await stateCursor.update(record);
-        stateCursor = await stateCursor.continue();
+    // --- 3. Migrate project-history (nested blobs in SerializedHistoryEntry) ---
+    const histStore = transaction.objectStore('project-history');
+    let histCursor = await histStore.openCursor();
+    while (histCursor) {
+      const record = histCursor.value;
+      const entry = record.entry;
+      let updated = false;
+
+      // Helper: extract blob from SerializedImageData
+      function migrateImageData(imgData: any): boolean {
+        if (imgData?.blob) {
+          const ref = crypto.randomUUID();
+          blobStore.put(imgData.blob, ref);
+          imgData.blobRef = ref;
+          delete imgData.blob;
+          return true;
+        }
+        return false;
       }
 
-      // 3. Repeat cursor logic for project-history (extract blob fields from SerializedHistoryEntry)
-      // 4. Repeat cursor logic for project-stamps (extract stamp blobs)
+      // Helper: extract blob from SerializedLayerSnapshot
+      function migrateSnapshot(snapshot: any): boolean {
+        return migrateImageData(snapshot?.imageData);
+      }
+
+      switch (entry.type) {
+        case 'draw':
+          if (migrateImageData(entry.before)) updated = true;
+          if (migrateImageData(entry.after)) updated = true;
+          break;
+        case 'add-layer':
+        case 'delete-layer':
+          if (migrateSnapshot(entry.layer)) updated = true;
+          break;
+        case 'crop':
+          for (const l of entry.beforeLayers) if (migrateSnapshot(l)) updated = true;
+          for (const l of entry.afterLayers) if (migrateSnapshot(l)) updated = true;
+          break;
+        // reorder, visibility, opacity, rename — no blobs
+      }
+
+      if (updated) await histCursor.update(record);
+      histCursor = await histCursor.continue();
+    }
+
+    // --- 4. Migrate project-stamps (blob → blobRef) ---
+    const stampStore = transaction.objectStore('project-stamps');
+    let stampCursor = await stampStore.openCursor();
+    while (stampCursor) {
+      const record = stampCursor.value;
+      if (record.blob) {
+        const ref = crypto.randomUUID();
+        blobStore.put(record.blob, ref);
+        record.blobRef = ref;
+        delete record.blob;
+        await stampCursor.update(record);
+      }
+      stampCursor = await stampCursor.continue();
     }
   }
-});
+}
 ```
 
 ### Error Mapping
@@ -376,6 +587,10 @@ The adapter catches native `DOMException` errors and maps them:
 | `NotFoundError` | `StorageNotFoundError` |
 | `ConstraintError` | `StorageConflictError` |
 | Other | `StorageError` (generic) |
+
+### Atomicity Trade-off
+
+The current monolithic `project-store.ts` deletes a project and all its related data in a single multi-store IndexedDB transaction, providing atomicity. After this refactor, `ProjectService.deleteProject` issues separate calls to each sub-store, which means separate transactions for the IndexedDB adapter. If one fails mid-cascade, the project is in a partially deleted state. This is an accepted trade-off for cross-backend portability — the `ProjectService` pattern works identically whether the adapter is IndexedDB, REST, or filesystem. The IndexedDB adapter could optionally optimize this internally by using a single transaction, but the interface does not require it.
 
 ## File Structure
 
