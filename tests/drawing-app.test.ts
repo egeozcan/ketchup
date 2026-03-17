@@ -227,12 +227,13 @@ describe('DrawingApp', () => {
     // Stub _resetToFreshProject so it doesn't do real work
     (app as any)._resetToFreshProject = vi.fn(async () => {});
 
-    // Stub createProjectInDB
-    const projectStore = await import('../src/project-store.js');
-    const createSpy = vi.spyOn(projectStore, 'createProject').mockResolvedValue(
-      { id: 'new', name: 'Untitled', createdAt: 0, updatedAt: 0, thumbnail: null },
-    );
-    vi.spyOn(projectStore, 'listProjects').mockResolvedValue([]);
+    // Stub backend
+    (app as any)._backend = {
+      projects: {
+        create: vi.fn(async () => ({ id: 'new', name: 'Untitled', createdAt: 0, updatedAt: 0, thumbnailRef: null })),
+        list: vi.fn(async () => []),
+      },
+    };
 
     const ctx = (app as any)._buildContextValue();
     ctx.createProject('Untitled');
@@ -244,8 +245,6 @@ describe('DrawingApp', () => {
     expect(callOrder).toContain('clearSelection');
     expect(callOrder).toContain('flush');
     expect(callOrder.indexOf('clearSelection')).toBeLessThan(callOrder.indexOf('flush'));
-
-    createSpy.mockRestore();
   });
 
   it('clears the floating selection when resetting to a fresh project', async () => {
@@ -376,22 +375,29 @@ describe('DrawingApp', () => {
       canvasWidth: 100,
       canvasHeight: 100,
       layers: [
-        { id: 'real-layer', name: 'Layer 1', visible: true, opacity: 1, imageBlob: new Blob() },
+        { id: 'real-layer', name: 'Layer 1', visible: true, opacity: 1, imageBlobRef: 'ref1' },
       ],
       activeLayerId: 'deleted-layer-id',
       layersPanelOpen: true,
       historyIndex: -1,
     };
 
-    // Mock loadProjectState to return our corrupted record
-    const projectStore = await import('../src/project-store.js');
-    const loadSpy = vi.spyOn(projectStore, 'loadProjectState').mockResolvedValue({
-      state: fakeRecord as any,
-      history: [],
-      historyIndex: -1,
-    });
-    // Mock deserializeLayer to return a real layer object
-    vi.spyOn(projectStore, 'deserializeLayer').mockResolvedValue({
+    // Create a small PNG blob for deserialization
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 100;
+    layerCanvas.height = 100;
+    const layerBlob = new Blob([new Uint8Array(4)], { type: 'image/png' });
+
+    // Mock backend
+    (app as any)._backend = {
+      state: { get: vi.fn(async () => fakeRecord) },
+      history: { getEntries: vi.fn(async () => []) },
+      blobs: { get: vi.fn(async () => layerBlob) },
+    };
+
+    // Mock the deserialization utility to return a real layer object
+    const serMod = await import('../src/utils/storage-serialization.js');
+    const deserSpy = vi.spyOn(serMod, 'deserializeLayer').mockResolvedValue({
       id: 'real-layer',
       name: 'Layer 1',
       visible: true,
@@ -405,7 +411,7 @@ describe('DrawingApp', () => {
     // non-existent 'deleted-layer-id'.
     expect((app as any)._state.activeLayerId).toBe('real-layer');
 
-    loadSpy.mockRestore();
+    deserSpy.mockRestore();
   });
 
   it('resets to fresh project if saved layers array is empty', async () => {
@@ -432,11 +438,18 @@ describe('DrawingApp', () => {
       historyIndex: -1,
     };
 
-    const projectStore = await import('../src/project-store.js');
-    const loadSpy = vi.spyOn(projectStore, 'loadProjectState').mockResolvedValue({
-      state: fakeRecord as any,
-      history: [],
-      historyIndex: -1,
+    // Mock backend
+    (app as any)._backend = {
+      state: { get: vi.fn(async () => fakeRecord) },
+      history: { getEntries: vi.fn(async () => []) },
+      blobs: { get: vi.fn(async () => new Blob()) },
+    };
+
+    // Stub _resetToFreshProject so it doesn't do real work
+    (app as any)._resetToFreshProject = vi.fn(async () => {
+      // Simulate a fresh project with one layer
+      const layer = (app as any)._createLayer(100, 100);
+      (app as any)._state = { ...(app as any)._state, layers: [layer], activeLayerId: layer.id };
     });
 
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -449,8 +462,6 @@ describe('DrawingApp', () => {
     // The recovery should be clean — no error logged
     expect(errorSpy).not.toHaveBeenCalled();
     errorSpy.mockRestore();
-
-    loadSpy.mockRestore();
   });
 
   it('snapshots document dimensions before async serialization in _save', async () => {
@@ -489,16 +500,23 @@ describe('DrawingApp', () => {
       },
     });
 
-    // Intercept saveProjectState to capture the stateRecord
+    // Intercept backend.state.save to capture the stateRecord
     let savedRecord: any = null;
-    const projectStore = await import('../src/project-store.js');
-    const saveSpy = vi.spyOn(projectStore, 'saveProjectState').mockImplementation(
-      async (_pid, record) => { savedRecord = record; },
-    );
-    vi.spyOn(projectStore, 'listProjects').mockResolvedValue([]);
+    const fakeRef = 'blob-ref-1';
+    (app as any)._backend = {
+      blobs: { put: vi.fn(async () => fakeRef) },
+      state: { save: vi.fn(async (record: any) => { savedRecord = record; }) },
+      history: { replaceAll: vi.fn(async () => {}), putEntries: vi.fn(async () => {}) },
+      projects: {
+        update: vi.fn(async () => ({ id: 'p1', name: 'P', createdAt: 0, updatedAt: 0, thumbnailRef: null })),
+        list: vi.fn(async () => []),
+      },
+    };
+
     // Mock serialization to avoid canvas.toBlob hanging in jsdom
-    vi.spyOn(projectStore, 'serializeLayerFromImageData').mockResolvedValue(
-      { id: 'l1', name: 'Layer 1', visible: true, opacity: 1, imageBlob: new Blob() },
+    const serMod = await import('../src/utils/storage-serialization.js');
+    const serSpy = vi.spyOn(serMod, 'serializeLayerFromImageData').mockResolvedValue(
+      { id: 'l1', name: 'Layer 1', visible: true, opacity: 1, imageBlobRef: fakeRef as any },
     );
 
     // Start the save with flushing=true to skip the 1500ms indicator delay.
@@ -521,7 +539,7 @@ describe('DrawingApp', () => {
     expect(savedRecord.canvasWidth).toBe(200);
     expect(savedRecord.canvasHeight).toBe(150);
 
-    saveSpy.mockRestore();
+    serSpy.mockRestore();
   });
 
   it('composites active float into layer snapshot during save', () => {
