@@ -69,6 +69,8 @@ export class DrawingApp extends LitElement {
   @state() private _storageState: 'loading' | 'ready' | 'error' = 'loading';
   @state() private _storageError?: string;
   @state() private _backend?: StorageBackend;
+  /** True when we created the backend ourselves (not caller-supplied). Only dispose what we own. */
+  private _ownsBackend = false;
   @state() private _projectService?: ProjectService;
 
   private _storageProvider?: ContextProvider<typeof storageBackendContext>;
@@ -301,14 +303,25 @@ export class DrawingApp extends LitElement {
             })),
           );
 
-          // Save state
-          await this._backend!.state.save(stateRecord);
+          // Collect all blob refs produced by serialization so we can clean
+          // them up if the save fails (prevents progressive blob leaks on
+          // repeated failures, e.g. quota pressure).
+          const newBlobRefSet = new Set<BlobRef>(layers.map(l => l.imageBlobRef));
+          for (const h of serializedEntries) collectBlobRefsFromEntry(h.entry, newBlobRefSet);
+          const newBlobRefs = [...newBlobRefSet];
 
-          // Save history
-          if (clearExistingHistory) {
-            await this._backend!.history.replaceAll(projectId, serializedEntries);
-          } else if (serializedEntries.length > 0) {
-            await this._backend!.history.putEntries(projectId, serializedEntries);
+          // Save state + history. If either fails, roll back the new blobs.
+          try {
+            await this._backend!.state.save(stateRecord);
+            if (clearExistingHistory) {
+              await this._backend!.history.replaceAll(projectId, serializedEntries);
+            } else if (serializedEntries.length > 0) {
+              await this._backend!.history.putEntries(projectId, serializedEntries);
+            }
+          } catch (saveErr) {
+            // Roll back freshly written blobs that will never be referenced.
+            blobs.deleteMany(newBlobRefs).catch(() => {});
+            throw saveErr;
           }
 
           // Advance save cursors immediately after state+history succeed.
@@ -891,9 +904,11 @@ export class DrawingApp extends LitElement {
 
   private async _initStorage() {
     try {
+      const callerSupplied = !!this.storageBackend;
       const backend = this.storageBackend ?? new IndexedDBBackend();
       await backend.init();
       this._backend = backend;
+      this._ownsBackend = !callerSupplied;
       this._projectService = new ProjectService(backend);
       this._storageProvider = new ContextProvider(this, {
         context: storageBackendContext,
@@ -937,10 +952,10 @@ export class DrawingApp extends LitElement {
     // still has open transactions would cause InvalidStateError and silently
     // drop the user's final edits.
     if (this._dirty || this._savePromise) {
-      // Capture the backend ref now — if the element reconnects before the
-      // save settles, _initStorage() will assign a new backend to this._backend
-      // and the finally callback must dispose the OLD one, not the new one.
-      const backendToDispose = this._backend;
+      // Capture the backend ref and ownership flag now — if the element
+      // reconnects before the save settles, _initStorage() will assign a
+      // new backend and the finally callback must dispose the OLD one.
+      const backendToDispose = this._ownsBackend ? this._backend : undefined;
       const savePromise = this._dirty
         ? this._flushPendingSaveAndWait()
         : this._savePromise!;
@@ -950,7 +965,9 @@ export class DrawingApp extends LitElement {
         clearTimeout(this._saveTimer);
         this._saveTimer = null;
       }
-      this._backend?.dispose();
+      if (this._ownsBackend) {
+        this._backend?.dispose();
+      }
     }
   }
 

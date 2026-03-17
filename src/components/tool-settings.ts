@@ -544,6 +544,12 @@ export class ToolSettings extends LitElement {
         this._thumbUrls.set(s.id, URL.createObjectURL(blob));
       }
     }));
+    // _thumbUrls is a plain Map — mutating it doesn't schedule a Lit update.
+    // Re-assign _recentStamps to trigger a rerender so <img src> bindings pick
+    // up the newly populated URLs.
+    if (this._lastProjectId === projectId) {
+      this._recentStamps = [...this._recentStamps];
+    }
   }
 
   private _onStrokeColor(e: Event) {
