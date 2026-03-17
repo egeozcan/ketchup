@@ -702,8 +702,8 @@ export class DrawingApp extends LitElement {
       canUndo: this._canUndo,
       canRedo: this._canRedo,
       // Project operations
-      currentProject: this._currentProject as any,
-      projectList: this._projectList as any,
+      currentProject: this._currentProject,
+      projectList: this._projectList,
       saving: this._saving,
       switchProject: (id: string) => {
         if (id === this._currentProject?.id) return;

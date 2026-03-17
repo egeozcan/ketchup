@@ -1,5 +1,6 @@
 import { createContext } from '@lit/context';
-import type { DrawingState, ToolType, ProjectMeta } from '../types.js';
+import type { DrawingState, ToolType } from '../types.js';
+import type { ProjectMeta } from '../storage/types.js';
 
 export interface DrawingContextValue {
   state: DrawingState;
