@@ -504,10 +504,14 @@ describe('DrawingApp', () => {
     let savedRecord: any = null;
     const fakeRef = 'blob-ref-1';
     (app as any)._backend = {
-      blobs: { put: vi.fn(async () => fakeRef) },
-      state: { save: vi.fn(async (record: any) => { savedRecord = record; }) },
+      blobs: { put: vi.fn(async () => fakeRef), deleteMany: vi.fn(async () => {}) },
+      state: {
+        get: vi.fn(async () => null),
+        save: vi.fn(async (record: any) => { savedRecord = record; }),
+      },
       history: { replaceAll: vi.fn(async () => {}), putEntries: vi.fn(async () => {}) },
       projects: {
+        get: vi.fn(async () => ({ id: 'p1', name: 'P', createdAt: 0, updatedAt: 0, thumbnailRef: null })),
         update: vi.fn(async () => ({ id: 'p1', name: 'P', createdAt: 0, updatedAt: 0, thumbnailRef: null })),
         list: vi.fn(async () => []),
       },
