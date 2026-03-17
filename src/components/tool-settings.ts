@@ -30,7 +30,8 @@ export class ToolSettings extends LitElement {
       align-items: center;
       background: #333;
       padding: 0.375rem 1rem;
-      gap: 1rem;
+      column-gap: 1rem;
+      row-gap: 0.25rem;
       color: #ddd;
       font-family: system-ui, sans-serif;
       font-size: 0.8125rem;
@@ -217,6 +218,7 @@ export class ToolSettings extends LitElement {
       display: flex;
       align-items: center;
       gap: 0.5rem;
+      margin-left: -0.5rem;
     }
 
     .project-section {
