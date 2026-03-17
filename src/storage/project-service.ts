@@ -34,7 +34,14 @@ export class ProjectService {
       this._storage.stamps.deleteForProject(projectId),
     ]).catch((e) => console.error('Cascade delete partial failure:', e));
 
-    this.collectGarbage().catch((e) => console.error('GC failed:', e));
+    // Await GC instead of fire-and-forget to prevent races with subsequent
+    // writes (e.g., auto-save of a newly created project could produce blobs
+    // that the mark phase hasn't seen, causing the sweep to delete them).
+    try {
+      await this.collectGarbage();
+    } catch (e) {
+      console.error('GC failed:', e);
+    }
   }
 
   async addStamp(projectId: string, data: Blob | ArrayBuffer): Promise<StampEntry> {

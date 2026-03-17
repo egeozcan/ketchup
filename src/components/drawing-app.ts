@@ -4,8 +4,8 @@ import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { DrawingState, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
-import { IndexedDBBackend, ProjectService, storageBackendContext, projectServiceContext } from '../storage/index.js';
-import type { StorageBackend, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord } from '../storage/types.js';
+import { IndexedDBBackend, ProjectService, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
+import type { StorageBackend, BlobRef, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord } from '../storage/types.js';
 import { canvasToBlob } from '../utils/canvas-helpers.js';
 import {
   serializeLayerFromImageData, deserializeLayer,
@@ -258,9 +258,12 @@ export class DrawingApp extends LitElement {
 
           // Capture old blob refs before serializing new ones, so we can reclaim them after save.
           const blobs = this._backend!.blobs;
-          const oldState = await this._backend!.state.get(projectId);
+          const [oldState, oldProject, oldHistoryEntries] = await Promise.all([
+            this._backend!.state.get(projectId),
+            this._backend!.projects.get(projectId),
+            clearExistingHistory ? this._backend!.history.getEntries(projectId) : Promise.resolve([]),
+          ]);
           const oldLayerRefs = oldState?.layers.map(l => l.imageBlobRef) ?? [];
-          const oldProject = await this._backend!.projects.get(projectId);
           const oldThumbRef = oldProject?.thumbnailRef ?? null;
 
           // Async serialization from snapshots (not live canvas)
@@ -312,12 +315,22 @@ export class DrawingApp extends LitElement {
             await this._backend!.projects.update(projectId, {});
           }
 
-          // Reclaim superseded blob refs (layer snapshots + thumbnail).
-          // New refs differ from old refs, so old ones are now orphaned.
+          // Reclaim superseded blob refs (layers + thumbnail + replaced history).
           const newLayerRefs = new Set(layers.map(l => l.imageBlobRef));
-          const staleRefs = oldLayerRefs.filter(r => !newLayerRefs.has(r));
+          const staleRefs: BlobRef[] = oldLayerRefs.filter(r => !newLayerRefs.has(r));
           if (oldThumbRef && oldThumbRef !== newThumbRef) {
             staleRefs.push(oldThumbRef);
+          }
+          // When history is fully rewritten, the old entries' blobs are orphaned.
+          if (clearExistingHistory && oldHistoryEntries.length > 0) {
+            const oldHistoryRefs = new Set<BlobRef>();
+            for (const h of oldHistoryEntries) collectBlobRefsFromEntry(h.entry, oldHistoryRefs);
+            // Exclude refs still used by the new history entries
+            const newHistoryRefs = new Set<BlobRef>();
+            for (const h of serializedEntries) collectBlobRefsFromEntry(h.entry, newHistoryRefs);
+            for (const ref of oldHistoryRefs) {
+              if (!newHistoryRefs.has(ref)) staleRefs.push(ref);
+            }
           }
           if (staleRefs.length > 0) {
             blobs.deleteMany(staleRefs).catch(() => {/* best-effort cleanup */});
@@ -905,14 +918,22 @@ export class DrawingApp extends LitElement {
     this.removeEventListener('keydown', this._onKeyDown);
     window.removeEventListener('beforeunload', this._onBeforeUnload);
     document.removeEventListener('visibilitychange', this._onVisibilityChange);
-    // Flush any pending save instead of silently dropping it.
-    if (this._dirty) {
-      this._flushPendingSave();
-    } else if (this._saveTimer) {
-      clearTimeout(this._saveTimer);
-      this._saveTimer = null;
+    // Flush any pending save, then dispose the backend only after the save
+    // settles. dispose() closes the IDBDatabase, so calling it while _save()
+    // still has open transactions would cause InvalidStateError and silently
+    // drop the user's final edits.
+    if (this._dirty || this._savePromise) {
+      const savePromise = this._dirty
+        ? this._flushPendingSaveAndWait()
+        : this._savePromise!;
+      savePromise.finally(() => this._backend?.dispose());
+    } else {
+      if (this._saveTimer) {
+        clearTimeout(this._saveTimer);
+        this._saveTimer = null;
+      }
+      this._backend?.dispose();
     }
-    this._backend?.dispose();
   }
 
   override render() {
