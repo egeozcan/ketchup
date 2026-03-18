@@ -1,10 +1,15 @@
 import { LitElement, html, css } from 'lit';
-import { customElement } from 'lit/decorators.js';
+import { customElement, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 
 @customElement('navigator-panel')
 export class NavigatorPanel extends LitElement {
+  private static readonly MIN_ZOOM = 0.1;
+  private static readonly MAX_ZOOM = 10;
+  private static readonly ZOOM_STEP = 1.1;
+  private static readonly SLIDER_MAX = 1000;
+
   static override styles = css`
     :host {
       display: block;
@@ -42,6 +47,78 @@ export class NavigatorPanel extends LitElement {
       border-radius: 3px;
       background: #3a3a3a;
       cursor: crosshair;
+    }
+
+    .zoom-controls {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 6px 6px;
+    }
+
+    .zoom-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border: 1px solid #555;
+      border-radius: 4px;
+      background: #444;
+      color: #ccc;
+      cursor: pointer;
+      font-size: 14px;
+      padding: 0;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .zoom-btn:hover {
+      background: #555;
+      color: #fff;
+    }
+
+    .zoom-slider {
+      flex: 1;
+      height: 4px;
+      -webkit-appearance: none;
+      appearance: none;
+      background: #555;
+      border-radius: 2px;
+      outline: none;
+      min-width: 0;
+    }
+
+    .zoom-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #bbb;
+      border: 1px solid #888;
+      cursor: grab;
+    }
+
+    .zoom-slider::-webkit-slider-thumb:active {
+      cursor: grabbing;
+    }
+
+    .zoom-input {
+      width: 38px;
+      background: #333;
+      border: 1px solid #555;
+      border-radius: 3px;
+      padding: 1px 3px;
+      text-align: center;
+      font-size: 0.6875rem;
+      color: #ddd;
+      font-family: inherit;
+      flex-shrink: 0;
+    }
+
+    .zoom-input:focus {
+      outline: 1px solid #007bff;
+      border-color: #007bff;
     }
   `;
 
@@ -270,8 +347,95 @@ export class NavigatorPanel extends LitElement {
     this._minimapCanvas.releasePointerCapture(e.pointerId);
   };
 
+  // --- Zoom helpers ---
+
+  /** Convert zoom level to slider position [0, SLIDER_MAX] using logarithmic mapping */
+  private _zoomToSlider(zoom: number): number {
+    const { MIN_ZOOM, MAX_ZOOM, SLIDER_MAX } = NavigatorPanel;
+    const t = Math.log(zoom / MIN_ZOOM) / Math.log(MAX_ZOOM / MIN_ZOOM);
+    return Math.round(t * SLIDER_MAX);
+  }
+
+  /** Convert slider position [0, SLIDER_MAX] to zoom level using logarithmic mapping */
+  private _sliderToZoom(value: number): number {
+    const { MIN_ZOOM, MAX_ZOOM, SLIDER_MAX } = NavigatorPanel;
+    const t = value / SLIDER_MAX;
+    return MIN_ZOOM * Math.pow(MAX_ZOOM / MIN_ZOOM, t);
+  }
+
+  private _dispatchZoom(zoom: number) {
+    const clamped = Math.min(NavigatorPanel.MAX_ZOOM, Math.max(NavigatorPanel.MIN_ZOOM, zoom));
+    this.dispatchEvent(new CustomEvent('navigator-zoom', {
+      bubbles: true, composed: true,
+      detail: { zoom: clamped },
+    }));
+  }
+
+  private _onSliderInput = (e: Event) => {
+    const value = parseInt((e.target as HTMLInputElement).value, 10);
+    this._dispatchZoom(this._sliderToZoom(value));
+  };
+
+  private _onZoomIn = () => {
+    this._dispatchZoom(this.ctx.zoom * NavigatorPanel.ZOOM_STEP);
+  };
+
+  private _onZoomOut = () => {
+    this._dispatchZoom(this.ctx.zoom / NavigatorPanel.ZOOM_STEP);
+  };
+
+  // --- Zoom input ---
+
+  @state() private _editingZoom = false;
+  @state() private _zoomInputValue = '';
+
+  private _onZoomInputFocus = (e: FocusEvent) => {
+    this._editingZoom = true;
+    this._zoomInputValue = Math.round(this.ctx.zoom * 100).toString();
+    const input = e.target as HTMLInputElement;
+    requestAnimationFrame(() => input.select());
+  };
+
+  private _onZoomInputBlur = () => {
+    this._commitZoomInput();
+    this._editingZoom = false;
+  };
+
+  private _onZoomInputKeydown = (e: KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      this._commitZoomInput();
+      this._editingZoom = false;
+      (e.target as HTMLInputElement).blur();
+    } else if (e.key === 'Escape') {
+      this._editingZoom = false;
+      (e.target as HTMLInputElement).blur();
+    }
+    e.stopPropagation(); // prevent tool shortcuts
+  };
+
+  private _onZoomInputChange = (e: Event) => {
+    this._zoomInputValue = (e.target as HTMLInputElement).value;
+  };
+
+  private _commitZoomInput() {
+    const raw = this._zoomInputValue.replace('%', '').trim();
+    const parsed = parseFloat(raw);
+    if (isNaN(parsed) || parsed <= 0) return; // revert — don't dispatch
+
+    // Always treat as percentage: "150" = 150% = 1.5x, "50" = 50% = 0.5x
+    const zoom = parsed / 100;
+    this._dispatchZoom(zoom);
+  }
+
   override render() {
     if (!this._ctx.value) return html``;
+
+    const zoom = this.ctx.zoom;
+    const sliderValue = this._zoomToSlider(zoom);
+    const zoomPercent = Math.round(zoom * 100);
+    const displayValue = this._editingZoom
+      ? this._zoomInputValue
+      : `${zoomPercent}%`;
 
     return html`
       <div class="section">
@@ -284,6 +448,28 @@ export class NavigatorPanel extends LitElement {
           @pointerup=${this._onMinimapPointerUp}
         >
           ${this._minimapCanvas}
+        </div>
+        <div class="zoom-controls">
+          <button class="zoom-btn" title="Zoom out" @click=${this._onZoomOut}>&minus;</button>
+          <input
+            type="range"
+            class="zoom-slider"
+            min="0"
+            max="${NavigatorPanel.SLIDER_MAX}"
+            step="1"
+            .value=${String(sliderValue)}
+            @input=${this._onSliderInput}
+          />
+          <button class="zoom-btn" title="Zoom in" @click=${this._onZoomIn}>+</button>
+          <input
+            type="text"
+            class="zoom-input"
+            .value=${displayValue}
+            @focus=${this._onZoomInputFocus}
+            @blur=${this._onZoomInputBlur}
+            @keydown=${this._onZoomInputKeydown}
+            @input=${this._onZoomInputChange}
+          />
         </div>
       </div>
     `;
