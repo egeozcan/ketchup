@@ -30,6 +30,12 @@ export interface DrawingContextValue {
   currentProject: ProjectMeta | null;
   projectList: ProjectMeta[];
   saving: boolean;
+  // Viewport state (read-only for consumers)
+  zoom: number;
+  panX: number;
+  panY: number;
+  viewportWidth: number;
+  viewportHeight: number;
   switchProject: (id: string) => void;
   createProject: (name: string, width: number, height: number) => void;
   deleteProject: (id: string) => void;

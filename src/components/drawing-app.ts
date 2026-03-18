@@ -60,6 +60,11 @@ export class DrawingApp extends LitElement {
   @state() private _canUndo = false;
   @state() private _canRedo = false;
   @state() private _saving = false;
+  @state() private _viewportZoom = 1;
+  @state() private _viewportPanX = 0;
+  @state() private _viewportPanY = 0;
+  @state() private _viewportWidth = 800;
+  @state() private _viewportHeight = 600;
   @state() private _currentProject: StorageProjectMeta | null = null;
   @state() private _projectList: StorageProjectMeta[] = [];
 
@@ -778,6 +783,11 @@ export class DrawingApp extends LitElement {
       currentProject: this._currentProject,
       projectList: this._projectList,
       saving: this._saving,
+      zoom: this._viewportZoom,
+      panX: this._viewportPanX,
+      panY: this._viewportPanY,
+      viewportWidth: this._viewportWidth,
+      viewportHeight: this._viewportHeight,
       switchProject: (id: string) => {
         if (id === this._currentProject?.id) return;
         const doSwitch = async () => {
@@ -855,6 +865,14 @@ export class DrawingApp extends LitElement {
   }
 
   private _onViewportChange() {
+    if (this.canvas) {
+      const vp = this.canvas.getViewport();
+      this._viewportZoom = vp.zoom;
+      this._viewportPanX = vp.panX;
+      this._viewportPanY = vp.panY;
+      this._viewportWidth = this.canvas.clientWidth;
+      this._viewportHeight = this.canvas.clientHeight;
+    }
     this._markDirty();
   }
 

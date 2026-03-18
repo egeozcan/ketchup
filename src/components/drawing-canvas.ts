@@ -812,6 +812,7 @@ export class DrawingCanvas extends LitElement {
     this._panX = panX;
     this._panY = panY;
     this.composite();
+    this._dispatchViewportChange();
   }
 
   private _zoomToCenter(newZoom: number) {
