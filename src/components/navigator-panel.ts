@@ -467,6 +467,9 @@ export class NavigatorPanel extends LitElement {
   override render() {
     if (!this._ctx.value) return html``;
 
+    // When sidebar is collapsed, render nothing — layers-panel shows the collapsed strip
+    if (!this.ctx.state.layersPanelOpen) return html``;
+
     const zoom = this.ctx.zoom;
     const sliderValue = this._zoomToSlider(zoom);
     const zoomPercent = Math.round(zoom * 100);
