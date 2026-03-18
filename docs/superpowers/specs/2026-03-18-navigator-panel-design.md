@@ -159,6 +159,12 @@ When the right sidebar is collapsed (32px strip), the navigator panel hides its 
 - **No layers**: If all layers are hidden or no layers exist, the minimap shows just the document background (white rectangle on grey).
 - **Extreme zoom**: At 10x zoom, the viewport rectangle becomes very small on the minimap. At 0.1x, it may be larger than the minimap. Both are fine — the rectangle is clipped to minimap bounds.
 
+## Implementation notes
+
+- **`setViewport()` does not dispatch `viewport-change`**: Currently `setViewport()` calls `composite()` but not `_dispatchViewportChange()`. When the app handles `navigator-pan`/`navigator-zoom`, it must either add `_dispatchViewportChange()` to `setViewport()`, or manually update context state after calling it.
+- **Center-anchored zoom**: Navigator zoom events carry `{ zoom }` only. The app must compute new `panX`/`panY` to keep the viewport center stable (same math as `_zoomToCenter`).
+- **`composited` event listening**: The navigator should listen via `(this.getRootNode() as ShadowRoot).addEventListener('composited', ...)` — same pattern used by `layers-panel.ts`.
+
 ## Files to create
 
 - `src/components/navigator-panel.ts` — new component
