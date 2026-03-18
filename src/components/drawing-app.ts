@@ -16,6 +16,7 @@ import './app-toolbar.js';
 import './tool-settings.js';
 import './drawing-canvas.js';
 import './layers-panel.js';
+import './navigator-panel.js';
 
 @customElement('drawing-app')
 export class DrawingApp extends LitElement {
@@ -37,6 +38,17 @@ export class DrawingApp extends LitElement {
 
     drawing-canvas {
       flex: 1;
+    }
+
+    .right-sidebar {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .right-sidebar layers-panel {
+      flex: 1;
+      min-height: 0;
     }
   `;
 
@@ -876,6 +888,27 @@ export class DrawingApp extends LitElement {
     this._markDirty();
   }
 
+  private _onNavigatorPan(e: CustomEvent<{ panX: number; panY: number }>) {
+    if (!this.canvas) return;
+    const { panX, panY } = e.detail;
+    const vp = this.canvas.getViewport();
+    this.canvas.setViewport(vp.zoom, panX, panY);
+  }
+
+  private _onNavigatorZoom(e: CustomEvent<{ zoom: number }>) {
+    if (!this.canvas) return;
+    const newZoom = e.detail.zoom;
+    const vp = this.canvas.getViewport();
+    // Center-anchored zoom: keep viewport center stable
+    const cx = this.canvas.clientWidth / 2;
+    const cy = this.canvas.clientHeight / 2;
+    const docX = (cx - vp.panX) / vp.zoom;
+    const docY = (cy - vp.panY) / vp.zoom;
+    const newPanX = cx - docX * newZoom;
+    const newPanY = cy - docY * newZoom;
+    this.canvas.setViewport(newZoom, newPanX, newPanY);
+  }
+
   private _onLayerUndo(e: CustomEvent) {
     const detail = e.detail;
     switch (detail.action) {
@@ -1047,7 +1080,13 @@ export class DrawingApp extends LitElement {
           @crop-commit=${this._onCropCommit}
           @viewport-change=${this._onViewportChange}
         ></drawing-canvas>
-        <layers-panel @commit-opacity=${this._onCommitOpacity}></layers-panel>
+        <div class="right-sidebar">
+          <navigator-panel
+            @navigator-pan=${this._onNavigatorPan}
+            @navigator-zoom=${this._onNavigatorZoom}
+          ></navigator-panel>
+          <layers-panel @commit-opacity=${this._onCommitOpacity}></layers-panel>
+        </div>
       </div>
     `;
   }
