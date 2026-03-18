@@ -120,6 +120,26 @@ export class NavigatorPanel extends LitElement {
       outline: 1px solid #007bff;
       border-color: #007bff;
     }
+
+    .fullscreen-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border: 1px solid #555;
+      border-radius: 4px;
+      background: #444;
+      color: #ccc;
+      cursor: pointer;
+      padding: 0;
+      flex-shrink: 0;
+    }
+
+    .fullscreen-btn:hover {
+      background: #555;
+      color: #fff;
+    }
   `;
 
   private _ctx = new ContextConsumer(this, {
@@ -133,6 +153,21 @@ export class NavigatorPanel extends LitElement {
     return this._ctx.value!;
   }
 
+  // --- Fullscreen ---
+  @state() private _isFullscreen = false;
+
+  private _onFullscreenChange = () => {
+    this._isFullscreen = !!document.fullscreenElement;
+  };
+
+  private _toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      document.documentElement.requestFullscreen();
+    }
+  };
+
   // --- Composited event listening (same pattern as layers-panel) ---
 
   private _onComposited = () => {
@@ -145,6 +180,7 @@ export class NavigatorPanel extends LitElement {
       'composited',
       this._onComposited,
     );
+    document.addEventListener('fullscreenchange', this._onFullscreenChange);
   }
 
   override disconnectedCallback() {
@@ -153,6 +189,7 @@ export class NavigatorPanel extends LitElement {
       'composited',
       this._onComposited,
     );
+    document.removeEventListener('fullscreenchange', this._onFullscreenChange);
   }
 
   // --- Minimap rendering ---
@@ -470,6 +507,16 @@ export class NavigatorPanel extends LitElement {
             @keydown=${this._onZoomInputKeydown}
             @input=${this._onZoomInputChange}
           />
+          <button
+            class="fullscreen-btn"
+            title=${this._isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            @click=${this._toggleFullscreen}
+          >
+            ${this._isFullscreen
+              ? html`<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 2v3H2M14 5h-3V2M11 14v-3h3M2 11h3v3"/></svg>`
+              : html`<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>`
+            }
+          </button>
         </div>
       </div>
     `;
