@@ -10,7 +10,7 @@ import { drawShapePreview } from '../tools/shapes.js';
 import { floodFill } from '../tools/fill.js';
 import { drawSelectionRect } from '../tools/select.js';
 import { drawCropOverlay, hitTestCropHandle, parseAspectRatio, constrainCropToRatio, type CropRect, type CropHandle } from '../tools/crop.js';
-import { drawText, measureTextBlock } from '../tools/text.js';
+import { drawText, measureTextBlock, buildFontString, LINE_HEIGHT } from '../tools/text.js';
 import './resize-dialog.js';
 import type { ResizeDialog } from './resize-dialog.js';
 
@@ -2276,7 +2276,7 @@ export class DrawingCanvas extends LitElement {
 
     // Measure for cursor and bounding box
     const metrics = measureTextBlock(previewCtx, text, fontSize, fontFamily, fontBold, fontItalic);
-    const lineHeight = fontSize * 1.2;
+    const lineHeight = fontSize * LINE_HEIGHT;
 
     // Draw cursor
     if (this._textCursorVisible) {
@@ -2295,7 +2295,7 @@ export class DrawingCanvas extends LitElement {
       }
 
       const prefix = lines[cursorLine]?.substring(0, cursorCol) ?? '';
-      previewCtx.font = `${fontItalic ? 'italic ' : ''}${fontBold ? 'bold ' : ''}${fontSize}px ${fontFamily}`;
+      previewCtx.font = buildFontString(fontSize, fontFamily, fontBold, fontItalic);
       previewCtx.textBaseline = 'top';
       const cursorX = this._textPosition.x + previewCtx.measureText(prefix).width;
       const cursorY = this._textPosition.y + cursorLine * lineHeight;
@@ -2392,6 +2392,8 @@ export class DrawingCanvas extends LitElement {
       );
       this._pushDrawHistory();
       this.composite();
+    } else {
+      this._beforeDrawData = null;
     }
     this._endTextEditing();
   }

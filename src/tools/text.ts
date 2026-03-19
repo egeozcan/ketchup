@@ -1,6 +1,6 @@
-const LINE_HEIGHT = 1.2;
+export const LINE_HEIGHT = 1.2;
 
-function buildFontString(
+export function buildFontString(
   fontSize: number,
   fontFamily: string,
   bold: boolean,
