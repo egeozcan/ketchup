@@ -390,26 +390,34 @@ The canvas template binds `@pointerleave=${this._onPointerUp}`. This is wrong du
 
 In the render template, change `@pointerleave=${this._onPointerUp}` to `@pointerleave=${this._onPointerLeave}`.
 
-Also add a `pointercancel` handler to clean up pinch state if the browser cancels a touch (e.g., palm rejection):
+Also add a `pointercancel` handler to clean up all state if the browser cancels a touch (e.g., palm rejection, incoming call):
 
 ```typescript
   private _onPointerCancel(e: PointerEvent) {
     this._pointers.delete(e.pointerId);
-    if (this._pinching && this._pointers.size < 2) {
-      this._pinching = false;
+    if (this._pinching) {
+      if (this._pointers.size < 2) {
+        this._pinching = false;
+      }
+    } else {
+      // Single-pointer cancel: discard any in-progress tool operation
+      this._cancelCurrentTool(e.pointerId);
     }
   }
 ```
+
+Note: `_cancelCurrentTool` is defined in Task 7. The stub from Task 6 Step 5 ensures this compiles.
 
 In the render template, add `@pointercancel=${this._onPointerCancel}` to the main canvas.
 
 - [ ] **Step 5: Add stub methods so TypeScript passes**
 
-Add empty stubs so the code compiles (they'll be implemented in the next steps):
+Add empty stubs so the code compiles (they'll be fully implemented in Task 7):
 
 ```typescript
-  private _enterPinchMode(_e: PointerEvent) { /* implemented in next steps */ }
-  private _updatePinch() { /* implemented in next steps */ }
+  private _cancelCurrentTool(_pointerId: number) { /* implemented in Task 7 */ }
+  private _enterPinchMode(_e: PointerEvent) { /* implemented in Task 7 */ }
+  private _updatePinch() { /* implemented in Task 7 */ }
 ```
 
 Run: `npx tsc --noEmit`
@@ -811,7 +819,12 @@ In `render()`, after `const { activeTool } = this.ctx.state;`, add:
   }
 
   private _onMobileMoreTap() {
-    this._popoverGroup = this._popoverGroup === -1 ? null : -1;
+    const newGroup = this._popoverGroup === -1 ? null : -1;
+    this._popoverGroup = newGroup;
+    // Close layers sheet when opening more popover (mutual exclusion)
+    if (newGroup !== null && this.ctx.state.layersPanelOpen) {
+      this.ctx.toggleLayersPanel();
+    }
   }
 
   private _closePopover() {
@@ -1146,17 +1159,17 @@ Add to static styles:
 
     .sheet {
       position: fixed;
-      top: 0;
+      bottom: 0;
       left: 0;
       right: 0;
-      height: 90vh;
+      max-height: 90vh;
       background: #2c2c2c;
       border-radius: 16px 16px 0 0;
       z-index: 201;
       display: flex;
       flex-direction: column;
       transition: transform 0.3s ease;
-      transform: translateY(100vh);
+      transform: translateY(100%);
       padding-bottom: env(safe-area-inset-bottom);
     }
 
@@ -1186,23 +1199,29 @@ Add to static styles:
 - [ ] **Step 3: Add sheet open/close/drag methods**
 
 ```typescript
-The sheet uses `translateY()` to position itself. `_sheetY` represents translateY offset from the "fully open at full height" position:
-- `_sheetY = 0` → sheet at full height (top of sheet at ~10% viewport)
-- `_sheetY = halfOffset` → sheet at half height
-- `_sheetY >= dismissThreshold` → dismiss
+The sheet is anchored to `bottom: 0` with `translateY()` controlling visibility:
+- `_sheetY = 0` → fully visible (translateY(0%), sheet sits at bottom edge)
+- `_sheetY > 0` → pushed down, partially visible
+- `_sheetY = 100%` → completely off-screen (default/dismissed state)
+
+The sheet's height is auto-determined by content up to `max-height: 90vh`. Snap points use pixel offsets from the fully-visible state.
 
 ```typescript
   openSheet() {
-    const vh = window.innerHeight;
-    this._sheetSnapFull = 0; // translateY(0) = fully expanded
-    this._sheetSnapHalf = vh * 0.4; // translateY(40vh) = half height visible
+    const sheetHeight = window.innerHeight * 0.9; // approximate max-height
+    this._sheetSnapFull = 0; // translateY(0) = fully visible
+    this._sheetSnapHalf = sheetHeight * 0.5; // pushed down by half = half visible
     this._sheetY = this._sheetSnapHalf; // open at half height
     this._sheetOpen = true;
   }
 
   closeSheet() {
     this._sheetOpen = false;
-    this._sheetY = window.innerHeight; // off-screen
+    this._sheetY = 0;
+    // Sync context state if it's out of sync
+    if (this.ctx?.state.layersPanelOpen) {
+      this.ctx.toggleLayersPanel();
+    }
   }
 
   private _onSheetHandlePointerDown(e: PointerEvent) {
@@ -1266,10 +1285,10 @@ Add the method:
 
 ```typescript
   private _renderMobileSheet() {
-    // translateY positions the sheet: 0 = fully expanded, larger = further down
+    // translateY: 0 = fully visible at bottom, positive = pushed down / hidden
     const sheetStyle = this._sheetOpen
       ? `transform: translateY(${this._sheetY}px);${this._sheetDragging ? 'transition:none;' : ''}`
-      : `transform: translateY(100vh);`;
+      : `transform: translateY(100%);`;
 
     return html`
       <div
