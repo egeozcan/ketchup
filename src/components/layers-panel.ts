@@ -363,6 +363,12 @@ export class LayersPanel extends LitElement {
   /** The layer id currently being dragged */
   @state() private _draggedLayerId: string | null = null;
 
+  private _dragPointerId: number | null = null;
+  private _dragStartY = 0;
+  private _dragCurrentY = 0;
+  private _dragThreshold = 5;
+  private _dragActivated = false;
+
   /** Track opacity value before drag for undo */
   private _opacityBefore: number | null = null;
 
@@ -434,104 +440,87 @@ export class LayersPanel extends LitElement {
     }
   }
 
-  // ── Drag-and-drop reorder ─────────────────
+  // ── Pointer-based reorder ─────────────────
 
-  private _onDragStart(layer: Layer, e: DragEvent) {
+  private _onReorderPointerDown(layer: Layer, e: PointerEvent) {
+    if (e.button !== 0) return;
     this._draggedLayerId = layer.id;
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', layer.id);
-    }
+    this._dragPointerId = e.pointerId;
+    this._dragStartY = e.clientY;
+    this._dragCurrentY = e.clientY;
+    this._dragActivated = false;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   }
 
-  private _onDragOver(e: DragEvent) {
-    e.preventDefault();
-    if (e.dataTransfer) {
-      e.dataTransfer.dropEffect = 'move';
-    }
-    const row = (e.target as HTMLElement).closest('.layer-row') as HTMLElement | null;
-    if (!row) return;
+  private _onReorderPointerMove(e: PointerEvent) {
+    if (this._dragPointerId !== e.pointerId || !this._draggedLayerId) return;
+    this._dragCurrentY = e.clientY;
 
-    // Clear existing indicators on all rows
+    if (!this._dragActivated) {
+      if (Math.abs(this._dragCurrentY - this._dragStartY) < this._dragThreshold) return;
+      this._dragActivated = true;
+    }
+
     this._clearDropIndicators();
+    const rows = this.shadowRoot?.querySelectorAll('.layer-row');
+    if (!rows) return;
 
-    // Determine if cursor is in top or bottom half of row
-    const rect = row.getBoundingClientRect();
-    const midY = rect.top + rect.height / 2;
-    if (e.clientY < midY) {
-      row.classList.add('drop-above');
-    } else {
-      row.classList.add('drop-below');
+    for (const row of rows) {
+      const rect = (row as HTMLElement).getBoundingClientRect();
+      if (this._dragCurrentY >= rect.top && this._dragCurrentY <= rect.bottom) {
+        const midY = rect.top + rect.height / 2;
+        if (this._dragCurrentY < midY) {
+          row.classList.add('drop-above');
+        } else {
+          row.classList.add('drop-below');
+        }
+        break;
+      }
     }
   }
 
-  private _onDragLeave(e: DragEvent) {
-    const row = (e.target as HTMLElement).closest('.layer-row') as HTMLElement | null;
-    if (row) {
-      row.classList.remove('drop-above', 'drop-below');
-    }
-  }
+  private _onReorderPointerUp(e: PointerEvent) {
+    if (this._dragPointerId !== e.pointerId) return;
 
-  private _onDrop(e: DragEvent) {
-    e.preventDefault();
     const draggedId = this._draggedLayerId;
-    if (!draggedId) {
-      this._clearDropIndicators();
-      return;
-    }
-
-    const row = (e.target as HTMLElement).closest('.layer-row') as HTMLElement | null;
-    if (!row) return;
-
-    const targetId = row.dataset.layerId;
-    if (!targetId || targetId === draggedId) {
+    if (!draggedId || !this._dragActivated) {
       this._clearDragState();
       return;
     }
 
-    const layers = this.ctx.state.layers;
-
-    // Determine if dropping above or below the target in the visual list
-    const rect = row.getBoundingClientRect();
-    const midY = rect.top + rect.height / 2;
-    const dropAbove = e.clientY < midY;
-
-    // The visual list is reversed: visual index 0 = array index (layers.length - 1)
-    const targetArrayIdx = layers.findIndex(l => l.id === targetId);
-    if (targetArrayIdx === -1) {
+    const rows = this.shadowRoot?.querySelectorAll('.layer-row');
+    if (!rows) {
       this._clearDragState();
       return;
     }
 
-    // "Above" in the visual list (higher z-index) = higher array index
-    // "Below" in the visual list (lower z-index) = lower array index
-    let newArrayIdx: number;
-    if (dropAbove) {
-      // Drop above target in visual list = place after target in array
-      newArrayIdx = targetArrayIdx + 1;
-    } else {
-      // Drop below target in visual list = place before target in array
-      newArrayIdx = targetArrayIdx;
+    let targetId: string | null = null;
+    let dropAbove = false;
+
+    for (const row of rows) {
+      const rect = (row as HTMLElement).getBoundingClientRect();
+      if (this._dragCurrentY >= rect.top && this._dragCurrentY <= rect.bottom) {
+        targetId = (row as HTMLElement).dataset.layerId ?? null;
+        const midY = rect.top + rect.height / 2;
+        dropAbove = this._dragCurrentY < midY;
+        break;
+      }
     }
 
-    // Adjust: if dragged item was before the target in the array,
-    // removing it shifts indices down by one
-    const draggedArrayIdx = layers.findIndex(l => l.id === draggedId);
-    if (draggedArrayIdx < newArrayIdx) {
-      newArrayIdx -= 1;
+    if (targetId && targetId !== draggedId) {
+      const layers = this.ctx.state.layers;
+      const targetArrayIdx = layers.findIndex(l => l.id === targetId);
+      if (targetArrayIdx !== -1) {
+        let newArrayIdx = dropAbove ? targetArrayIdx + 1 : targetArrayIdx;
+        const draggedArrayIdx = layers.findIndex(l => l.id === draggedId);
+        if (draggedArrayIdx < newArrayIdx) newArrayIdx -= 1;
+        newArrayIdx = Math.max(0, Math.min(layers.length - 1, newArrayIdx));
+        if (draggedArrayIdx !== newArrayIdx) {
+          this.ctx.reorderLayer(draggedId, newArrayIdx);
+        }
+      }
     }
 
-    // Clamp to valid range
-    newArrayIdx = Math.max(0, Math.min(layers.length - 1, newArrayIdx));
-
-    if (draggedArrayIdx !== newArrayIdx) {
-      this.ctx.reorderLayer(draggedId, newArrayIdx);
-    }
-
-    this._clearDragState();
-  }
-
-  private _onDragEnd() {
     this._clearDragState();
   }
 
@@ -542,6 +531,8 @@ export class LayersPanel extends LitElement {
 
   private _clearDragState() {
     this._draggedLayerId = null;
+    this._dragPointerId = null;
+    this._dragActivated = false;
     this._clearDropIndicators();
   }
 
@@ -653,15 +644,12 @@ export class LayersPanel extends LitElement {
         class="layer-row ${isActive ? 'active' : ''} ${this._draggedLayerId === layer.id ? 'dragging' : ''}"
         data-layer-id=${layer.id}
         @click=${() => this._selectLayer(layer.id)}
-        @dragover=${(e: DragEvent) => this._onDragOver(e)}
-        @dragleave=${(e: DragEvent) => this._onDragLeave(e)}
-        @drop=${(e: DragEvent) => this._onDrop(e)}
-        @dragend=${() => this._onDragEnd()}
+        @pointerdown=${(e: PointerEvent) => this._onReorderPointerDown(layer, e)}
+        @pointermove=${(e: PointerEvent) => this._onReorderPointerMove(e)}
+        @pointerup=${(e: PointerEvent) => this._onReorderPointerUp(e)}
       >
         <div
           class="layer-row-main"
-          draggable="true"
-          @dragstart=${(e: DragEvent) => this._onDragStart(layer, e)}
         >
           <button
             class="vis-btn ${layer.visible ? '' : 'hidden'}"
