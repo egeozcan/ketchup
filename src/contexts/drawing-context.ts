@@ -40,6 +40,7 @@ export interface DrawingContextValue {
   panY: number;
   viewportWidth: number;
   viewportHeight: number;
+  isMobile: boolean;
   switchProject: (id: string) => void;
   createProject: (name: string, width: number, height: number) => void;
   deleteProject: (id: string) => void;
