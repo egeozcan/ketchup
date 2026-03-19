@@ -1277,9 +1277,137 @@ export class DrawingCanvas extends LitElement {
     }
   }
 
-  private _cancelCurrentTool(_pointerId: number) { /* implemented below */ }
-  private _enterPinchMode(_e: PointerEvent) { /* implemented below */ }
-  private _updatePinch() { /* implemented below */ }
+  /**
+   * Cancel any in-progress tool operation and release pointer capture.
+   * Called when a second pointer arrives (entering pinch/pan mode).
+   */
+  private _cancelCurrentTool(pointerId: number) {
+    // Release pointer capture if held
+    try { this.mainCanvas.releasePointerCapture(pointerId); } catch { /* not captured */ }
+
+    // Cancel brush/shape strokes
+    if (this._drawing) {
+      this._drawing = false;
+      this._lastPoint = null;
+      this._startPoint = null;
+      // Restore layer to before the stroke
+      if (this._beforeDrawData) {
+        const layerCtx = this._getActiveLayerCtx();
+        if (layerCtx) {
+          layerCtx.putImageData(this._beforeDrawData, 0, 0);
+        }
+        this._beforeDrawData = null;
+      }
+      // Clear shape preview
+      this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
+      this.composite();
+    }
+
+    // Cancel panning
+    if (this._panning) {
+      this._endPan();
+    }
+
+    // Cancel move tool drag
+    if (this._moveTempCanvas) {
+      if (this._beforeDrawData) {
+        const layerCtx = this._getActiveLayerCtx();
+        if (layerCtx) {
+          layerCtx.putImageData(this._beforeDrawData, 0, 0);
+        }
+        this._beforeDrawData = null;
+      }
+      this._moveTempCanvas = null;
+      this._moveStartPoint = null;
+      this.composite();
+    }
+
+    // Cancel selection drawing (but keep existing float)
+    if (this._selectionDrawing) {
+      this._selectionDrawing = false;
+      this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
+    }
+
+    // Cancel float move/resize (keep float at current position)
+    this._floatMoving = false;
+    this._floatResizing = false;
+    this._floatDragOffset = null;
+    this._floatResizeOrigin = null;
+    this._floatResizeHandle = null;
+
+    // Cancel crop drag (keep existing rect)
+    this._cropDragging = false;
+    this._cropHandle = null;
+    this._cropDragOrigin = null;
+    this._cropRectOrigin = null;
+  }
+
+  /** Enter pinch/pan mode: cancel current tool, initialize pinch tracking */
+  private _enterPinchMode(e: PointerEvent) {
+    // Cancel whatever the first finger was doing
+    for (const [id] of this._pointers) {
+      if (id !== e.pointerId) {
+        this._cancelCurrentTool(id);
+        break;
+      }
+    }
+
+    this._pinching = true;
+    const pts = [...this._pointers.values()];
+    const dx = pts[1].x - pts[0].x;
+    const dy = pts[1].y - pts[0].y;
+    this._lastPinchDist = Math.hypot(dx, dy);
+    this._lastPinchMidX = (pts[0].x + pts[1].x) / 2;
+    this._lastPinchMidY = (pts[0].y + pts[1].y) / 2;
+  }
+
+  /** Process a pinch/pan gesture frame: update zoom and pan */
+  private _updatePinch() {
+    const pts = [...this._pointers.values()];
+    if (pts.length < 2) return;
+
+    const dx = pts[1].x - pts[0].x;
+    const dy = pts[1].y - pts[0].y;
+    const dist = Math.hypot(dx, dy);
+    const midX = (pts[0].x + pts[1].x) / 2;
+    const midY = (pts[0].y + pts[1].y) / 2;
+
+    // Zoom: ratio of current distance to previous distance
+    if (this._lastPinchDist > 0) {
+      const scale = dist / this._lastPinchDist;
+      const rect = this.mainCanvas.getBoundingClientRect();
+      const viewportX = midX - rect.left;
+      const viewportY = midY - rect.top;
+
+      // Anchor zoom to the midpoint between the two fingers
+      const docX = (viewportX - this._panX) / this._zoom;
+      const docY = (viewportY - this._panY) / this._zoom;
+
+      const newZoom = Math.min(
+        DrawingCanvas.MAX_ZOOM,
+        Math.max(DrawingCanvas.MIN_ZOOM, this._zoom * scale),
+      );
+
+      this._panX = viewportX - docX * newZoom;
+      this._panY = viewportY - docY * newZoom;
+      this._zoom = newZoom;
+    }
+
+    // Pan: delta of midpoint
+    const panDx = midX - this._lastPinchMidX;
+    const panDy = midY - this._lastPinchMidY;
+    this._panX += panDx;
+    this._panY += panDy;
+
+    this._lastPinchDist = dist;
+    this._lastPinchMidX = midX;
+    this._lastPinchMidY = midY;
+
+    this.composite();
+    if (this._float) this._redrawFloatPreview();
+    if (this._textEditing) this._renderTextPreview();
+    this._dispatchZoomChange();
+  }
 
   private _drawBrushAt(from: Point, to: Point) {
     const layerCtx = this._getActiveLayerCtx();
