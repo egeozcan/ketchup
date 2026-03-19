@@ -114,12 +114,11 @@ export class DrawingCanvas extends LitElement {
   // --- Text tool state ---
   private _textEditing = false;
   private _textPosition: Point = { x: 0, y: 0 };
-  private _textDragging = false;
-  private _textDragOffset: Point = { x: 0, y: 0 };
+  private _textSelecting = false;
+  private _textSelectAnchor = 0;
   private _textAreaEl: HTMLTextAreaElement | null = null;
   private _textCursorVisible = false;
   private _textCursorInterval = 0;
-  private _onSelectionChange: (() => void) | null = null;
 
   // --- Document dimension accessors (from context state) ---
   private get _docWidth(): number {
@@ -976,14 +975,18 @@ export class DrawingCanvas extends LitElement {
       // instead of typing into the text tool.
       e.preventDefault();
       if (this._textEditing) {
-        // Check if click is inside the text bounding box -> start drag
+        // Check if click is inside the text bounding box -> place caret / start selection
         const box = this._getTextBoundingBox();
         if (p.x >= box.x && p.x <= box.x + box.w && p.y >= box.y && p.y <= box.y + box.h) {
-          this._textDragging = true;
-          this._textDragOffset = {
-            x: p.x - this._textPosition.x,
-            y: p.y - this._textPosition.y,
-          };
+          const offset = this._pointToTextOffset(p);
+          if (this._textAreaEl) {
+            this._textAreaEl.selectionStart = offset;
+            this._textAreaEl.selectionEnd = offset;
+          }
+          this._textSelectAnchor = offset;
+          this._textSelecting = true;
+          this._startTextCursorBlink();
+          this._renderTextPreview();
           return;
         }
         // Click outside -> commit current text
@@ -1022,12 +1025,14 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
-    if (this._textDragging) {
+    if (this._textSelecting) {
       const p = this._getDocPoint(e);
-      this._textPosition = {
-        x: p.x - this._textDragOffset.x,
-        y: p.y - this._textDragOffset.y,
-      };
+      const offset = this._pointToTextOffset(p);
+      if (this._textAreaEl) {
+        const anchor = this._textSelectAnchor;
+        this._textAreaEl.selectionStart = Math.min(anchor, offset);
+        this._textAreaEl.selectionEnd = Math.max(anchor, offset);
+      }
       this._renderTextPreview();
       return;
     }
@@ -1111,8 +1116,8 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
-    if (this._textDragging) {
-      this._textDragging = false;
+    if (this._textSelecting) {
+      this._textSelecting = false;
       return;
     }
 
@@ -2229,20 +2234,17 @@ export class DrawingCanvas extends LitElement {
     ta.setAttribute('spellcheck', 'false');
     ta.addEventListener('input', () => this._renderTextPreview());
     ta.addEventListener('keydown', (e) => this._onTextKeydown(e));
-    // Arrow keys, Home/End, etc. change selectionStart without firing 'input'.
-    // Re-render after the browser updates the selection (requestAnimationFrame
-    // defers until after the current event's default action has moved the caret).
-    ta.addEventListener('keydown', () => {
-      if (this._textEditing) requestAnimationFrame(() => this._renderTextPreview());
-    });
-    this._textAreaEl = ta;
-
-    this._onSelectionChange = () => {
-      if (this._textEditing && this.shadowRoot?.activeElement === this._textAreaEl) {
+    // selectionchange on the textarea fires synchronously when the browser
+    // updates the caret/selection — more immediate than keyup or rAF.
+    // Reset the blink timer so the cursor stays visible during navigation,
+    // matching native text field behavior.
+    ta.addEventListener('selectionchange', () => {
+      if (this._textEditing) {
+        this._startTextCursorBlink();
         this._renderTextPreview();
       }
-    };
-    document.addEventListener('selectionchange', this._onSelectionChange);
+    });
+    this._textAreaEl = ta;
 
     this.addEventListener('wheel', this._onWheel, { passive: false });
     this.addEventListener('dragover', this._onDragOver);
@@ -2256,10 +2258,6 @@ export class DrawingCanvas extends LitElement {
     if (this._textCursorInterval) {
       clearInterval(this._textCursorInterval);
       this._textCursorInterval = 0;
-    }
-    if (this._onSelectionChange) {
-      document.removeEventListener('selectionchange', this._onSelectionChange);
-      this._onSelectionChange = null;
     }
     if (this._textAreaEl) {
       this._textAreaEl.remove();
@@ -2407,6 +2405,49 @@ export class DrawingCanvas extends LitElement {
       w: Math.max(metrics.width, state.fontSize) + padding * 2,
       h: metrics.height + padding * 2,
     };
+  }
+
+  /** Convert a document-space point to a character offset in the current text. */
+  private _pointToTextOffset(docPoint: Point): number {
+    if (!this._textAreaEl) return 0;
+    const state = this.ctx.state;
+    const text = this._textAreaEl.value;
+    const lines = text.split('\n');
+    const { fontSize, fontFamily, fontBold, fontItalic } = state;
+    const lineHeight = fontSize * LINE_HEIGHT;
+    const ctx = this.previewCanvas.getContext('2d')!;
+    ctx.save();
+    ctx.font = buildFontString(fontSize, fontFamily, fontBold, fontItalic);
+    ctx.textBaseline = 'top';
+
+    // Find which line the point is on
+    const relY = docPoint.y - this._textPosition.y;
+    let lineIdx = Math.floor(relY / lineHeight);
+    lineIdx = Math.max(0, Math.min(lineIdx, lines.length - 1));
+
+    // Find character position within the line via binary search
+    const line = lines[lineIdx];
+    const relX = docPoint.x - this._textPosition.x;
+    let best = 0;
+    for (let i = 0; i <= line.length; i++) {
+      const w = ctx.measureText(line.substring(0, i)).width;
+      if (i > 0) {
+        const prevW = ctx.measureText(line.substring(0, i - 1)).width;
+        const mid = (prevW + w) / 2;
+        if (relX >= mid) best = i;
+      } else if (relX < 0) {
+        best = 0;
+      }
+    }
+
+    ctx.restore();
+
+    // Convert line + col to absolute offset
+    let offset = 0;
+    for (let i = 0; i < lineIdx; i++) {
+      offset += lines[i].length + 1; // +1 for \n
+    }
+    return offset + best;
   }
 
   private _startTextCursorBlink() {
