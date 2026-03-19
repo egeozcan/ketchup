@@ -6,7 +6,7 @@ Add an inline text tool to Ketchup that lets users click on the canvas, type tex
 
 ## Interaction Flow
 
-1. **Select** — User picks the Text tool from the toolbar (or presses `T`). Tool settings bar shows font controls. Canvas cursor changes to `text`.
+1. **Select** — User picks the Text tool from the toolbar (or presses `X`). Tool settings bar shows font controls. Canvas cursor changes to `text`.
 2. **Place** — Click on the canvas records the position in document space. The hidden `<textarea>` receives focus. A blinking cursor appears on the preview canvas at the click point.
 3. **Type** — Each `input` event re-renders all text lines to the preview canvas using `ctx.fillText()`. The cursor is drawn at a position calculated via `ctx.measureText()`. Enter inserts a newline. Arrow keys, selection, backspace, and delete all work natively through the textarea.
 4. **Reposition (optional)** — While editing, pointer-down inside the text bounding box (shown as a dashed border on the preview canvas) initiates a drag. The text block follows the pointer and the preview re-renders at the new position.
@@ -61,7 +61,7 @@ Add `'text'` to the `ToolType` union in `types.ts`.
 
 ### Tool icon and toolbar
 
-- **tool-icons.ts**: Add SVG icon (a "T" letterform), keyboard shortcut `'T'`, label `'Text'`.
+- **tool-icons.ts**: Add SVG icon (a "T" letterform), keyboard shortcut `'X'` (`T` is taken by triangle), label `'Text'`.
 - **app-toolbar.ts**: Add `'text'` to a tool group. Place it alongside `fill` and `stamp`: `['fill', 'stamp', 'text']`.
 
 ### Tool function: `src/tools/text.ts`
@@ -111,12 +111,12 @@ New private fields:
 
 #### Hidden textarea setup
 
-Created in `connectedCallback()`. Styled with `position: absolute; left: -9999px; top: -9999px; opacity: 0;` to keep it off-screen but focusable. Added to the component's shadow DOM.
+Created in `connectedCallback()`. Styled with `position: absolute; left: -9999px; top: -9999px; opacity: 0;` to keep it off-screen but focusable. Added to the component's shadow DOM. Cleaned up in `disconnectedCallback()` (remove element, remove `selectionchange` listener from `document`).
 
 Event listeners:
 - `input` — re-render preview
 - `keydown` — handle Escape (commit/cancel)
-- `selectionchange` (on `document`) — re-render preview to update cursor position
+- `selectionchange` (on `document`) — re-render preview to update cursor position. Must check that the hidden textarea is the active element before re-rendering, to avoid spurious re-renders from other selection changes.
 
 #### Preview rendering
 
@@ -177,7 +177,7 @@ Text commits use the existing `draw` history entry type — `ImageData` before/a
 
 ### Keyboard shortcut conflicts
 
-While a text session is active, keyboard shortcuts (tool switching via single keys like `B`, `E`, etc.) must be suppressed to avoid interfering with typing. The keydown handler in `drawing-canvas.ts` (or wherever shortcuts are handled) should check `_textEditing` and skip shortcut dispatch when true. Escape is the only key handled specially during editing.
+While a text session is active, keyboard shortcuts (tool switching via single keys like `B`, `E`, etc.) must be suppressed to avoid interfering with typing. Keyboard shortcuts are handled in `drawing-app.ts` (`_onKeyDown`), which already has an `_isTextEntryTarget()` guard that returns `true` for `HTMLTextAreaElement` nodes in `composedPath()`. Since the hidden textarea receives focus during text editing, this existing guard should automatically suppress shortcuts. No additional guarding is expected to be needed, but verify during implementation that shadow DOM textarea focus is detected by `composedPath()`.
 
 ## Edge Cases
 
@@ -196,3 +196,4 @@ While a text session is active, keyboard shortcuts (tool switching via single ke
 - Underline, strikethrough, or other decorations.
 - Per-character styling (mixed fonts/sizes within one text block).
 - Text along a path or curved text.
+- Visual text selection highlighting on the preview canvas (selected text range is not visually indicated — the textarea handles selection state internally).
