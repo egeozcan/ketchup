@@ -59,6 +59,23 @@ export class DrawingApp extends LitElement {
       flex: 1;
       min-height: 0;
     }
+
+    /* ── Mobile layout ─────────────────────────── */
+    :host([mobile]) {
+      flex-direction: column;
+    }
+
+    :host([mobile]) tool-settings {
+      display: none;
+    }
+
+    :host([mobile]) .main-area {
+      flex-direction: column;
+    }
+
+    :host([mobile]) .right-sidebar {
+      display: none;
+    }
   `;
 
   private _layerCounter = 0;
@@ -88,6 +105,8 @@ export class DrawingApp extends LitElement {
   @state() private _viewportHeight = 600;
   @state() private _currentProject: StorageProjectMeta | null = null;
   @state() private _projectList: StorageProjectMeta[] = [];
+  @state() private _isMobile = false;
+  private _mobileObserver: ResizeObserver | null = null;
 
   @property({ attribute: false })
   storageBackend?: StorageBackend;
@@ -837,6 +856,7 @@ export class DrawingApp extends LitElement {
       panY: this._viewportPanY,
       viewportWidth: this._viewportWidth,
       viewportHeight: this._viewportHeight,
+      isMobile: this._isMobile,
       switchProject: (id: string) => {
         if (id === this._currentProject?.id) return;
         const doSwitch = async () => {
@@ -905,6 +925,7 @@ export class DrawingApp extends LitElement {
 
   override willUpdate() {
     this._provider.setValue(this._buildContextValue());
+    this.toggleAttribute('mobile', this._isMobile);
   }
 
   private _onHistoryChange(e: CustomEvent) {
@@ -1017,6 +1038,12 @@ export class DrawingApp extends LitElement {
   override connectedCallback() {
     super.connectedCallback();
     this._initStorage();
+    this._mobileObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        this._isMobile = entry.contentRect.width < 768;
+      }
+    });
+    this._mobileObserver.observe(this);
     this.addEventListener('keydown', this._onKeyDown);
     window.addEventListener('beforeunload', this._onBeforeUnload);
     document.addEventListener('visibilitychange', this._onVisibilityChange);
@@ -1070,6 +1097,8 @@ export class DrawingApp extends LitElement {
 
   override disconnectedCallback() {
     super.disconnectedCallback();
+    this._mobileObserver?.disconnect();
+    this._mobileObserver = null;
     this.removeEventListener('keydown', this._onKeyDown);
     window.removeEventListener('beforeunload', this._onBeforeUnload);
     document.removeEventListener('visibilitychange', this._onVisibilityChange);
