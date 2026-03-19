@@ -2303,30 +2303,74 @@ export class DrawingCanvas extends LitElement {
     const metrics = measureTextBlock(previewCtx, text, fontSize, fontFamily, fontBold, fontItalic);
     const lineHeight = fontSize * LINE_HEIGHT;
 
-    // Draw cursor
-    if (this._textCursorVisible) {
-      const cursorPos = this._textAreaEl.selectionStart ?? 0;
-      const lines = text.split('\n');
-      let charCount = 0;
-      let cursorLine = 0;
-      let cursorCol = 0;
+    // Compute cursor/selection positions
+    const selStart = this._textAreaEl.selectionStart ?? 0;
+    const selEnd = this._textAreaEl.selectionEnd ?? selStart;
+    const lines = text.split('\n');
+
+    previewCtx.font = buildFontString(fontSize, fontFamily, fontBold, fontItalic);
+    previewCtx.textBaseline = 'top';
+
+    // Helper: convert a character offset to { line, x, y }
+    const offsetToPos = (offset: number) => {
+      let count = 0;
       for (let i = 0; i < lines.length; i++) {
-        if (charCount + lines[i].length >= cursorPos) {
-          cursorLine = i;
-          cursorCol = cursorPos - charCount;
-          break;
+        if (count + lines[i].length >= offset) {
+          const col = offset - count;
+          const prefix = lines[i].substring(0, col);
+          return {
+            line: i,
+            x: this._textPosition.x + previewCtx.measureText(prefix).width,
+            y: this._textPosition.y + i * lineHeight,
+          };
         }
-        charCount += lines[i].length + 1; // +1 for \n
+        count += lines[i].length + 1;
       }
+      // Past end — put on last line
+      const lastLine = lines.length - 1;
+      return {
+        line: lastLine,
+        x: this._textPosition.x + previewCtx.measureText(lines[lastLine]).width,
+        y: this._textPosition.y + lastLine * lineHeight,
+      };
+    };
 
-      const prefix = lines[cursorLine]?.substring(0, cursorCol) ?? '';
-      previewCtx.font = buildFontString(fontSize, fontFamily, fontBold, fontItalic);
-      previewCtx.textBaseline = 'top';
-      const cursorX = this._textPosition.x + previewCtx.measureText(prefix).width;
-      const cursorY = this._textPosition.y + cursorLine * lineHeight;
+    if (selStart !== selEnd) {
+      // Draw selection highlight
+      previewCtx.fillStyle = 'rgba(99, 102, 241, 0.3)';
+      const startPos = offsetToPos(selStart);
+      const endPos = offsetToPos(selEnd);
 
+      if (startPos.line === endPos.line) {
+        // Single-line selection
+        previewCtx.fillRect(startPos.x, startPos.y, endPos.x - startPos.x, lineHeight);
+      } else {
+        // Multi-line selection
+        // First line: from start to end of line
+        const firstLineWidth = previewCtx.measureText(lines[startPos.line]).width;
+        previewCtx.fillRect(
+          startPos.x, startPos.y,
+          this._textPosition.x + firstLineWidth - startPos.x, lineHeight,
+        );
+        // Middle lines: full width
+        for (let i = startPos.line + 1; i < endPos.line; i++) {
+          const w = previewCtx.measureText(lines[i]).width;
+          previewCtx.fillRect(
+            this._textPosition.x, this._textPosition.y + i * lineHeight,
+            w, lineHeight,
+          );
+        }
+        // Last line: from start of line to end position
+        previewCtx.fillRect(
+          this._textPosition.x, endPos.y,
+          endPos.x - this._textPosition.x, lineHeight,
+        );
+      }
+    } else if (this._textCursorVisible) {
+      // Draw blinking caret
+      const pos = offsetToPos(selStart);
       previewCtx.fillStyle = strokeColor;
-      previewCtx.fillRect(cursorX, cursorY, 2 / this._zoom, fontSize);
+      previewCtx.fillRect(pos.x, pos.y, 2 / this._zoom, fontSize);
     }
 
     // Draw bounding box (dashed border for drag affordance)
