@@ -328,6 +328,77 @@ export class LayersPanel extends LitElement {
       width: 14px;
       height: 14px;
     }
+
+    /* ── Mobile bottom sheet ───────────────────── */
+    .sheet-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.4);
+      z-index: 200;
+    }
+
+    .sheet-backdrop.open {
+      display: block;
+    }
+
+    .sheet {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      max-height: 90vh;
+      background: #2c2c2c;
+      border-radius: 16px 16px 0 0;
+      z-index: 201;
+      display: flex;
+      flex-direction: column;
+      transition: transform 0.3s ease;
+      transform: translateY(100%);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+
+    .sheet-handle {
+      display: flex;
+      justify-content: center;
+      padding: 8px 0;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    .sheet-handle-bar {
+      width: 36px;
+      height: 4px;
+      border-radius: 2px;
+      background: #666;
+    }
+
+    .sheet-content {
+      flex: 1;
+      overflow-y: auto;
+      touch-action: pan-y;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .rename-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: #888;
+      cursor: pointer;
+      padding: 0;
+      flex-shrink: 0;
+    }
+
+    .rename-btn:hover {
+      background: #444;
+      color: #ddd;
+    }
   `;
 
   private _ctx = new ContextConsumer(this, {
@@ -356,6 +427,15 @@ export class LayersPanel extends LitElement {
     super.disconnectedCallback();
     (this.getRootNode() as ShadowRoot | Document).removeEventListener('composited', this._onComposited);
   }
+
+  @state() private _sheetOpen = false;
+  @state() private _sheetY = 0;
+  private _sheetDragging = false;
+  private _sheetDragStartY = 0;
+  private _sheetDragStartTranslate = 0;
+  private _sheetSnapHalf = 0;
+  private _sheetSnapFull = 0;
+  private _sheetDragTimestamps: { y: number; t: number }[] = [];
 
   /** The layer id currently in rename mode */
   @state() private _editingLayerId: string | null = null;
@@ -536,6 +616,65 @@ export class LayersPanel extends LitElement {
     this._clearDropIndicators();
   }
 
+  // ── Mobile bottom sheet ─────────────────────
+
+  openSheet() {
+    const sheetHeight = window.innerHeight * 0.9;
+    this._sheetSnapFull = 0;
+    this._sheetSnapHalf = sheetHeight * 0.5;
+    this._sheetY = this._sheetSnapHalf;
+    this._sheetOpen = true;
+  }
+
+  closeSheet() {
+    this._sheetOpen = false;
+    this._sheetY = 0;
+    if (this.ctx?.state.layersPanelOpen) {
+      this.ctx.toggleLayersPanel();
+    }
+  }
+
+  private _onSheetHandlePointerDown(e: PointerEvent) {
+    this._sheetDragging = true;
+    this._sheetDragStartY = e.clientY;
+    this._sheetDragStartTranslate = this._sheetY;
+    this._sheetDragTimestamps = [{ y: e.clientY, t: Date.now() }];
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  private _onSheetHandlePointerMove(e: PointerEvent) {
+    if (!this._sheetDragging) return;
+    const dy = e.clientY - this._sheetDragStartY;
+    const newY = Math.max(this._sheetSnapFull, this._sheetDragStartTranslate + dy);
+    this._sheetY = newY;
+    this._sheetDragTimestamps.push({ y: e.clientY, t: Date.now() });
+    if (this._sheetDragTimestamps.length > 5) this._sheetDragTimestamps.shift();
+  }
+
+  private _onSheetHandlePointerUp(_e: PointerEvent) {
+    if (!this._sheetDragging) return;
+    this._sheetDragging = false;
+
+    const samples = this._sheetDragTimestamps;
+    let velocity = 0;
+    if (samples.length >= 2) {
+      const last = samples[samples.length - 1];
+      const first = samples[0];
+      const dt = last.t - first.t;
+      if (dt > 0) velocity = (last.y - first.y) / dt;
+    }
+
+    const dismissThreshold = window.innerHeight * 0.75;
+    if (this._sheetY > dismissThreshold || velocity > 0.5) {
+      this.closeSheet();
+      return;
+    }
+
+    const distToHalf = Math.abs(this._sheetY - this._sheetSnapHalf);
+    const distToFull = Math.abs(this._sheetY - this._sheetSnapFull);
+    this._sheetY = distToHalf < distToFull ? this._sheetSnapHalf : this._sheetSnapFull;
+  }
+
   // ── Opacity ────────────────────────────────
 
   private _onOpacityPointerDown(layer: Layer) {
@@ -580,7 +719,12 @@ export class LayersPanel extends LitElement {
 
   override render() {
     if (!this._ctx.value) return html``;
-    const { layers, activeLayerId, layersPanelOpen } = this.ctx.state;
+
+    if (this.ctx.isMobile) {
+      return this._renderMobileSheet();
+    }
+
+    const { layersPanelOpen } = this.ctx.state;
 
     if (!layersPanelOpen) {
       return html`
@@ -597,37 +741,73 @@ export class LayersPanel extends LitElement {
       `;
     }
 
+    return html`
+      <div class="panel">
+        ${this._renderLayersList()}
+      </div>
+    `;
+  }
+
+  private _renderMobileSheet() {
+    const sheetStyle = this._sheetOpen
+      ? `transform: translateY(${this._sheetY}px);${this._sheetDragging ? 'transition:none;' : ''}`
+      : `transform: translateY(100%);`;
+
+    return html`
+      <div
+        class="sheet-backdrop ${this._sheetOpen ? 'open' : ''}"
+        @click=${() => this.closeSheet()}
+      ></div>
+      <div
+        class="sheet ${this._sheetOpen ? 'open' : ''}"
+        style=${sheetStyle}
+      >
+        <div
+          class="sheet-handle"
+          @pointerdown=${(e: PointerEvent) => this._onSheetHandlePointerDown(e)}
+          @pointermove=${(e: PointerEvent) => this._onSheetHandlePointerMove(e)}
+          @pointerup=${(e: PointerEvent) => this._onSheetHandlePointerUp(e)}
+        >
+          <div class="sheet-handle-bar"></div>
+        </div>
+        <div class="sheet-content">
+          ${this._renderLayersList()}
+        </div>
+      </div>
+    `;
+  }
+
+  private _renderLayersList() {
+    const { layers, activeLayerId } = this.ctx.state;
     // Reverse order: top of list = highest z-index = last in array
     const reversed = [...layers].reverse();
 
     return html`
-      <div class="panel">
-        <div class="header">
-          <span class="header-title">Layers</span>
-          <button
-            class="collapse-btn"
-            title="Hide layers"
-            @click=${() => this.ctx.toggleLayersPanel()}
-          >&#9664; hide</button>
-        </div>
+      <div class="header">
+        <span class="header-title">Layers</span>
+        <button
+          class="collapse-btn"
+          title="Hide layers"
+          @click=${() => this.ctx.toggleLayersPanel()}
+        >&#9664; hide</button>
+      </div>
 
-        <div class="layer-list">
-          ${reversed.map(layer => this._renderLayerRow(layer, layers, activeLayerId))}
-        </div>
+      <div class="layer-list">
+        ${reversed.map(layer => this._renderLayerRow(layer, layers, activeLayerId))}
+      </div>
 
-        <div class="action-bar">
-          <button
-            class="action-btn"
-            title="Add layer"
-            @click=${() => this.ctx.addLayer()}
-          >${this._plusIcon} Add</button>
-          <button
-            class="action-btn"
-            title="Delete layer"
-            ?disabled=${layers.length <= 1}
-            @click=${() => this.ctx.deleteLayer(activeLayerId)}
-          >${this._trashIcon} Delete</button>
-        </div>
+      <div class="action-bar">
+        <button
+          class="action-btn"
+          title="Add layer"
+          @click=${() => this.ctx.addLayer()}
+        >${this._plusIcon} Add</button>
+        <button
+          class="action-btn"
+          title="Delete layer"
+          ?disabled=${layers.length <= 1}
+          @click=${() => this.ctx.deleteLayer(activeLayerId)}
+        >${this._trashIcon} Delete</button>
       </div>
     `;
   }
@@ -675,6 +855,18 @@ export class LayersPanel extends LitElement {
                 @dblclick=${(e: Event) => this._startRename(layer.id, e)}
               >${layer.name}</span>`
           }
+
+          ${this.ctx.isMobile ? html`
+            <button
+              class="rename-btn"
+              title="Rename"
+              @click=${(e: Event) => { e.stopPropagation(); this._startRename(layer.id, e); }}
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z"/>
+              </svg>
+            </button>
+          ` : ''}
 
           <div class="reorder-btns">
             <button
@@ -731,7 +923,15 @@ export class LayersPanel extends LitElement {
 
   // ── Thumbnails ──────────────────────────────
 
-  override updated() {
+  override updated(changed: Map<string, unknown>) {
+    super.updated(changed);
+    if (this.ctx?.isMobile) {
+      if (this.ctx.state.layersPanelOpen && !this._sheetOpen) {
+        this.openSheet();
+      } else if (!this.ctx.state.layersPanelOpen && this._sheetOpen) {
+        this.closeSheet();
+      }
+    }
     this._updateThumbnails();
   }
 
