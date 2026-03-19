@@ -2229,6 +2229,9 @@ export class DrawingCanvas extends LitElement {
     ta.setAttribute('spellcheck', 'false');
     ta.addEventListener('input', () => this._renderTextPreview());
     ta.addEventListener('keydown', (e) => this._onTextKeydown(e));
+    // Arrow keys, Home/End, and click-to-place-cursor change selectionStart
+    // without firing 'input'. Catch these via keyup and selectionchange.
+    ta.addEventListener('keyup', () => { if (this._textEditing) this._renderTextPreview(); });
     this._textAreaEl = ta;
 
     this._onSelectionChange = () => {
