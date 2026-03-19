@@ -2055,6 +2055,10 @@ export class DrawingCanvas extends LitElement {
   }
 
   public clearSelection() {
+    if (this._textEditing) {
+      this._commitText();
+    }
+
     // Cancel any pending crop rect
     if (this._cropRect) {
       this.cancelCrop();
