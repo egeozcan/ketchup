@@ -84,9 +84,6 @@ export class DrawingApp extends LitElement {
       padding-top: env(safe-area-inset-top);
     }
 
-    :host([mobile]) tool-settings {
-      display: none;
-    }
 
     :host([mobile]) .main-area {
       flex-direction: column;
@@ -1063,7 +1060,12 @@ export class DrawingApp extends LitElement {
     this._initStorage();
     this._mobileObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        this._isMobile = entry.contentRect.width < 768;
+        const w = entry.contentRect.width;
+        if (this._isMobile && w > 800) {
+          this._isMobile = false;
+        } else if (!this._isMobile && w < 768) {
+          this._isMobile = true;
+        }
       }
     });
     this._mobileObserver.observe(this);
@@ -1160,7 +1162,7 @@ export class DrawingApp extends LitElement {
       </div>`;
     }
     return html`
-      <tool-settings></tool-settings>
+      ${!this._isMobile ? html`<tool-settings></tool-settings>` : ''}
       <div class="main-area">
         <app-toolbar></app-toolbar>
         <drawing-canvas
