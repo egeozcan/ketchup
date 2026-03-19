@@ -98,15 +98,9 @@ export class AppToolbar extends LitElement {
       padding-bottom: calc(4px + env(safe-area-inset-bottom));
       align-items: center;
       justify-content: space-between;
-      overflow-x: auto;
-      overflow-y: hidden;
-      scrollbar-width: none;
+      overflow: visible;
       border-top: 1px solid #444;
-      touch-action: none;
-    }
-
-    :host([mobile])::-webkit-scrollbar {
-      display: none;
+      touch-action: manipulation;
     }
 
     :host([mobile]) .group {
@@ -167,6 +161,7 @@ export class AppToolbar extends LitElement {
   `;
 
   @state() private _popoverGroup: number | null = null;
+  private _lastToolPerGroup = new Map<number, ToolType>();
 
   private _ctx = new ContextConsumer(this, {
     context: drawingContext,
@@ -179,6 +174,13 @@ export class AppToolbar extends LitElement {
 
   override willUpdate() {
     this.toggleAttribute('mobile', this.ctx?.isMobile ?? false);
+    const activeTool = this.ctx?.state?.activeTool;
+    if (activeTool) {
+      const groupIndex = toolGroups.findIndex(g => g.includes(activeTool));
+      if (groupIndex !== -1) {
+        this._lastToolPerGroup.set(groupIndex, activeTool);
+      }
+    }
   }
 
   private _selectTool(tool: ToolType) {
@@ -306,7 +308,7 @@ export class AppToolbar extends LitElement {
         this.ctx.toggleLayersPanel();
       }
     } else {
-      this.ctx.setTool(group[0]);
+      this.ctx.setTool(this._lastToolPerGroup.get(groupIndex) ?? group[0]);
       this._popoverGroup = null;
     }
   }
@@ -341,7 +343,7 @@ export class AppToolbar extends LitElement {
             <button
               class=${activeTool === tool ? 'active' : ''}
               title=${toolLabels[tool]}
-              @click=${() => { this.ctx.setTool(tool); }}
+              @click=${() => { this.ctx.setTool(tool); this._lastToolPerGroup.set(this._popoverGroup!, tool); }}
             >${toolIcons[tool]}</button>
           `)}
         </div>
