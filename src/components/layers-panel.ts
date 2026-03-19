@@ -122,6 +122,7 @@ export class LayersPanel extends LitElement {
       border-bottom: 1px solid #333;
       cursor: pointer;
       transition: background 0.1s ease;
+      touch-action: none;
     }
 
     .layer-row.dragging {
@@ -434,6 +435,7 @@ export class LayersPanel extends LitElement {
   @state() private _sheetOpen = false;
   @state() private _sheetY = 0;
   private _sheetDragging = false;
+  private _syncingSheet = false;
   private _sheetDragStartY = 0;
   private _sheetDragStartTranslate = 0;
   private _sheetSnapHalf = 0;
@@ -607,6 +609,10 @@ export class LayersPanel extends LitElement {
     this._clearDragState();
   }
 
+  private _onReorderPointerCancel(_e: PointerEvent) {
+    this._clearDragState();
+  }
+
   private _clearDropIndicators() {
     const rows = this.shadowRoot?.querySelectorAll('.layer-row');
     rows?.forEach(row => row.classList.remove('drop-above', 'drop-below'));
@@ -632,7 +638,7 @@ export class LayersPanel extends LitElement {
   closeSheet() {
     this._sheetOpen = false;
     this._sheetY = 0;
-    if (this.ctx?.state.layersPanelOpen) {
+    if (!this._syncingSheet && this.ctx?.state.layersPanelOpen) {
       this.ctx.toggleLayersPanel();
     }
   }
@@ -863,6 +869,7 @@ export class LayersPanel extends LitElement {
         @pointerdown=${(e: PointerEvent) => this._onReorderPointerDown(layer, e)}
         @pointermove=${(e: PointerEvent) => this._onReorderPointerMove(e)}
         @pointerup=${(e: PointerEvent) => this._onReorderPointerUp(e)}
+        @pointercancel=${(e: PointerEvent) => this._onReorderPointerCancel(e)}
       >
         <div
           class="layer-row-main"
@@ -961,12 +968,14 @@ export class LayersPanel extends LitElement {
 
   override updated(changed: Map<string, unknown>) {
     super.updated(changed);
-    if (this.ctx?.isMobile) {
+    if (this.ctx?.isMobile && !this._syncingSheet) {
+      this._syncingSheet = true;
       if (this.ctx.state.layersPanelOpen && !this._sheetOpen) {
         this.openSheet();
       } else if (!this.ctx.state.layersPanelOpen && this._sheetOpen) {
         this.closeSheet();
       }
+      this._syncingSheet = false;
     }
     this._updateThumbnails();
   }

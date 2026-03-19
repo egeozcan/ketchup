@@ -181,6 +181,9 @@ export class AppToolbar extends LitElement {
         this._lastToolPerGroup.set(groupIndex, activeTool);
       }
     }
+    if (this.ctx?.state?.layersPanelOpen && this._popoverGroup !== null) {
+      this._popoverGroup = null;
+    }
   }
 
   private _selectTool(tool: ToolType) {
