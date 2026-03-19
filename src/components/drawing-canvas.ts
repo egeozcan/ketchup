@@ -233,6 +233,8 @@ export class DrawingCanvas extends LitElement {
         this.mainCanvas.style.cursor = 'move';
       } else if ((tool === 'select' || tool === 'stamp') && this._float && !this._floatMoving && !this._floatResizing) {
         // Dynamic cursor set by pointer move handler
+      } else if (tool === 'text') {
+        this.mainCanvas.style.cursor = 'text';
       } else {
         this.mainCanvas.style.cursor = 'crosshair';
       }
@@ -944,6 +946,37 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
+    if (activeTool === 'text') {
+      const p = this._getDocPoint(e);
+      if (this._textEditing) {
+        // Check if click is inside the text bounding box -> start drag
+        const box = this._getTextBoundingBox();
+        if (p.x >= box.x && p.x <= box.x + box.w && p.y >= box.y && p.y <= box.y + box.h) {
+          this._textDragging = true;
+          this._textDragOffset = {
+            x: p.x - this._textPosition.x,
+            y: p.y - this._textPosition.y,
+          };
+          this.mainCanvas.setPointerCapture(e.pointerId);
+          return;
+        }
+        // Click outside -> commit current text
+        this._commitText();
+        return;
+      }
+      // Start new text session
+      this.mainCanvas.setPointerCapture(e.pointerId);
+      this._textPosition = p;
+      this._textEditing = true;
+      if (this._textAreaEl) {
+        this._textAreaEl.value = '';
+        this._textAreaEl.focus();
+      }
+      this._startTextCursorBlink();
+      this._renderTextPreview();
+      return;
+    }
+
     this._drawing = true;
     this._lastPoint = p;
     this._startPoint = p;
@@ -961,6 +994,16 @@ export class DrawingCanvas extends LitElement {
     // Handle panning
     if (this._panning) {
       this._updatePan(e);
+      return;
+    }
+
+    if (this._textDragging) {
+      const p = this._getDocPoint(e);
+      this._textPosition = {
+        x: p.x - this._textDragOffset.x,
+        y: p.y - this._textDragOffset.y,
+      };
+      this._renderTextPreview();
       return;
     }
 
@@ -1040,6 +1083,11 @@ export class DrawingCanvas extends LitElement {
     // Handle panning end
     if (this._panning) {
       this._endPan();
+      return;
+    }
+
+    if (this._textDragging) {
+      this._textDragging = false;
       return;
     }
 
