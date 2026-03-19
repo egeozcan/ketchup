@@ -507,6 +507,48 @@ export class ToolSettings extends LitElement {
     .dialog-create-btn:hover {
       background: #4a7be6;
     }
+
+    .font-select {
+      background: #444;
+      color: #ddd;
+      border: 1px solid #555;
+      border-radius: 0.25rem;
+      padding: 0.25rem 0.375rem;
+      font-size: 0.8125rem;
+      cursor: pointer;
+    }
+
+    .font-size-input {
+      width: 3.5rem;
+      background: #444;
+      color: #ddd;
+      border: 1px solid #555;
+      border-radius: 0.25rem;
+      padding: 0.25rem 0.375rem;
+      font-size: 0.8125rem;
+      text-align: center;
+    }
+
+    .font-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.75rem;
+      height: 1.75rem;
+      background: #444;
+      color: #ddd;
+      border: 1px solid #555;
+      border-radius: 0.25rem;
+      cursor: pointer;
+      font-size: 0.8125rem;
+      padding: 0;
+    }
+
+    .font-toggle.active {
+      background: #5b8cf7;
+      color: #fff;
+      border-color: #5b8cf7;
+    }
   `;
 
   @state() private _recentStamps: StampEntry[] = [];
@@ -920,6 +962,52 @@ export class ToolSettings extends LitElement {
                 <option value="2:3">2:3</option>
                 <option value="9:16">9:16</option>
               </select>
+            </div>
+          `
+        : ''}
+
+      ${activeTool === 'text'
+        ? html`
+            <div class="separator"></div>
+            <div class="section">
+              <label>Font</label>
+              <select
+                class="font-select"
+                .value=${this.ctx.state.fontFamily}
+                @change=${(e: Event) => this.ctx.setFontFamily((e.target as HTMLSelectElement).value)}
+              >
+                <option value="sans-serif">Sans-serif</option>
+                <option value="serif">Serif</option>
+                <option value="monospace">Monospace</option>
+                <option value="Arial">Arial</option>
+                <option value="Georgia">Georgia</option>
+                <option value="Courier New">Courier New</option>
+                <option value="Verdana">Verdana</option>
+                <option value="Times New Roman">Times New Roman</option>
+              </select>
+            </div>
+            <div class="section">
+              <label>Size</label>
+              <input
+                class="font-size-input"
+                type="number"
+                min="8"
+                max="200"
+                .value=${String(this.ctx.state.fontSize)}
+                @change=${(e: Event) => this.ctx.setFontSize(Number((e.target as HTMLInputElement).value))}
+              />
+            </div>
+            <div class="section">
+              <button
+                class="font-toggle ${this.ctx.state.fontBold ? 'active' : ''}"
+                title="Bold"
+                @click=${() => this.ctx.setFontBold(!this.ctx.state.fontBold)}
+              ><strong>B</strong></button>
+              <button
+                class="font-toggle ${this.ctx.state.fontItalic ? 'active' : ''}"
+                title="Italic"
+                @click=${() => this.ctx.setFontItalic(!this.ctx.state.fontItalic)}
+              ><em>I</em></button>
             </div>
           `
         : ''}
