@@ -549,6 +549,24 @@ export class ToolSettings extends LitElement {
       color: #fff;
       border-color: #5b8cf7;
     }
+
+    /* ── Inside mobile popover ─────────────────── */
+    :host([mobile]) {
+      flex-direction: column;
+      align-items: flex-start;
+      padding: 0;
+      min-height: 0;
+      background: transparent;
+      touch-action: manipulation;
+    }
+
+    :host([mobile]) .section {
+      width: 100%;
+    }
+
+    :host([mobile]) input[type="range"] {
+      width: 100%;
+    }
   `;
 
   @state() private _recentStamps: StampEntry[] = [];
@@ -579,6 +597,7 @@ export class ToolSettings extends LitElement {
   }
 
   override willUpdate() {
+    this.toggleAttribute('mobile', this._ctx.value?.isMobile ?? false);
     const projectId = this._ctx.value?.currentProject?.id ?? null;
     if (projectId && projectId !== this._lastProjectId) {
       this._lastProjectId = projectId;
