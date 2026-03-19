@@ -1372,6 +1372,12 @@ export class DrawingCanvas extends LitElement {
     const midX = (pts[0].x + pts[1].x) / 2;
     const midY = (pts[0].y + pts[1].y) / 2;
 
+    // Pan: delta of midpoint (applied first so zoom anchor uses already-panned state)
+    const panDx = midX - this._lastPinchMidX;
+    const panDy = midY - this._lastPinchMidY;
+    this._panX += panDx;
+    this._panY += panDy;
+
     // Zoom: ratio of current distance to previous distance
     if (this._lastPinchDist > 0) {
       const scale = dist / this._lastPinchDist;
@@ -1392,12 +1398,6 @@ export class DrawingCanvas extends LitElement {
       this._panY = viewportY - docY * newZoom;
       this._zoom = newZoom;
     }
-
-    // Pan: delta of midpoint
-    const panDx = midX - this._lastPinchMidX;
-    const panDy = midY - this._lastPinchMidY;
-    this._panX += panDx;
-    this._panY += panDy;
 
     this._lastPinchDist = dist;
     this._lastPinchMidX = midX;
