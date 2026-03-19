@@ -970,6 +970,11 @@ export class DrawingCanvas extends LitElement {
     }
 
     if (activeTool === 'text') {
+      // Prevent mousedown compatibility event from stealing focus from
+      // the hidden textarea. Without this, the browser's default mousedown
+      // behavior blurs the textarea, causing keyboard shortcuts to fire
+      // instead of typing into the text tool.
+      e.preventDefault();
       if (this._textEditing) {
         // Check if click is inside the text bounding box -> start drag
         const box = this._getTextBoundingBox();
