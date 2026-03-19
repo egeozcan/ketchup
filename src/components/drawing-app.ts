@@ -44,6 +44,15 @@ export class DrawingApp extends LitElement {
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      height: 100%;
+      width: 200px;
+      border-left: 1px solid #444;
+      background: #2c2c2c;
+      transition: width 0.2s ease;
+    }
+
+    .right-sidebar.collapsed {
+      width: 32px;
     }
 
     .right-sidebar layers-panel {
@@ -1080,7 +1089,7 @@ export class DrawingApp extends LitElement {
           @crop-commit=${this._onCropCommit}
           @viewport-change=${this._onViewportChange}
         ></drawing-canvas>
-        <div class="right-sidebar">
+        <div class="right-sidebar ${this._state.layersPanelOpen ? '' : 'collapsed'}">
           <navigator-panel
             @navigator-pan=${this._onNavigatorPan}
             @navigator-zoom=${this._onNavigatorZoom}

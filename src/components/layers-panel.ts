@@ -8,7 +8,8 @@ import type { Layer } from '../types.js';
 export class LayersPanel extends LitElement {
   static override styles = css`
     :host {
-      display: block;
+      display: flex;
+      flex-direction: column;
       font-family: system-ui, -apple-system, sans-serif;
       font-size: 0.8125rem;
       color: #ddd;
@@ -19,16 +20,11 @@ export class LayersPanel extends LitElement {
     .panel {
       display: flex;
       flex-direction: column;
-      width: 200px;
-      height: 100%;
-      background: #2c2c2c;
-      border-left: 1px solid #444;
-      transition: width 0.2s ease;
+      flex: 1;
       overflow: hidden;
     }
 
     .panel.collapsed {
-      width: 32px;
     }
 
     /* ── Collapsed strip ──────────────────────── */

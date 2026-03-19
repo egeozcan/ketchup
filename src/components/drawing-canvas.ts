@@ -256,6 +256,7 @@ export class DrawingCanvas extends LitElement {
       layerCtx.fillRect(0, 0, this._docWidth, this._docHeight);
     }
     this.composite();
+    this._dispatchViewportChange();
   }
 
   /** Center the document in the viewport */
@@ -265,6 +266,7 @@ export class DrawingCanvas extends LitElement {
     this._panY = Math.round((this._vh - this._docHeight * this._zoom) / 2);
     this.composite();
     if (this._float) this._redrawFloatPreview();
+    this._dispatchViewportChange();
   }
 
   private _resizeToFit() {
@@ -294,6 +296,7 @@ export class DrawingCanvas extends LitElement {
 
     this.composite();
     if (this._float) this._redrawFloatPreview();
+    this._dispatchViewportChange();
   }
 
   // --- History ---
@@ -735,12 +738,14 @@ export class DrawingCanvas extends LitElement {
       const docX = (viewportX - this._panX) / this._zoom;
       const docY = (viewportY - this._panY) / this._zoom;
 
-      const direction = e.deltaY < 0 ? 1 : -1;
+      // Scale zoom factor by delta magnitude for smooth pinch-to-zoom.
+      // Clamp delta to avoid huge jumps from mouse wheel acceleration.
+      const delta = Math.max(-5, Math.min(5, -e.deltaY * 0.01));
       const newZoom = Math.min(
         DrawingCanvas.MAX_ZOOM,
         Math.max(
           DrawingCanvas.MIN_ZOOM,
-          this._zoom * Math.pow(DrawingCanvas.ZOOM_STEP, direction),
+          this._zoom * (1 + delta),
         ),
       );
       if (newZoom === this._zoom) return;

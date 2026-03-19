@@ -170,8 +170,18 @@ export class NavigatorPanel extends LitElement {
 
   // --- Composited event listening (same pattern as layers-panel) ---
 
+  private _minimapPending = false;
+
   private _onComposited = () => {
-    this._renderMinimap();
+    // Defer render to next frame so Lit's context update cycle completes first.
+    // Without this, viewport values (zoom/pan) in context are stale on initial load.
+    if (!this._minimapPending) {
+      this._minimapPending = true;
+      requestAnimationFrame(() => {
+        this._minimapPending = false;
+        this._renderMinimap();
+      });
+    }
   };
 
   override connectedCallback() {
@@ -217,6 +227,7 @@ export class NavigatorPanel extends LitElement {
 
     // Size the minimap canvas to the container width, capped at 150px height
     const containerWidth = container.clientWidth - 12; // subtract padding
+    if (containerWidth <= 0) return;
     const maxHeight = 150;
     const docAspect = docW / docH;
     let cw = containerWidth;
