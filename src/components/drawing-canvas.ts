@@ -2227,17 +2227,20 @@ export class DrawingCanvas extends LitElement {
 
     // Create hidden textarea for text tool input
     const ta = document.createElement('textarea');
-    ta.style.cssText = 'position:absolute;left:-9999px;top:-9999px;opacity:0;width:1px;height:1px;';
+    // Keep textarea in-viewport (Firefox won't fire selectionchange for
+    // off-screen elements) but visually hidden via clip-rect + opacity.
+    ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;';
     ta.setAttribute('autocomplete', 'off');
     ta.setAttribute('autocorrect', 'off');
     ta.setAttribute('autocapitalize', 'off');
     ta.setAttribute('spellcheck', 'false');
-    ta.addEventListener('input', () => this._renderTextPreview());
+    ta.addEventListener('input', () => {
+      if (this._textEditing) {
+        this._startTextCursorBlink();
+        this._renderTextPreview();
+      }
+    });
     ta.addEventListener('keydown', (e) => this._onTextKeydown(e));
-    // selectionchange on the textarea fires synchronously when the browser
-    // updates the caret/selection — more immediate than keyup or rAF.
-    // Reset the blink timer so the cursor stays visible during navigation,
-    // matching native text field behavior.
     ta.addEventListener('selectionchange', () => {
       if (this._textEditing) {
         this._startTextCursorBlink();
