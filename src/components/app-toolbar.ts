@@ -21,7 +21,7 @@ export class AppToolbar extends LitElement {
       background: #2c2c2c;
       padding: 8px;
       gap: 4px;
-      width: 52px;
+      width: 60px;
       box-sizing: border-box;
       overflow-x: hidden;
       overflow-y: auto;
@@ -45,14 +45,14 @@ export class AppToolbar extends LitElement {
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 36px;
-      height: 36px;
+      width: 44px;
+      height: 44px;
       border: none;
       border-radius: 6px;
       background: transparent;
       color: #bbb;
       cursor: pointer;
-      padding: 6px;
+      padding: 10px;
       transition: all 0.15s ease;
     }
 

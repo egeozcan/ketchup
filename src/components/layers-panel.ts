@@ -117,6 +117,7 @@ export class LayersPanel extends LitElement {
       display: flex;
       flex-direction: column;
       padding: 6px 8px;
+      min-height: 44px;
       background: #3a3a3a;
       border-bottom: 1px solid #333;
       cursor: pointer;

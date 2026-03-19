@@ -60,8 +60,8 @@ export class ToolSettings extends LitElement {
     }
 
     .color-swatch {
-      width: 1.125rem;
-      height: 1.125rem;
+      width: 1.5rem;
+      height: 1.5rem;
       border-radius: 0.1875rem;
       border: 0.125rem solid transparent;
       cursor: pointer;
