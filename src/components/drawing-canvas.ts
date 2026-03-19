@@ -10,6 +10,7 @@ import { drawShapePreview } from '../tools/shapes.js';
 import { floodFill } from '../tools/fill.js';
 import { drawSelectionRect } from '../tools/select.js';
 import { drawCropOverlay, hitTestCropHandle, parseAspectRatio, constrainCropToRatio, type CropRect, type CropHandle } from '../tools/crop.js';
+import { drawText, measureTextBlock } from '../tools/text.js';
 import './resize-dialog.js';
 import type { ResizeDialog } from './resize-dialog.js';
 
@@ -109,6 +110,16 @@ export class DrawingCanvas extends LitElement {
   private _cropHandle: CropHandle | null = null;
   private _cropDragOrigin: Point | null = null;
   private _cropRectOrigin: CropRect | null = null;
+
+  // --- Text tool state ---
+  private _textEditing = false;
+  private _textPosition: Point = { x: 0, y: 0 };
+  private _textDragging = false;
+  private _textDragOffset: Point = { x: 0, y: 0 };
+  private _textAreaEl: HTMLTextAreaElement | null = null;
+  private _textCursorVisible = false;
+  private _textCursorInterval = 0;
+  private _onSelectionChange: (() => void) | null = null;
 
   // --- Document dimension accessors (from context state) ---
   private get _docWidth(): number {
@@ -257,6 +268,11 @@ export class DrawingCanvas extends LitElement {
     }
     this.composite();
     this._dispatchViewportChange();
+
+    // Append hidden textarea for text tool
+    if (this._textAreaEl) {
+      this.shadowRoot!.appendChild(this._textAreaEl);
+    }
   }
 
   /** Center the document in the viewport */
@@ -2126,6 +2142,25 @@ export class DrawingCanvas extends LitElement {
 
   override connectedCallback() {
     super.connectedCallback();
+
+    // Create hidden textarea for text tool input
+    const ta = document.createElement('textarea');
+    ta.style.cssText = 'position:absolute;left:-9999px;top:-9999px;opacity:0;width:1px;height:1px;';
+    ta.setAttribute('autocomplete', 'off');
+    ta.setAttribute('autocorrect', 'off');
+    ta.setAttribute('autocapitalize', 'off');
+    ta.setAttribute('spellcheck', 'false');
+    ta.addEventListener('input', () => this._renderTextPreview());
+    ta.addEventListener('keydown', (e) => this._onTextKeydown(e));
+    this._textAreaEl = ta;
+
+    this._onSelectionChange = () => {
+      if (this._textEditing && this.shadowRoot?.activeElement === this._textAreaEl) {
+        this._renderTextPreview();
+      }
+    };
+    document.addEventListener('selectionchange', this._onSelectionChange);
+
     this.addEventListener('wheel', this._onWheel, { passive: false });
     this.addEventListener('dragover', this._onDragOver);
     this.addEventListener('dragenter', this._onDragEnter);
@@ -2135,6 +2170,18 @@ export class DrawingCanvas extends LitElement {
 
   override disconnectedCallback() {
     super.disconnectedCallback();
+    if (this._textCursorInterval) {
+      clearInterval(this._textCursorInterval);
+      this._textCursorInterval = 0;
+    }
+    if (this._onSelectionChange) {
+      document.removeEventListener('selectionchange', this._onSelectionChange);
+      this._onSelectionChange = null;
+    }
+    if (this._textAreaEl) {
+      this._textAreaEl.remove();
+      this._textAreaEl = null;
+    }
     this._resizeObserver?.disconnect();
     this._resizeObserver = null;
     this._stopSelectionAnimation();
@@ -2143,6 +2190,171 @@ export class DrawingCanvas extends LitElement {
     this.removeEventListener('dragenter', this._onDragEnter);
     this.removeEventListener('dragleave', this._onDragLeave);
     this.removeEventListener('drop', this._onDrop);
+  }
+
+  /** Re-render the text preview on the overlay canvas with cursor and bounding box. */
+  private _renderTextPreview() {
+    if (!this._textEditing || !this._textAreaEl || !this.previewCanvas) return;
+    const previewCtx = this.previewCanvas.getContext('2d')!;
+    previewCtx.clearRect(0, 0, this._vw, this._vh);
+
+    const state = this.ctx.state;
+    const text = this._textAreaEl.value;
+    const { fontFamily, fontSize, fontBold, fontItalic, strokeColor } = state;
+
+    previewCtx.save();
+    previewCtx.translate(this._panX, this._panY);
+    previewCtx.scale(this._zoom, this._zoom);
+
+    // Draw text
+    drawText(
+      previewCtx,
+      text,
+      this._textPosition.x,
+      this._textPosition.y,
+      fontSize,
+      fontFamily,
+      fontBold,
+      fontItalic,
+      strokeColor,
+    );
+
+    // Measure for cursor and bounding box
+    const metrics = measureTextBlock(previewCtx, text, fontSize, fontFamily, fontBold, fontItalic);
+    const lineHeight = fontSize * 1.2;
+
+    // Draw cursor
+    if (this._textCursorVisible) {
+      const cursorPos = this._textAreaEl.selectionStart ?? 0;
+      const lines = text.split('\n');
+      let charCount = 0;
+      let cursorLine = 0;
+      let cursorCol = 0;
+      for (let i = 0; i < lines.length; i++) {
+        if (charCount + lines[i].length >= cursorPos) {
+          cursorLine = i;
+          cursorCol = cursorPos - charCount;
+          break;
+        }
+        charCount += lines[i].length + 1; // +1 for \n
+      }
+
+      const prefix = lines[cursorLine]?.substring(0, cursorCol) ?? '';
+      previewCtx.font = `${fontItalic ? 'italic ' : ''}${fontBold ? 'bold ' : ''}${fontSize}px ${fontFamily}`;
+      previewCtx.textBaseline = 'top';
+      const cursorX = this._textPosition.x + previewCtx.measureText(prefix).width;
+      const cursorY = this._textPosition.y + cursorLine * lineHeight;
+
+      previewCtx.fillStyle = strokeColor;
+      previewCtx.fillRect(cursorX, cursorY, 2 / this._zoom, fontSize);
+    }
+
+    // Draw bounding box (dashed border for drag affordance)
+    const padding = 4 / this._zoom;
+    const boxX = this._textPosition.x - padding;
+    const boxY = this._textPosition.y - padding;
+    const boxW = Math.max(metrics.width, fontSize) + padding * 2;
+    const boxH = metrics.height + padding * 2;
+
+    previewCtx.strokeStyle = 'rgba(99, 102, 241, 0.6)';
+    previewCtx.lineWidth = 1 / this._zoom;
+    previewCtx.setLineDash([4 / this._zoom, 4 / this._zoom]);
+    previewCtx.strokeRect(boxX, boxY, boxW, boxH);
+
+    previewCtx.restore();
+  }
+
+  /** Get the bounding box of the current text block in document space. */
+  private _getTextBoundingBox(): { x: number; y: number; w: number; h: number } {
+    const state = this.ctx.state;
+    const text = this._textAreaEl?.value ?? '';
+    const previewCtx = this.previewCanvas.getContext('2d')!;
+    const metrics = measureTextBlock(
+      previewCtx, text,
+      state.fontSize, state.fontFamily, state.fontBold, state.fontItalic,
+    );
+    const padding = 4 / this._zoom;
+    return {
+      x: this._textPosition.x - padding,
+      y: this._textPosition.y - padding,
+      w: Math.max(metrics.width, state.fontSize) + padding * 2,
+      h: metrics.height + padding * 2,
+    };
+  }
+
+  private _startTextCursorBlink() {
+    this._textCursorVisible = true;
+    if (this._textCursorInterval) clearInterval(this._textCursorInterval);
+    this._textCursorInterval = window.setInterval(() => {
+      this._textCursorVisible = !this._textCursorVisible;
+      this._renderTextPreview();
+    }, 530);
+  }
+
+  private _stopTextCursorBlink() {
+    if (this._textCursorInterval) {
+      clearInterval(this._textCursorInterval);
+      this._textCursorInterval = 0;
+    }
+    this._textCursorVisible = false;
+  }
+
+  private _onTextKeydown(e: KeyboardEvent) {
+    if (!this._textEditing) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (this._textAreaEl && this._textAreaEl.value.length > 0) {
+        this._commitText();
+      } else {
+        this._cancelText();
+      }
+    }
+  }
+
+  private _commitText() {
+    if (!this._textEditing || !this._textAreaEl) return;
+    const text = this._textAreaEl.value;
+    if (!text) {
+      this._cancelText();
+      return;
+    }
+
+    const state = this.ctx.state;
+    this._captureBeforeDraw();
+    const layerCtx = this._getActiveLayerCtx();
+    if (layerCtx) {
+      drawText(
+        layerCtx,
+        text,
+        this._textPosition.x,
+        this._textPosition.y,
+        state.fontSize,
+        state.fontFamily,
+        state.fontBold,
+        state.fontItalic,
+        state.strokeColor,
+      );
+      this._pushDrawHistory();
+      this.composite();
+    }
+    this._endTextEditing();
+  }
+
+  private _cancelText() {
+    this._endTextEditing();
+  }
+
+  private _endTextEditing() {
+    this._textEditing = false;
+    this._stopTextCursorBlink();
+    if (this._textAreaEl) {
+      this._textAreaEl.value = '';
+      this._textAreaEl.blur();
+    }
+    if (this.previewCanvas) {
+      this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
+    }
   }
 
   override render() {
