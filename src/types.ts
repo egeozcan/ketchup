@@ -10,6 +10,7 @@ export type ToolType =
   | 'triangle'
   | 'fill'
   | 'stamp'
+  | 'text'
   | 'hand'
   | 'crop';
 
@@ -56,6 +57,10 @@ export interface DrawingState {
   documentWidth: number;
   documentHeight: number;
   cropAspectRatio: string;
+  fontFamily: string;
+  fontSize: number;
+  fontBold: boolean;
+  fontItalic: boolean;
 }
 
 export type HistoryEntry =

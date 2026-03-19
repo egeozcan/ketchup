@@ -148,6 +148,10 @@ export class DrawingApp extends LitElement {
       documentWidth: 800,
       documentHeight: 600,
       cropAspectRatio: 'free',
+      fontFamily: 'sans-serif',
+      fontSize: 24,
+      fontBold: false,
+      fontItalic: false,
     };
     this._provider = new ContextProvider(this, {
       context: drawingContext,
@@ -583,6 +587,10 @@ export class DrawingApp extends LitElement {
       documentWidth: w,
       documentHeight: h,
       cropAspectRatio: 'free',
+      fontFamily: 'sans-serif',
+      fontSize: 24,
+      fontBold: false,
+      fontItalic: false,
     };
     await this.updateComplete;
     this.canvas?.setHistory([], -1);
@@ -650,6 +658,10 @@ export class DrawingApp extends LitElement {
         documentWidth: record.canvasWidth,
         documentHeight: record.canvasHeight,
         cropAspectRatio: 'free',
+        fontFamily: 'sans-serif',
+        fontSize: 24,
+        fontBold: false,
+        fontItalic: false,
       };
       await this.updateComplete;
       this.canvas?.setHistory(history, record.historyIndex ?? (history.length - 1));
@@ -796,6 +808,22 @@ export class DrawingApp extends LitElement {
       },
       setCropAspectRatio: (ratio: string) => {
         this._state = { ...this._state, cropAspectRatio: ratio };
+        this._markDirty();
+      },
+      setFontFamily: (family: string) => {
+        this._state = { ...this._state, fontFamily: family };
+        this._markDirty();
+      },
+      setFontSize: (size: number) => {
+        this._state = { ...this._state, fontSize: Math.max(8, Math.min(200, size)) };
+        this._markDirty();
+      },
+      setFontBold: (bold: boolean) => {
+        this._state = { ...this._state, fontBold: bold };
+        this._markDirty();
+      },
+      setFontItalic: (italic: boolean) => {
+        this._state = { ...this._state, fontItalic: italic };
         this._markDirty();
       },
       canUndo: this._canUndo,

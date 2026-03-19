@@ -9,7 +9,7 @@ const toolGroups: ToolType[][] = [
   ['select', 'move', 'crop', 'hand'],
   ['pencil', 'marker', 'eraser'],
   ['line', 'rectangle', 'circle', 'triangle'],
-  ['fill', 'stamp'],
+  ['fill', 'stamp', 'text'],
 ];
 
 @customElement('app-toolbar')

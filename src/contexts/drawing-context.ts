@@ -24,6 +24,10 @@ export interface DrawingContextValue {
   renameLayer: (id: string, name: string) => void;
   toggleLayersPanel: () => void;
   setCropAspectRatio: (ratio: string) => void;
+  setFontFamily: (family: string) => void;
+  setFontSize: (size: number) => void;
+  setFontBold: (bold: boolean) => void;
+  setFontItalic: (italic: boolean) => void;
   canUndo: boolean;
   canRedo: boolean;
   // Project operations
