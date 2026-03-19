@@ -1258,9 +1258,17 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _onPointerLeave(e: PointerEvent) {
-    // During pinch/pan, don't treat edge-exit as pointer up — the finger is still down.
     if (this._pinching) {
       return;
+    }
+    // If this pointer is captured, pointerleave is spurious — the real
+    // end-of-interaction will arrive as pointerup or pointercancel.
+    try {
+      if (this.mainCanvas.hasPointerCapture(e.pointerId)) {
+        return;
+      }
+    } catch {
+      // hasPointerCapture can throw if canvas is not in DOM
     }
     this._onPointerUp(e);
   }
@@ -2462,6 +2470,10 @@ export class DrawingCanvas extends LitElement {
     this._resizeObserver?.disconnect();
     this._resizeObserver = null;
     this._stopSelectionAnimation();
+    this._pointers.clear();
+    this._pinching = false;
+    this._panning = false;
+    this._panPointerId = -1;
     this.removeEventListener('wheel', this._onWheel);
     this.removeEventListener('dragover', this._onDragOver);
     this.removeEventListener('dragenter', this._onDragEnter);

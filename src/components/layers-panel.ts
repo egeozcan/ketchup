@@ -702,6 +702,14 @@ export class LayersPanel extends LitElement {
     this._sheetY = distToHalf < distToFull ? this._sheetSnapHalf : this._sheetSnapFull;
   }
 
+  private _onSheetHandlePointerCancel(_e: PointerEvent) {
+    if (!this._sheetDragging) return;
+    this._sheetDragging = false;
+    const distToHalf = Math.abs(this._sheetY - this._sheetSnapHalf);
+    const distToFull = Math.abs(this._sheetY - this._sheetSnapFull);
+    this._sheetY = distToHalf < distToFull ? this._sheetSnapHalf : this._sheetSnapFull;
+  }
+
   // ── Opacity ────────────────────────────────
 
   private _onOpacityPointerDown(layer: Layer) {
@@ -794,6 +802,7 @@ export class LayersPanel extends LitElement {
           @pointerdown=${(e: PointerEvent) => this._onSheetHandlePointerDown(e)}
           @pointermove=${(e: PointerEvent) => this._onSheetHandlePointerMove(e)}
           @pointerup=${(e: PointerEvent) => this._onSheetHandlePointerUp(e)}
+          @pointercancel=${(e: PointerEvent) => this._onSheetHandlePointerCancel(e)}
         >
           <div class="sheet-handle-bar"></div>
         </div>
