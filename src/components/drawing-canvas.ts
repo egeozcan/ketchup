@@ -429,9 +429,12 @@ export class DrawingCanvas extends LitElement {
   }
 
   public undo() {
-    // Finalize any in-progress brush/shape/move so it becomes its own
+    // Finalize any in-progress text/brush/shape/move so it becomes its own
     // history entry before we undo. Without this, the undo modifies the
     // layer under the stroke, corrupting _beforeDrawData and the history.
+    if (this._textEditing) {
+      this._commitText();
+    }
     if (this._drawing) {
       this._drawing = false;
       this._lastPoint = null;
@@ -463,6 +466,9 @@ export class DrawingCanvas extends LitElement {
   }
 
   public redo() {
+    if (this._textEditing) {
+      this._commitText();
+    }
     if (this._drawing) {
       this._drawing = false;
       this._lastPoint = null;
@@ -947,7 +953,6 @@ export class DrawingCanvas extends LitElement {
     }
 
     if (activeTool === 'text') {
-      const p = this._getDocPoint(e);
       if (this._textEditing) {
         // Check if click is inside the text bounding box -> start drag
         const box = this._getTextBoundingBox();
@@ -957,7 +962,6 @@ export class DrawingCanvas extends LitElement {
             x: p.x - this._textPosition.x,
             y: p.y - this._textPosition.y,
           };
-          this.mainCanvas.setPointerCapture(e.pointerId);
           return;
         }
         // Click outside -> commit current text
@@ -965,7 +969,6 @@ export class DrawingCanvas extends LitElement {
         return;
       }
       // Start new text session
-      this.mainCanvas.setPointerCapture(e.pointerId);
       this._textPosition = p;
       this._textEditing = true;
       if (this._textAreaEl) {
