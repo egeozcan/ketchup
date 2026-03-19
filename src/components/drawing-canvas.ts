@@ -904,6 +904,10 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
+    // Block drawing on invisible layers — all tools below modify the active layer
+    const activeLayer = this.ctx.state.layers.find(l => l.id === this.ctx.state.activeLayerId);
+    if (activeLayer && !activeLayer.visible) return;
+
     // Move tool → translate active layer
     if (activeTool === 'move') {
       this.mainCanvas.setPointerCapture(e.pointerId);
