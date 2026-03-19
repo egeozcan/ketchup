@@ -56,7 +56,7 @@ The current codebase calls `setPointerCapture()` on the first pointer for most t
 | Tool | On second pointer | Recovery |
 |------|-------------------|----------|
 | Pencil / Marker / Eraser | Discard stroke (restore `_beforeDrawData`) | Clean canvas, ready for new stroke |
-| Shapes (rect/ellipse/line/polygon) | Discard preview, cancel shape | Preview canvas cleared |
+| Shapes (rect/ellipse/line/triangle) | Discard preview, cancel shape | Preview canvas cleared |
 | Crop | Cancel drag, keep existing crop rect | Rect stays, user can retry handle |
 | Select / Stamp float | Cancel move/resize, keep float at current position | Float stays in place |
 | Text | No interruption (text editing uses textarea, not pointer capture) | Focus may be lost; user taps to refocus |
@@ -78,7 +78,7 @@ When `isMobile` is true, `app-toolbar.ts` render-branches to a horizontal bottom
 
 - Tapping a different tool group switches to its default/last-used sub-tool immediately
 - Tapping the already-active tool group opens a **combined popover** above the button containing:
-  - **Sub-tool selector** at the top (if the group has multiple tools, e.g., rectangle/ellipse/line/polygon)
+  - **Sub-tool selector** at the top (if the group has multiple tools, e.g., rectangle/ellipse/line/triangle)
   - **Tool settings** below (color, brush size, opacity, etc.)
 - This is the single entry point for both sub-tool switching and settings on mobile
 
