@@ -355,6 +355,7 @@ export class LayersPanel extends LitElement {
       flex-direction: column;
       transition: transform 0.3s ease;
       transform: translateY(100%);
+      will-change: transform;
       padding-bottom: env(safe-area-inset-bottom);
     }
 
@@ -421,11 +422,13 @@ export class LayersPanel extends LitElement {
     super.connectedCallback();
     // composited event bubbles from sibling drawing-canvas through the shared shadow root
     (this.getRootNode() as ShadowRoot | Document).addEventListener('composited', this._onComposited);
+    window.addEventListener('resize', this._onResize);
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
     (this.getRootNode() as ShadowRoot | Document).removeEventListener('composited', this._onComposited);
+    window.removeEventListener('resize', this._onResize);
   }
 
   @state() private _sheetOpen = false;
@@ -634,6 +637,30 @@ export class LayersPanel extends LitElement {
     }
   }
 
+  private _onResize = () => {
+    if (this._sheetOpen && !this._sheetDragging) {
+      this._recalcSnapPoints();
+    }
+  };
+
+  private _recalcSnapPoints() {
+    const sheetHeight = window.innerHeight * 0.9;
+    const oldSnapHalf = this._sheetSnapHalf;
+    this._sheetSnapFull = 0;
+    this._sheetSnapHalf = sheetHeight * 0.5;
+    if (oldSnapHalf > 0) {
+      if (this._sheetY === oldSnapHalf) {
+        this._sheetY = this._sheetSnapHalf;
+      } else if (this._sheetY === this._sheetSnapFull) {
+        // already correct
+      } else {
+        const distToHalf = Math.abs(this._sheetY - this._sheetSnapHalf);
+        const distToFull = Math.abs(this._sheetY - this._sheetSnapFull);
+        this._sheetY = distToHalf < distToFull ? this._sheetSnapHalf : this._sheetSnapFull;
+      }
+    }
+  }
+
   private _onSheetHandlePointerDown(e: PointerEvent) {
     this._sheetDragging = true;
     this._sheetDragStartY = e.clientY;
@@ -659,9 +686,9 @@ export class LayersPanel extends LitElement {
     let velocity = 0;
     if (samples.length >= 2) {
       const last = samples[samples.length - 1];
-      const first = samples[0];
-      const dt = last.t - first.t;
-      if (dt > 0) velocity = (last.y - first.y) / dt;
+      const prev = samples[samples.length - 2];
+      const dt = last.t - prev.t;
+      if (dt > 0) velocity = (last.y - prev.y) / dt;
     }
 
     const dismissThreshold = window.innerHeight * 0.75;
