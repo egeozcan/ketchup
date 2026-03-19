@@ -238,6 +238,12 @@ export class DrawingCanvas extends LitElement {
       } else {
         this.mainCanvas.style.cursor = 'crosshair';
       }
+
+      // Re-render text preview when context state changes during editing
+      // (e.g., user changes font family/size/bold/italic/color mid-edit)
+      if (this._textEditing) {
+        this._renderTextPreview();
+      }
     }
   }
 
@@ -284,6 +290,7 @@ export class DrawingCanvas extends LitElement {
     this._panY = Math.round((this._vh - this._docHeight * this._zoom) / 2);
     this.composite();
     if (this._float) this._redrawFloatPreview();
+    if (this._textEditing) this._renderTextPreview();
     this._dispatchViewportChange();
   }
 
@@ -314,6 +321,7 @@ export class DrawingCanvas extends LitElement {
 
     this.composite();
     if (this._float) this._redrawFloatPreview();
+    if (this._textEditing) this._renderTextPreview();
     this._dispatchViewportChange();
   }
 
@@ -725,6 +733,7 @@ export class DrawingCanvas extends LitElement {
     this._panY = this._panStartOffsetY + (e.clientY - this._panStartY);
     this.composite();
     if (this._float) this._redrawFloatPreview();
+    if (this._textEditing) this._renderTextPreview();
   }
 
   private _endPan() {
@@ -780,6 +789,7 @@ export class DrawingCanvas extends LitElement {
 
       this.composite();
       if (this._float) this._redrawFloatPreview();
+    if (this._textEditing) this._renderTextPreview();
       this._dispatchZoomChange();
       return;
     }
@@ -790,6 +800,7 @@ export class DrawingCanvas extends LitElement {
     this._panY -= e.deltaY;
     this.composite();
     if (this._float) this._redrawFloatPreview();
+    if (this._textEditing) this._renderTextPreview();
     this._dispatchViewportChange();
   };
 
@@ -827,6 +838,7 @@ export class DrawingCanvas extends LitElement {
     this._panY = Math.round((this._vh - this._docHeight * this._zoom) / 2);
     this.composite();
     if (this._float) this._redrawFloatPreview();
+    if (this._textEditing) this._renderTextPreview();
     this._dispatchZoomChange();
   }
 
@@ -859,6 +871,7 @@ export class DrawingCanvas extends LitElement {
 
     this.composite();
     if (this._float) this._redrawFloatPreview();
+    if (this._textEditing) this._renderTextPreview();
     this._dispatchZoomChange();
   }
 
@@ -2364,6 +2377,9 @@ export class DrawingCanvas extends LitElement {
       } else {
         this._cancelText();
       }
+    } else if (e.key === 'Tab') {
+      // Prevent Tab from moving focus out of the hidden textarea
+      e.preventDefault();
     }
   }
 
