@@ -28,6 +28,7 @@ export class DrawingApp extends LitElement {
       height: 100%;
       background: #1e1e1e;
       font-family: system-ui, -apple-system, sans-serif;
+      position: relative;
     }
 
     .main-area {
@@ -55,14 +56,32 @@ export class DrawingApp extends LitElement {
       width: 32px;
     }
 
-    .right-sidebar layers-panel {
-      flex: 1;
-      min-height: 0;
+    layers-panel {
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 200px;
+      border-left: 1px solid #444;
+      background: #2c2c2c;
+      transition: width 0.2s ease;
+    }
+
+    layers-panel.panel-collapsed {
+      width: 32px;
+    }
+
+    :host([mobile]) layers-panel {
+      position: static;
+      width: auto;
+      border-left: none;
+      background: transparent;
     }
 
     /* ── Mobile layout ─────────────────────────── */
     :host([mobile]) {
       flex-direction: column;
+      padding-top: env(safe-area-inset-top);
     }
 
     :host([mobile]) tool-settings {
@@ -75,6 +94,10 @@ export class DrawingApp extends LitElement {
 
     :host([mobile]) .right-sidebar {
       display: none;
+    }
+
+    :host([mobile]) .main-area app-toolbar {
+      order: 1;
     }
   `;
 
@@ -1151,9 +1174,12 @@ export class DrawingApp extends LitElement {
             @navigator-pan=${this._onNavigatorPan}
             @navigator-zoom=${this._onNavigatorZoom}
           ></navigator-panel>
-          <layers-panel @commit-opacity=${this._onCommitOpacity}></layers-panel>
         </div>
       </div>
+      <layers-panel
+        class=${this._state.layersPanelOpen ? '' : 'panel-collapsed'}
+        @commit-opacity=${this._onCommitOpacity}
+      ></layers-panel>
     `;
   }
 }
