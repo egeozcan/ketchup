@@ -1745,7 +1745,11 @@ export class DrawingCanvas extends LitElement {
     if (y < 0) { h += y; y = 0; }
     w = Math.min(w, this._docWidth - x);
     h = Math.min(h, this._docHeight - y);
-    return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
+    const rx = Math.round(x), ry = Math.round(y);
+    let rw = Math.round(w), rh = Math.round(h);
+    rw = Math.min(rw, this._docWidth - rx);
+    rh = Math.min(rh, this._docHeight - ry);
+    return { x: rx, y: ry, w: rw, h: rh };
   }
 
   private _drawCropPreview() {
