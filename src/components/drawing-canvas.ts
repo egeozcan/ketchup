@@ -1714,8 +1714,9 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _handleCropPointerUp() {
+    const cropRatio = parseAspectRatio(this.ctx.state.cropAspectRatio);
     if (this._cropDragging && this._cropRect) {
-      this._cropRect = this._normalizeCropRect(this._cropRect);
+      this._cropRect = this._normalizeCropRect(this._cropRect, cropRatio);
       if (this._cropRect.w < 1 || this._cropRect.h < 1) {
         this._cropRect = null;
       }
@@ -1725,7 +1726,7 @@ export class DrawingCanvas extends LitElement {
     this._cropDragOrigin = null;
     this._cropRectOrigin = null;
     if (this._cropRect) {
-      this._cropRect = this._normalizeCropRect(this._cropRect);
+      this._cropRect = this._normalizeCropRect(this._cropRect, cropRatio);
       if (this._cropRect.w < 1 || this._cropRect.h < 1) {
         this._cropRect = null;
       }
@@ -1737,14 +1738,48 @@ export class DrawingCanvas extends LitElement {
     }
   }
 
-  private _normalizeCropRect(rect: CropRect): CropRect {
+  private _normalizeCropRect(rect: CropRect, ratio?: number | null): CropRect {
     let { x, y, w, h } = rect;
     if (w < 0) { x += w; w = -w; }
     if (h < 0) { y += h; h = -h; }
+    // If no explicit ratio was provided, derive from the rect's current dimensions
+    if (ratio === undefined && h > 0 && w > 0) {
+      ratio = w / h;
+    }
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
-    w = Math.min(w, this._docWidth - x);
-    h = Math.min(h, this._docHeight - y);
+    const maxW = this._docWidth - x;
+    const maxH = this._docHeight - y;
+    const wClamped = w > maxW;
+    const hClamped = h > maxH;
+    w = Math.min(w, maxW);
+    h = Math.min(h, maxH);
+    if (ratio && (wClamped || hClamped)) {
+      if (wClamped && hClamped) {
+        // Both clamped: pick whichever produces the smaller rect that fits
+        const hFromW = w / ratio;
+        const wFromH = h * ratio;
+        if (hFromW <= maxH) {
+          h = hFromW;
+        } else if (wFromH <= maxW) {
+          w = wFromH;
+        } else {
+          // Both overflow — shrink to fit both constraints
+          if (w / h > ratio) {
+            w = h * ratio;
+          } else {
+            h = w / ratio;
+          }
+        }
+      } else if (wClamped) {
+        h = w / ratio;
+      } else {
+        w = h * ratio;
+      }
+      // Re-clamp after ratio adjustment
+      w = Math.min(w, this._docWidth - x);
+      h = Math.min(h, this._docHeight - y);
+    }
     const rx = Math.round(x), ry = Math.round(y);
     let rw = Math.round(w), rh = Math.round(h);
     rw = Math.min(rw, this._docWidth - rx);
