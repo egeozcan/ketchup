@@ -1726,6 +1726,11 @@ export class DrawingCanvas extends LitElement {
     this._cropRectOrigin = null;
     if (this._cropRect) {
       this._cropRect = this._normalizeCropRect(this._cropRect);
+      if (this._cropRect.w < 1 || this._cropRect.h < 1) {
+        this._cropRect = null;
+      }
+    }
+    if (this._cropRect) {
       this._drawCropPreview();
     } else {
       this._clearCropPreview();
