@@ -1877,17 +1877,18 @@ export class DrawingCanvas extends LitElement {
     const x = Math.round(centerX - w / 2);
     const y = Math.round(centerY - h / 2);
 
+    // Store full-resolution source for quality resampling during resize
     const src = document.createElement('canvas');
-    src.width = w;
-    src.height = h;
-    src.getContext('2d')!.drawImage(img, 0, 0, w, h);
-    const imageData = src.getContext('2d')!.getImageData(0, 0, w, h);
+    src.width = img.naturalWidth;
+    src.height = img.naturalHeight;
+    src.getContext('2d')!.drawImage(img, 0, 0);
+    const imageData = src.getContext('2d')!.getImageData(0, 0, img.naturalWidth, img.naturalHeight);
     this._floatSrcCanvas = src;
 
     const tmp = document.createElement('canvas');
     tmp.width = w;
     tmp.height = h;
-    tmp.getContext('2d')!.drawImage(src, 0, 0);
+    tmp.getContext('2d')!.drawImage(src, 0, 0, w, h);
 
     this._float = {
       originalImageData: imageData,
