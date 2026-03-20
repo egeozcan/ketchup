@@ -90,7 +90,7 @@ describe('LayersPanel rename', () => {
 });
 
 describe('LayersPanel drop cleanup', () => {
-  it('clears drop indicators when an external drop has no dragged layer', () => {
+  it('clears drop indicators when pointer-up fires with no dragged layer', () => {
     const panel = new LayersPanel();
 
     (panel as any)._ctx = {
@@ -106,10 +106,6 @@ describe('LayersPanel drop cleanup', () => {
       },
     };
 
-    // Simulate: an external file drag entered a layer row and left
-    // drop indicators via _onDragOver, then the file was dropped on
-    // the panel. _draggedLayerId is null (drag didn't start from a row).
-
     // Create a fake row with a lingering indicator
     const row = document.createElement('div');
     row.classList.add('layer-row', 'drop-above');
@@ -121,19 +117,15 @@ describe('LayersPanel drop cleanup', () => {
       value: { querySelectorAll: (sel: string) => sel === '.layer-row' ? [row] : [] },
     });
 
-    // No dragged layer — simulates an external file drop
+    // No dragged layer — simulates pointer-up without a valid drag
     (panel as any)._draggedLayerId = null;
+    (panel as any)._dragPointerId = 1;
 
-    const dropEvent = {
-      preventDefault: vi.fn(),
-      target: row,
-      clientY: 50,
-    } as unknown as DragEvent;
+    const pointerUpEvent = { pointerId: 1 } as PointerEvent;
 
-    (panel as any)._onDrop(dropEvent);
+    (panel as any)._onReorderPointerUp(pointerUpEvent);
 
-    // BUG: _onDrop returns early without clearing indicators when
-    // _draggedLayerId is null. The 'drop-above' class stays stuck.
+    // _onReorderPointerUp should call _clearDragState which clears indicators
     expect(row.classList.contains('drop-above')).toBe(false);
   });
 });

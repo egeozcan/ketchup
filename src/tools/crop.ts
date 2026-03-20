@@ -174,5 +174,16 @@ export function constrainCropToRatio(
     }
   }
 
-  return { x, y, w: newW * signW, h: newH * signH };
+  const adjW = newW * signW;
+  const adjH = newH * signH;
+
+  // For handles that move the left edge, recalculate x so the right edge stays fixed.
+  const adjustX = handle === 'nw' || handle === 'w' || handle === 'sw';
+  // For handles that move the top edge, recalculate y so the bottom edge stays fixed.
+  const adjustY = handle === 'nw' || handle === 'n' || handle === 'ne';
+
+  const newX = adjustX ? (x + w) - adjW : x;
+  const newY = adjustY ? (y + h) - adjH : y;
+
+  return { x: newX, y: newY, w: adjW, h: adjH };
 }
