@@ -158,6 +158,73 @@ export class AppToolbar extends LitElement {
       padding-bottom: 8px;
       border-bottom: 1px solid #444;
     }
+
+    .popover-divider {
+      height: 1px;
+      background: #444;
+    }
+
+    .popover-label {
+      font-size: 0.7rem;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 0 4px;
+    }
+
+    .popover .project-list {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      max-height: 40vh;
+      overflow-y: auto;
+    }
+
+    .popover .project-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      padding: 8px 10px;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: #bbb;
+      font-size: 0.85rem;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .popover .project-item:hover {
+      background: #444;
+    }
+
+    .popover .project-item.current {
+      background: #3a3a3a;
+      color: #fff;
+    }
+
+    .popover .project-item .check {
+      width: 16px;
+      flex-shrink: 0;
+      color: #5b8cf7;
+    }
+
+    .popover button.menu-btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      height: auto;
+      padding: 10px;
+      font-size: 0.85rem;
+      text-align: left;
+      border-radius: 6px;
+    }
+
+    .popover button.menu-btn svg {
+      flex-shrink: 0;
+    }
   `;
 
   @state() private _popoverGroup: number | null = null;
@@ -331,8 +398,25 @@ export class AppToolbar extends LitElement {
   private _renderPopoverContent(activeTool: ToolType) {
     if (this._popoverGroup === -1) {
       return html`
-        <button title="Save" @click=${() => { this.ctx.saveCanvas(); this._closePopover(); }}>${actionIcons.save} Save</button>
-        <button title="Clear canvas" @click=${() => { this.ctx.clearCanvas(); this._closePopover(); }}>${actionIcons.clear} Clear</button>
+        <span class="popover-label">Projects</span>
+        <div class="project-list">
+          ${this.ctx.projectList.map(p => html`
+            <button
+              class="project-item ${p.id === this.ctx.currentProject?.id ? 'current' : ''}"
+              @click=${() => { this.ctx.switchProject(p.id); this._closePopover(); }}
+            >
+              <span class="check">${p.id === this.ctx.currentProject?.id ? '\u2713' : ''}</span>
+              ${p.name}
+            </button>
+          `)}
+        </div>
+        <button class="menu-btn" @click=${() => { this.ctx.createProject('Untitled', 800, 600); this._closePopover(); }}>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          New Project
+        </button>
+        <div class="popover-divider"></div>
+        <button class="menu-btn" title="Save" @click=${() => { this.ctx.saveCanvas(); this._closePopover(); }}>${actionIcons.save} Save</button>
+        <button class="menu-btn" title="Clear canvas" @click=${() => { this.ctx.clearCanvas(); this._closePopover(); }}>${actionIcons.clear} Clear</button>
       `;
     }
 

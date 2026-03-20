@@ -564,6 +564,10 @@ export class ToolSettings extends LitElement {
       width: 100%;
     }
 
+    :host([mobile]) .separator {
+      display: none;
+    }
+
     :host([mobile]) input[type="range"] {
       width: 100%;
     }
@@ -864,45 +868,49 @@ export class ToolSettings extends LitElement {
     if (!this._ctx.value) return html``;
     const { strokeColor, fillColor, useFill, brushSize, activeTool, stampImage } = this.ctx.state;
 
-    return html`
-      <div class="section project-section">
-        <div class="project-dropdown-wrap">
-          <button class="project-name-btn" @click=${this._toggleProjectDropdown}>
-            ${this.ctx.currentProject?.name ?? 'Untitled'}
-            <span class="dropdown-arrow">&#9662;</span>
-          </button>
-          ${this._projectDropdownOpen ? html`
-            <div class="project-dropdown">
-              ${this.ctx.projectList.map(p => html`
-                <div class="project-item ${p.id === this.ctx.currentProject?.id ? 'active' : ''}">
-                  ${this._renamingProjectId === p.id ? html`
-                    <input
-                      class="project-rename-input"
-                      .value=${p.name}
-                      @keydown=${(e: KeyboardEvent) => this._onRenameKeydown(e, p.id)}
-                      @blur=${(e: FocusEvent) => this._commitRename(e, p.id)}
-                    />
-                  ` : html`
-                    <span class="project-item-name" @click=${() => this._onSelectProject(p.id)}>
-                      ${p.name}
-                    </span>
-                    <button class="project-item-action" title="Rename" @click=${(e: Event) => this._startRename(e, p.id)}>&#9998;</button>
-                    <button class="project-item-action delete" title="Delete" @click=${(e: Event) => this._onDeleteProject(e, p.id)}>&#10005;</button>
-                  `}
-                </div>
-              `)}
-              <div class="project-dropdown-divider"></div>
-              <button class="project-new-btn" @click=${this._onNewProject}>+ New Project</button>
-            </div>
-          ` : ''}
-        </div>
-      </div>
-      <div class="separator"></div>
+    const isMobile = this.ctx.isMobile;
 
-      <div class="section" style="color:#888;font-size:0.75rem;">
-        ${this.ctx.state.documentWidth} \u00d7 ${this.ctx.state.documentHeight}
-      </div>
-      <div class="separator"></div>
+    return html`
+      ${!isMobile ? html`
+        <div class="section project-section">
+          <div class="project-dropdown-wrap">
+            <button class="project-name-btn" @click=${this._toggleProjectDropdown}>
+              ${this.ctx.currentProject?.name ?? 'Untitled'}
+              <span class="dropdown-arrow">&#9662;</span>
+            </button>
+            ${this._projectDropdownOpen ? html`
+              <div class="project-dropdown">
+                ${this.ctx.projectList.map(p => html`
+                  <div class="project-item ${p.id === this.ctx.currentProject?.id ? 'active' : ''}">
+                    ${this._renamingProjectId === p.id ? html`
+                      <input
+                        class="project-rename-input"
+                        .value=${p.name}
+                        @keydown=${(e: KeyboardEvent) => this._onRenameKeydown(e, p.id)}
+                        @blur=${(e: FocusEvent) => this._commitRename(e, p.id)}
+                      />
+                    ` : html`
+                      <span class="project-item-name" @click=${() => this._onSelectProject(p.id)}>
+                        ${p.name}
+                      </span>
+                      <button class="project-item-action" title="Rename" @click=${(e: Event) => this._startRename(e, p.id)}>&#9998;</button>
+                      <button class="project-item-action delete" title="Delete" @click=${(e: Event) => this._onDeleteProject(e, p.id)}>&#10005;</button>
+                    `}
+                  </div>
+                `)}
+                <div class="project-dropdown-divider"></div>
+                <button class="project-new-btn" @click=${this._onNewProject}>+ New Project</button>
+              </div>
+            ` : ''}
+          </div>
+        </div>
+        <div class="separator"></div>
+
+        <div class="section" style="color:#888;font-size:0.75rem;">
+          ${this.ctx.state.documentWidth} \u00d7 ${this.ctx.state.documentHeight}
+        </div>
+        <div class="separator"></div>
+      ` : ''}
 
       <div class="section">
         <label>Color</label>

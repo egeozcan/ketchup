@@ -628,11 +628,16 @@ export class LayersPanel extends LitElement {
   // ── Mobile bottom sheet ─────────────────────
 
   openSheet() {
-    const sheetHeight = window.innerHeight * 0.9;
     this._sheetSnapFull = 0;
-    this._sheetSnapHalf = sheetHeight * 0.5;
-    this._sheetY = this._sheetSnapHalf;
+    this._sheetY = 0;
     this._sheetOpen = true;
+    this.updateComplete.then(() => this._measureSnaps());
+  }
+
+  private _measureSnaps() {
+    const sheet = this.shadowRoot?.querySelector('.sheet') as HTMLElement;
+    const h = sheet ? sheet.offsetHeight : window.innerHeight * 0.9;
+    this._sheetSnapHalf = Math.floor(h * 0.5);
   }
 
   closeSheet() {
@@ -650,10 +655,11 @@ export class LayersPanel extends LitElement {
   };
 
   private _recalcSnapPoints() {
-    const sheetHeight = window.innerHeight * 0.9;
+    const sheet = this.shadowRoot?.querySelector('.sheet') as HTMLElement;
+    const h = sheet ? sheet.offsetHeight : window.innerHeight * 0.9;
     const oldSnapHalf = this._sheetSnapHalf;
     this._sheetSnapFull = 0;
-    this._sheetSnapHalf = sheetHeight * 0.5;
+    this._sheetSnapHalf = Math.floor(h * 0.5);
     if (oldSnapHalf > 0) {
       if (this._sheetY === oldSnapHalf) {
         this._sheetY = this._sheetSnapHalf;
