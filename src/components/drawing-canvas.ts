@@ -489,11 +489,13 @@ export class DrawingCanvas extends LitElement {
       this._drawing = false;
       this._lastPoint = null;
       this._startPoint = null;
+      const hadBeforeData = this._beforeDrawData !== null;
       this._pushDrawHistory();
       if (this.previewCanvas) {
         this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
       }
       this.composite();
+      if (!hadBeforeData) return;
     }
     if (this._moveTempCanvas) {
       this._moveTempCanvas = null;
