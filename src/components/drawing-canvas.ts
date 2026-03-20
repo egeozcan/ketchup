@@ -2348,7 +2348,7 @@ export class DrawingCanvas extends LitElement {
         const inspected = this._history.slice(addLayerIdx, this._historyIndex + 1);
         const kept = inspected.filter(entry => {
           const entryLayerId = this._getEntryLayerId(entry);
-          return entryLayerId !== null && entryLayerId !== layerId;
+          return entryLayerId === null || entryLayerId !== layerId;
         });
         this._history = [...before, ...kept];
         this._historyIndex = this._history.length - 1;
