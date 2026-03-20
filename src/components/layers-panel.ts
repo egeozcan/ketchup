@@ -412,7 +412,7 @@ export class LayersPanel extends LitElement {
     return this._ctx.value!;
   }
 
-  private _floatDetail: { tempCanvas: HTMLCanvasElement; rect: { x: number; y: number; w: number; h: number }; layerId: string } | null = null;
+  private _floatDetail: { tempCanvas: HTMLCanvasElement; rect: { x: number; y: number; w: number; h: number }; layerId: string; rotation?: number } | null = null;
 
   private _onComposited = (e: Event) => {
     this._floatDetail = (e as CustomEvent).detail;
@@ -1004,14 +1004,24 @@ export class LayersPanel extends LitElement {
       ctx.drawImage(layer.canvas, 0, 0, thumb.width, thumb.height);
       // Draw floating selection content onto the active layer's thumbnail
       if (this._floatDetail && layer.id === this._floatDetail.layerId) {
-        const { tempCanvas, rect } = this._floatDetail;
+        const { tempCanvas, rect, rotation } = this._floatDetail;
         const cw = layer.canvas.width;
         const ch = layer.canvas.height;
         const sx = (rect.x / cw) * thumb.width;
         const sy = (rect.y / ch) * thumb.height;
         const sw = (rect.w / cw) * thumb.width;
         const sh = (rect.h / ch) * thumb.height;
-        ctx.drawImage(tempCanvas, sx, sy, sw, sh);
+        if (rotation) {
+          const cx = sx + sw / 2;
+          const cy = sy + sh / 2;
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate(rotation);
+          ctx.drawImage(tempCanvas, -sw / 2, -sh / 2, sw, sh);
+          ctx.restore();
+        } else {
+          ctx.drawImage(tempCanvas, sx, sy, sw, sh);
+        }
       }
       ctx.globalAlpha = 1.0;
     });
