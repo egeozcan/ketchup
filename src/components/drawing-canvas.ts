@@ -1741,8 +1741,8 @@ export class DrawingCanvas extends LitElement {
     let { x, y, w, h } = rect;
     if (w < 0) { x += w; w = -w; }
     if (h < 0) { y += h; h = -h; }
-    x = Math.max(0, x);
-    y = Math.max(0, y);
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
     w = Math.min(w, this._docWidth - x);
     h = Math.min(h, this._docHeight - y);
     return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
