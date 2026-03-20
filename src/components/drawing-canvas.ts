@@ -2288,7 +2288,11 @@ export class DrawingCanvas extends LitElement {
     if (!this._beforeDrawData) {
       this._captureBeforeDraw();
     }
-    this._pushDrawHistory();
+    // Force: a pasted float never modifies the layer canvas, so before/after
+    // are identical. Without force the no-op check silently drops the entry,
+    // making the delete irreversible and causing the next undo to affect an
+    // unrelated operation.
+    this._pushDrawHistory(true);
     this.composite();
     this._clearFloatState();
   }
