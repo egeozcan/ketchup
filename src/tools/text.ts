@@ -6,7 +6,8 @@ export function buildFontString(
   bold: boolean,
   italic: boolean,
 ): string {
-  return `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}${fontSize}px ${fontFamily}`;
+  const family = fontFamily.includes(' ') ? `'${fontFamily}'` : fontFamily;
+  return `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}${fontSize}px ${family}`;
 }
 
 /**
