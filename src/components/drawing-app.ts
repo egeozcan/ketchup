@@ -1006,6 +1006,8 @@ export class DrawingApp extends LitElement {
       }
       case 'reorder': {
         const newLayers = [...this._state.layers];
+        if (detail.fromIndex < 0 || detail.fromIndex >= newLayers.length ||
+            detail.toIndex < 0 || detail.toIndex >= newLayers.length) break;
         const [moved] = newLayers.splice(detail.fromIndex, 1);
         newLayers.splice(detail.toIndex, 0, moved);
         this._state = { ...this._state, layers: newLayers };
