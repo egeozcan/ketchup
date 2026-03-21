@@ -858,8 +858,9 @@ export class LayersPanel extends LitElement {
 
   // ── Context menu ───────────────────────────
 
-  private _onContextMenu(e: MouseEvent) {
+  private _onContextMenu(e: MouseEvent, layerId: string) {
     e.preventDefault();
+    this._selectLayer(layerId);
     this._contextMenuX = e.clientX;
     this._contextMenuY = e.clientY;
     this._contextMenuOpen = true;
@@ -1035,7 +1036,7 @@ export class LayersPanel extends LitElement {
         class="layer-row ${isActive ? 'active' : ''} ${this._draggedLayerId === layer.id ? 'dragging' : ''}"
         data-layer-id=${layer.id}
         @click=${() => this._selectLayer(layer.id)}
-        @contextmenu=${(e: MouseEvent) => this._onContextMenu(e)}
+        @contextmenu=${(e: MouseEvent) => this._onContextMenu(e, layer.id)}
         @pointerdown=${(e: PointerEvent) => this._onReorderPointerDown(layer, e)}
         @pointermove=${(e: PointerEvent) => this._onReorderPointerMove(e)}
         @pointerup=${(e: PointerEvent) => this._onReorderPointerUp(e)}
