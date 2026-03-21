@@ -8,7 +8,7 @@ export function drawMarkerSegment(
   size: number,
 ) {
   ctx.save();
-  ctx.globalCompositeOperation = 'multiply';
+  ctx.globalCompositeOperation = 'source-over';
   ctx.strokeStyle = color;
   ctx.lineWidth = size * 3;
   ctx.lineCap = 'round';
