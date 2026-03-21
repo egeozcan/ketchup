@@ -40,43 +40,42 @@ The merged layer inherits the target layer's `id`, `name`, and `visible` state. 
 
 ## History
 
-A new `merge` variant in the `HistoryEntry` discriminated union:
+A new `merge` variant in the `HistoryEntry` discriminated union, following the same `beforeLayers`/`afterLayers` pattern as `crop`:
 
 ```typescript
 {
   type: 'merge';
-  sourceLayers: LayerSnapshot[];  // ALL layers before the merge (including hidden layers for Flatten), with their ImageData
-  sourceIndices: number[];        // original pre-removal positions in the layers array
-  mergedLayer: LayerSnapshot;     // the result layer with its ImageData
-  mergedIndex: number;            // position of the result in the layers array
-  previousActiveLayerId: string;  // to restore active layer on undo
+  beforeLayers: LayerSnapshot[];      // full layer stack snapshot before merge
+  afterLayers: LayerSnapshot[];       // full layer stack snapshot after merge
+  previousActiveLayerId: string;      // active layer ID before merge
+  afterActiveLayerId: string;         // active layer ID after merge
 }
 ```
 
-**Undo:** Remove the merged layer, restore all source layers at their original indices (inserted in order), restore the previous active layer ID.
+**Undo:** Replace the entire layer stack with `beforeLayers` (recreating canvases from ImageData), set active layer to `previousActiveLayerId`.
 
-**Redo:** Remove source layers, insert the merged layer at `mergedIndex`, set the merged layer as active (using `mergedLayer.id`).
+**Redo:** Replace the entire layer stack with `afterLayers` (recreating canvases from ImageData), set active layer to `afterActiveLayerId`.
 
-This follows the same snapshot approach as `crop`. Memory cost is proportional to the layers involved.
+This is the same approach as `crop` — a full stack snapshot avoids surgical index math and handles all three merge operations uniformly. Memory cost is proportional to total layer count, same trade-off as crop.
 
 ## Undo/Redo Flow
 
-Merge operations are layer structural operations and follow the existing event-based undo pattern:
+Merge operations are layer structural operations and follow the existing event-based undo pattern, reusing the same `crop-restore` mechanism:
 
 **Recording:** `drawing-app.ts` calls `this.canvas.pushLayerOperation(mergeEntry)` after performing the merge.
 
 **Undo path:**
 
 1. `drawing-canvas.ts` `_applyUndo()` matches `type: 'merge'`.
-2. Dispatches `layer-undo` custom event with action `'restore-merge'` and the source layer snapshots/indices.
-3. `drawing-app.ts` `_onLayerUndo()` handles `'restore-merge'`: removes merged layer, recreates source layers from snapshots at their original indices, restores active layer ID.
+2. Dispatches `layer-undo` custom event with action `'crop-restore'` and `beforeLayers`.
+3. `drawing-app.ts` `_onLayerUndo()` handles `'crop-restore'` (existing handler): replaces layer stack, restores active layer ID.
 4. Calls `_markDirty()` and `composite()`.
 
 **Redo path:**
 
 1. `drawing-canvas.ts` `_applyRedo()` matches `type: 'merge'`.
-2. Dispatches `layer-undo` custom event with action `'apply-merge'` and the merged layer snapshot/index.
-3. `drawing-app.ts` handles it: removes source layers, inserts merged layer, sets it active.
+2. Dispatches `layer-undo` custom event with action `'crop-restore'` and `afterLayers`.
+3. `drawing-app.ts` handles it via the existing `'crop-restore'` handler: replaces layer stack, sets active layer.
 
 ## UI Integration
 
