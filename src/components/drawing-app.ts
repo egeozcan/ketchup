@@ -730,7 +730,8 @@ export class DrawingApp extends LitElement {
         this._markDirty();
       },
       setBrushSize: (size: number) => {
-        this._state = { ...this._state, brushSize: size };
+        const safe = Number.isFinite(size) ? size : 1;
+        this._state = { ...this._state, brushSize: Math.max(1, Math.min(200, safe)) };
         this._markDirty();
       },
       setStampImage: (img: HTMLImageElement | null) => {
