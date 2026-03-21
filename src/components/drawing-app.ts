@@ -1061,6 +1061,25 @@ export class DrawingApp extends LitElement {
         this._state = { ...this._state, layers: newLayers };
         break;
       }
+      case 'stack-replace': {
+        const snapshots = detail.layers as LayerSnapshot[];
+        const activeLayerId = detail.activeLayerId as string;
+        const newLayers: Layer[] = snapshots.map(snap => {
+          const canvas = document.createElement('canvas');
+          canvas.width = snap.imageData.width;
+          canvas.height = snap.imageData.height;
+          canvas.getContext('2d')!.putImageData(snap.imageData, 0, 0);
+          return {
+            id: snap.id,
+            name: snap.name,
+            visible: snap.visible,
+            opacity: snap.opacity,
+            canvas,
+          };
+        });
+        this._state = { ...this._state, layers: newLayers, activeLayerId };
+        break;
+      }
     }
     this._markDirty();
   }
