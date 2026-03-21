@@ -977,7 +977,7 @@ export class DrawingApp extends LitElement {
         const newLayers = this._state.layers.filter(l => l.id !== detail.layerId);
         if (newLayers.length === 0) return;
         const newActiveId = this._state.activeLayerId === detail.layerId
-          ? newLayers[Math.min(removedIdx, newLayers.length - 1)].id
+          ? newLayers[Math.min(Math.max(0, removedIdx - 1), newLayers.length - 1)].id
           : this._state.activeLayerId;
         this._state = { ...this._state, layers: newLayers, activeLayerId: newActiveId };
         break;
