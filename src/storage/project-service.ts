@@ -63,6 +63,7 @@ export class ProjectService {
     const all = await this._storage.stamps.list(projectId);
     if (all.length > this._maxStamps) {
       const toDelete = all
+        .filter(s => s.id !== entry.id)
         .sort((a, b) => a.createdAt - b.createdAt)
         .slice(0, all.length - this._maxStamps);
       for (const old of toDelete) {
