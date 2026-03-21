@@ -834,7 +834,8 @@ export class DrawingApp extends LitElement {
         this._markDirty();
       },
       setFontSize: (size: number) => {
-        this._state = { ...this._state, fontSize: Math.max(8, Math.min(200, size)) };
+        const safe = Number.isFinite(size) ? size : 8;
+        this._state = { ...this._state, fontSize: Math.max(8, Math.min(200, safe)) };
         this._markDirty();
       },
       setFontBold: (bold: boolean) => {
