@@ -451,6 +451,7 @@ export class DrawingCanvas extends LitElement {
       case 'reorder':
         return null;
       case 'crop':
+      case 'merge':
         return null;
     }
   }
@@ -613,6 +614,17 @@ export class DrawingCanvas extends LitElement {
         }));
         break;
       }
+      case 'merge': {
+        this.dispatchEvent(new CustomEvent('layer-undo', {
+          bubbles: true, composed: true,
+          detail: {
+            action: 'stack-replace',
+            layers: entry.beforeLayers,
+            activeLayerId: entry.previousActiveLayerId,
+          },
+        }));
+        break;
+      }
     }
   }
 
@@ -687,6 +699,17 @@ export class DrawingCanvas extends LitElement {
             layers: entry.afterLayers,
             width: entry.afterWidth,
             height: entry.afterHeight,
+          },
+        }));
+        break;
+      }
+      case 'merge': {
+        this.dispatchEvent(new CustomEvent('layer-undo', {
+          bubbles: true, composed: true,
+          detail: {
+            action: 'stack-replace',
+            layers: entry.afterLayers,
+            activeLayerId: entry.afterActiveLayerId,
           },
         }));
         break;

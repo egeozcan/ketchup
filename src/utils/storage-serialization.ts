@@ -104,6 +104,17 @@ export async function serializeHistoryEntry(
         afterWidth: entry.afterWidth, afterHeight: entry.afterHeight,
       };
     }
+    case 'merge': {
+      const [beforeLayers, afterLayers] = await Promise.all([
+        Promise.all(entry.beforeLayers.map((l) => serializeSnapshot(l, blobs))),
+        Promise.all(entry.afterLayers.map((l) => serializeSnapshot(l, blobs))),
+      ]);
+      return {
+        type: 'merge', beforeLayers, afterLayers,
+        previousActiveLayerId: entry.previousActiveLayerId,
+        afterActiveLayerId: entry.afterActiveLayerId,
+      };
+    }
     case 'reorder':
     case 'visibility':
     case 'opacity':
@@ -137,6 +148,17 @@ export async function deserializeHistoryEntry(
         type: 'crop', beforeLayers, afterLayers,
         beforeWidth: entry.beforeWidth, beforeHeight: entry.beforeHeight,
         afterWidth: entry.afterWidth, afterHeight: entry.afterHeight,
+      };
+    }
+    case 'merge': {
+      const [beforeLayers, afterLayers] = await Promise.all([
+        Promise.all(entry.beforeLayers.map((l) => deserializeSnapshot(l, blobs))),
+        Promise.all(entry.afterLayers.map((l) => deserializeSnapshot(l, blobs))),
+      ]);
+      return {
+        type: 'merge', beforeLayers, afterLayers,
+        previousActiveLayerId: entry.previousActiveLayerId,
+        afterActiveLayerId: entry.afterActiveLayerId,
       };
     }
     case 'reorder':
