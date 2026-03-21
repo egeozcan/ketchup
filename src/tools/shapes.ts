@@ -53,11 +53,15 @@ export function drawShapePreview(
     }
 
     case 'triangle': {
-      const midX = (start.x + end.x) / 2;
+      const x = Math.min(start.x, end.x);
+      const y = Math.min(start.y, end.y);
+      const w = Math.abs(end.x - start.x);
+      const h = Math.abs(end.y - start.y);
+      const midX = x + w / 2;
       ctx.beginPath();
-      ctx.moveTo(midX, start.y);
-      ctx.lineTo(end.x, end.y);
-      ctx.lineTo(start.x, end.y);
+      ctx.moveTo(midX, y);
+      ctx.lineTo(x + w, y + h);
+      ctx.lineTo(x, y + h);
       ctx.closePath();
       if (useFill) ctx.fill();
       ctx.stroke();
