@@ -60,22 +60,24 @@ This is the same approach as `crop` — a full stack snapshot avoids surgical in
 
 ## Undo/Redo Flow
 
-Merge operations are layer structural operations and follow the existing event-based undo pattern, reusing the same `crop-restore` mechanism:
+Merge operations are layer structural operations and follow the existing event-based undo pattern:
 
 **Recording:** `drawing-app.ts` calls `this.canvas.pushLayerOperation(mergeEntry)` after performing the merge.
 
 **Undo path:**
 
 1. `drawing-canvas.ts` `_applyUndo()` matches `type: 'merge'`.
-2. Dispatches `layer-undo` custom event with action `'crop-restore'` and `beforeLayers`.
-3. `drawing-app.ts` `_onLayerUndo()` handles `'crop-restore'` (existing handler): replaces layer stack, restores active layer ID.
+2. Dispatches `layer-undo` custom event with action `'stack-replace'`, passing `beforeLayers` and `previousActiveLayerId`.
+3. `drawing-app.ts` `_onLayerUndo()` handles `'stack-replace'`: replaces the entire `layers` array by recreating layers from the snapshots (new canvas per snapshot, drawn from ImageData), sets active layer ID.
 4. Calls `_markDirty()` and `composite()`.
 
 **Redo path:**
 
 1. `drawing-canvas.ts` `_applyRedo()` matches `type: 'merge'`.
-2. Dispatches `layer-undo` custom event with action `'crop-restore'` and `afterLayers`.
-3. `drawing-app.ts` handles it via the existing `'crop-restore'` handler: replaces layer stack, sets active layer.
+2. Dispatches `layer-undo` custom event with action `'stack-replace'`, passing `afterLayers` and `afterActiveLayerId`.
+3. `drawing-app.ts` handles it via the same `'stack-replace'` handler.
+
+**Note:** The existing `crop-restore` handler maps over current layers by ID and cannot add/remove layers. A new `'stack-replace'` action is needed that fully replaces the layer array from snapshots. This handler does not change document dimensions (unlike crop). The `_getEntryLayerId` method in `drawing-canvas.ts` needs a `case 'merge'` returning `null`.
 
 ## UI Integration
 
@@ -124,3 +126,5 @@ None for now. Can be added later if needed.
 - `src/components/drawing-app.ts` — implement merge logic, push history, handle undo/redo events
 - `src/components/drawing-canvas.ts` — handle `merge` type in `_applyUndo`/`_applyRedo`, dispatch layer-undo events
 - `src/components/layers-panel.ts` — add context menu and action bar dropdown menu
+- `src/storage/types.ts` — add `merge` variant to `SerializedHistoryEntry` for persistence
+- `src/utils/storage-serialization.ts` — add `merge` case to serialize/deserialize switches
