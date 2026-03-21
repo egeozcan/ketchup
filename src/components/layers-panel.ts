@@ -966,6 +966,7 @@ export class LayersPanel extends LitElement {
         <div
           class="context-menu"
           style="left:${this._contextMenuX}px;top:${this._contextMenuY}px"
+          @click=${(e: Event) => e.stopPropagation()}
         >
           <button
             class="context-menu-item"
