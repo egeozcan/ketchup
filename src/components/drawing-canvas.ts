@@ -2057,7 +2057,7 @@ export class DrawingCanvas extends LitElement {
     }
 
     const { currentRect, tempCanvas } = this._float;
-    layerCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y), Math.round(currentRect.w), Math.round(currentRect.h));
+    layerCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y), Math.max(1, Math.round(currentRect.w)), Math.max(1, Math.round(currentRect.h)));
 
     this._pushDrawHistory(true);
     this.composite();
