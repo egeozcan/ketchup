@@ -56,7 +56,7 @@ export class ToolSettings extends LitElement {
       display: flex;
       flex-wrap: wrap;
       gap: 0.1875rem;
-      max-width: 12.5rem;
+      max-width: 15rem;
     }
 
     .color-swatch {
