@@ -2370,6 +2370,14 @@ export class DrawingCanvas extends LitElement {
       this._pushDrawHistory();
       this.composite();
     }
+    // Cancel any in-progress selection drag (before a float is created)
+    if (this._selectionDrawing) {
+      this._selectionDrawing = false;
+      this._startPoint = null;
+      if (this.previewCanvas) {
+        this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
+      }
+    }
     this._commitFloat();
   }
 
