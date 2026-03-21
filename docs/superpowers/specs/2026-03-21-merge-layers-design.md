@@ -14,7 +14,7 @@ Composites all visible layers (respecting opacity and z-order) onto a single lay
 
 ### Flatten Image
 
-Composites all visible layers onto a single layer at the bottom. Hidden layers are discarded (not drawn). The result keeps the bottom-most layer's name with opacity 1.0. The canvas is left with exactly one layer. Disabled when there is only 1 layer.
+Composites all visible layers onto a single layer at the bottom. Hidden layers are discarded (not drawn). The result keeps the bottom-most visible layer's name and ID, with opacity 1.0. The canvas is left with exactly one layer. Disabled when there is only 1 layer.
 
 ### Preconditions
 
