@@ -45,8 +45,8 @@ A new `merge` variant in the `HistoryEntry` discriminated union:
 ```typescript
 {
   type: 'merge';
-  sourceLayers: LayerSnapshot[];  // all layers involved, with their ImageData
-  sourceIndices: number[];        // original positions in the layers array
+  sourceLayers: LayerSnapshot[];  // ALL layers before the merge (including hidden layers for Flatten), with their ImageData
+  sourceIndices: number[];        // original pre-removal positions in the layers array
   mergedLayer: LayerSnapshot;     // the result layer with its ImageData
   mergedIndex: number;            // position of the result in the layers array
   previousActiveLayerId: string;  // to restore active layer on undo
@@ -55,7 +55,7 @@ A new `merge` variant in the `HistoryEntry` discriminated union:
 
 **Undo:** Remove the merged layer, restore all source layers at their original indices (inserted in order), restore the previous active layer ID.
 
-**Redo:** Remove source layers, insert the merged layer at `mergedIndex`, set it as active.
+**Redo:** Remove source layers, insert the merged layer at `mergedIndex`, set the merged layer as active (using `mergedLayer.id`).
 
 This follows the same snapshot approach as `crop`. Memory cost is proportional to the layers involved.
 
@@ -112,10 +112,10 @@ None for now. Can be added later if needed.
 - **Floating selection:** Committed before any merge operation.
 - **Active layer after merge:**
   - Merge Down: the merged (lower) layer becomes active.
-  - Merge Visible: the merged layer (at bottom-most visible position) becomes active.
+  - Merge Visible: the merged result layer becomes active, regardless of which layer was previously active (even if the active layer was visible and got merged away).
   - Flatten: the single remaining layer becomes active.
 - **All layers hidden except one:** "Merge Visible" is disabled (needs 2+ visible). "Flatten" still works.
-- **Active layer is hidden during Merge Visible:** Hidden layers are kept and not involved. The active layer stays active if it is hidden.
+- **Active layer is hidden during Merge Visible:** Hidden layers are kept and not involved in the merge. If the active layer is hidden, it remains in the layer stack and stays active.
 - **Canvas dimensions:** All operations work at existing document dimensions. No canvas resizing.
 
 ## Files Modified
