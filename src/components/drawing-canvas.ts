@@ -863,6 +863,8 @@ export class DrawingCanvas extends LitElement {
     this._panX = panX;
     this._panY = panY;
     this.composite();
+    if (this._float) this._redrawFloatPreview();
+    if (this._textEditing) this._renderTextPreview();
     this._dispatchViewportChange();
   }
 
