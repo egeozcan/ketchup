@@ -57,6 +57,13 @@ export type SerializedHistoryEntry =
       beforeHeight: number;
       afterWidth: number;
       afterHeight: number;
+    }
+  | {
+      type: 'merge';
+      beforeLayers: SerializedLayerSnapshot[];
+      afterLayers: SerializedLayerSnapshot[];
+      previousActiveLayerId: string;
+      afterActiveLayerId: string;
     };
 
 export interface SerializedLayer {

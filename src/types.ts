@@ -81,4 +81,11 @@ export type HistoryEntry =
       beforeHeight: number;
       afterWidth: number;
       afterHeight: number;
+    }
+  | {
+      type: 'merge';
+      beforeLayers: LayerSnapshot[];
+      afterLayers: LayerSnapshot[];
+      previousActiveLayerId: string;
+      afterActiveLayerId: string;
     };
