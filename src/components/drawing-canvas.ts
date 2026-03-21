@@ -94,6 +94,7 @@ export class DrawingCanvas extends LitElement {
   private _float: FloatingSelection | null = null;
   private _clipboard: ImageData | null = null;
   private _clipboardOrigin: Point | null = null;
+  private _clipboardRotation = 0;
   private _clipboardBlobSize: number | null = null;
   private _selectionDashOffset = 0;
   private _selectionAnimFrame: number | null = null;
@@ -2408,6 +2409,7 @@ export class DrawingCanvas extends LitElement {
     const ctx = tempCanvas.getContext('2d')!;
     this._clipboard = ctx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
     this._clipboardOrigin = { x: currentRect.x, y: currentRect.y };
+    this._clipboardRotation = this._float.rotation ?? 0;
     this._writeToSystemClipboard(tempCanvas);
   }
 
@@ -2463,8 +2465,9 @@ export class DrawingCanvas extends LitElement {
       ),
       currentRect: { x, y, w, h },
       tempCanvas: tmp,
-      rotation: 0,
+      rotation: this._clipboardRotation,
     };
+    this.composite();
     this._startSelectionAnimation();
   }
 
@@ -2476,26 +2479,34 @@ export class DrawingCanvas extends LitElement {
         if (!imageType) continue;
         const blob = await item.getType(imageType);
 
-        // Blob size matches what we wrote — use fast internal clipboard
-        if (this._clipboard && this._clipboardBlobSize === blob.size) {
-          this.pasteSelection();
-          return;
-        }
-
-        // External content — decode and handle
+        // Decode the blob to check dimensions
         const url = URL.createObjectURL(blob);
+        let img: HTMLImageElement;
         try {
-          const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+          img = await new Promise<HTMLImageElement>((resolve, reject) => {
             const el = new Image();
             el.onload = () => resolve(el);
             el.onerror = () => reject(new Error('Image load failed'));
             el.src = url;
           });
           URL.revokeObjectURL(url);
-          await this._handleExternalImage(img, 'Pasted Image');
         } catch {
           URL.revokeObjectURL(url);
+          continue;
         }
+
+        // If we have an internal clipboard with matching dimensions,
+        // use it to preserve selection state (rotation, position).
+        // Blob-size comparison is unreliable since browsers re-encode PNGs.
+        if (this._clipboard &&
+            img.naturalWidth === this._clipboard.width &&
+            img.naturalHeight === this._clipboard.height) {
+          this.pasteSelection();
+          return;
+        }
+
+        // External content — decode and handle
+        await this._handleExternalImage(img, 'Pasted Image');
         return;
       }
     } catch {
@@ -2555,8 +2566,10 @@ export class DrawingCanvas extends LitElement {
       const h = tempCanvas.height;
 
       // Store in clipboard (same as copy)
+      const floatRotation = this._float.rotation ?? 0;
       this._clipboard = imageData;
       this._clipboardOrigin = origin;
+      this._clipboardRotation = floatRotation;
       this._writeToSystemClipboard(tempCanvas);
 
       // Commit the current float to the layer
@@ -2582,7 +2595,7 @@ export class DrawingCanvas extends LitElement {
         originalImageData: new ImageData(new Uint8ClampedArray(imageData.data), w, h),
         currentRect: { x: origin.x, y: origin.y, w, h },
         tempCanvas: tmp,
-        rotation: 0,
+        rotation: floatRotation,
       };
       this.composite();
       this._startSelectionAnimation();
@@ -2604,8 +2617,8 @@ export class DrawingCanvas extends LitElement {
     // making the delete irreversible and causing the next undo to affect an
     // unrelated operation.
     this._pushDrawHistory(true);
-    this.composite();
     this._clearFloatState();
+    this.composite();
   }
 
   public clearSelection() {
