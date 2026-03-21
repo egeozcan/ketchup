@@ -25,8 +25,9 @@ export function floodFill(
   const tb = data[targetIdx + 2];
   const ta = data[targetIdx + 3];
 
-  // Don't fill if target is the same color
-  if (tr === fc.r && tg === fc.g && tb === fc.b && ta === fc.a) return false;
+  // Don't fill if target is the same color (only safe with zero tolerance;
+  // with tolerance > 0, neighbors may differ and still need filling).
+  if (tolerance === 0 && tr === fc.r && tg === fc.g && tb === fc.b && ta === fc.a) return false;
 
   const visited = new Uint8Array(width * height);
 
