@@ -799,7 +799,9 @@ export class DrawingApp extends LitElement {
       setLayerOpacity: (id: string, opacity: number) => {
         const layer = this._state.layers.find(l => l.id === id);
         if (!layer) return;
-        const newLayers = this._state.layers.map(l => l.id === id ? { ...l, opacity } : l);
+        const safe = Number.isFinite(opacity) ? opacity : 1;
+        const clamped = Math.max(0, Math.min(1, safe));
+        const newLayers = this._state.layers.map(l => l.id === id ? { ...l, opacity: clamped } : l);
         this._state = { ...this._state, layers: newLayers };
         this._markDirty();
       },
