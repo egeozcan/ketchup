@@ -534,8 +534,10 @@ export class LayersPanel extends LitElement {
     this._dragStartY = e.clientY;
     this._dragCurrentY = e.clientY;
     this._dragActivated = false;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    this._dragTarget = e.currentTarget as HTMLElement;
   }
+
+  private _dragTarget: HTMLElement | null = null;
 
   private _onReorderPointerMove(e: PointerEvent) {
     if (this._dragPointerId !== e.pointerId || !this._draggedLayerId) return;
@@ -544,6 +546,9 @@ export class LayersPanel extends LitElement {
     if (!this._dragActivated) {
       if (Math.abs(this._dragCurrentY - this._dragStartY) < this._dragThreshold) return;
       this._dragActivated = true;
+      if (this._dragTarget) {
+        this._dragTarget.setPointerCapture(e.pointerId);
+      }
     }
 
     this._clearDropIndicators();
@@ -622,6 +627,7 @@ export class LayersPanel extends LitElement {
     this._draggedLayerId = null;
     this._dragPointerId = null;
     this._dragActivated = false;
+    this._dragTarget = null;
     this._clearDropIndicators();
   }
 
