@@ -17,23 +17,27 @@ When the user copies or cuts a floating selection (Ctrl+C / Ctrl+X):
 5. System clipboard write is fire-and-forget (async, non-blocking). If it fails (permissions, insecure context), internal clipboard still works — no functionality regression.
 6. PNG preserves full alpha transparency.
 
-### Paste (reading from system clipboard)
+### Paste (unified dispatch)
 
-When the user pastes (Ctrl+V):
+The current Ctrl+V handler in `drawing-app.ts` branches between `pasteSelection()` (internal) and `pasteExternalImage()` (external). This gets replaced with a single call to a new unified `paste()` method on `drawing-canvas.ts` that handles both paths:
 
 1. Attempt `navigator.clipboard.read()` to get system clipboard contents
 2. If an image blob is found, compare `blob.size` to stored `_clipboardBlobSize`:
-   - **Match** — content is our own copy. Use internal `ImageData` (fast, lossless, preserves `_clipboardOrigin` for positioning)
+   - **Match** — content is our own copy. Use internal `ImageData` (fast, lossless, preserves `_clipboardOrigin` for positioning). Follows existing `pasteSelection()` logic.
    - **No match** — external content. Decode and handle via existing `pasteExternalImage()` path (centers on viewport, creates new layer for external images)
-3. If clipboard read fails (permission denied, no image) — fall back to internal `ImageData`
+3. If clipboard read fails (permission denied, no image) — fall back to internal `ImageData` via `pasteSelection()`
 4. If nothing available — no-op
+
+The existing `pasteSelection()` and `pasteExternalImage()` methods remain as internal helpers; the new `paste()` method orchestrates which one to call.
+
+In `drawing-app.ts`, the Ctrl+V handler simplifies to a single `canvas.paste()` call, removing the `hasClipboardData` branching.
 
 ### Why blob size fingerprint
 
 Comparing `blob.size` (a single integer) is:
 - Trivial to implement (store one number on copy)
 - No PNG byte manipulation or metadata injection needed
-- Deterministically identifies our own content — different images producing the exact same PNG byte count is astronomically unlikely
+- Extremely reliable — different images producing the exact same PNG byte count is astronomically unlikely. This is an accepted trade-off: in the near-impossible collision case, the app would use stale internal data. The user can re-copy to recover.
 - Eliminates the need for blur/focus heuristics to detect clipboard changes
 
 ## 2. Select All
@@ -84,7 +88,7 @@ This section confirms existing behavior and ensures it's tested during implement
 
 ### Without active float
 
-- If internal clipboard has content — paste at the original `_clipboardOrigin` position (not viewport center)
+- If internal clipboard has content — paste at the original `_clipboardOrigin` position (not viewport center). This is functionally equivalent to Ctrl+V when internal clipboard data exists.
 - If clipboard is empty — no-op
 
 ### Undo behavior
@@ -102,8 +106,8 @@ This section confirms existing behavior and ensures it's tested during implement
 | File | Changes |
 |------|---------|
 | `src/components/drawing-canvas.ts` | System clipboard write on copy/cut, clipboard read + blob size comparison on paste, `selectAll()` and `selectAllCanvas()` methods, `duplicateInPlace()` method, `_clipboardBlobSize` field |
-| `src/components/drawing-app.ts` | Ctrl+A, Ctrl+Shift+A, Ctrl+D keyboard shortcuts in `_onKeyDown`, delegate to canvas methods via context |
-| `src/contexts/drawing-context.ts` | Add `selectAll`, `selectAllCanvas`, `duplicateInPlace` to context interface |
+| `src/components/drawing-app.ts` | Ctrl+A, Ctrl+Shift+A, Ctrl+D keyboard shortcuts in `_onKeyDown`; simplify Ctrl+V to single `canvas.paste()` call (remove `hasClipboardData` branching); delegate to canvas methods via context |
+| `src/contexts/drawing-context.ts` | Not modified — new methods follow existing pattern of direct `this.canvas` calls from `drawing-app.ts` via `@query` reference, consistent with `copySelection`, `cutSelection`, etc. |
 
 ## Non-Goals
 
