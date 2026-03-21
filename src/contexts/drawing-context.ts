@@ -22,6 +22,9 @@ export interface DrawingContextValue {
   setLayerOpacity: (id: string, opacity: number) => void;
   reorderLayer: (id: string, newIndex: number) => void;
   renameLayer: (id: string, name: string) => void;
+  mergeLayerDown: (id: string) => void;
+  mergeVisibleLayers: () => void;
+  flattenImage: () => void;
   toggleLayersPanel: () => void;
   setCropAspectRatio: (ratio: string) => void;
   setFontFamily: (family: string) => void;

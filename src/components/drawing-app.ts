@@ -189,6 +189,29 @@ export class DrawingApp extends LitElement {
     };
   }
 
+  private _snapshotAllLayers(): LayerSnapshot[] {
+    return this._state.layers.map(l => this._snapshotLayer(l));
+  }
+
+  /**
+   * Composites the given layers (in order, bottom-to-top) onto a new
+   * offscreen canvas, baking each layer's opacity into the result.
+   */
+  private _compositeLayers(layers: Layer[]): HTMLCanvasElement {
+    const w = this._state.documentWidth;
+    const h = this._state.documentHeight;
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d')!;
+    for (const layer of layers) {
+      ctx.globalAlpha = layer.opacity;
+      ctx.drawImage(layer.canvas, 0, 0);
+    }
+    ctx.globalAlpha = 1;
+    return canvas;
+  }
+
   private _onBeforeUnload = (e: BeforeUnloadEvent) => {
     // Commit any active float so the layer canvas includes the selection content.
     this.canvas?.clearSelection();
@@ -845,6 +868,107 @@ export class DrawingApp extends LitElement {
         const newLayers = this._state.layers.map(l => l.id === id ? { ...l, name } : l);
         this._state = { ...this._state, layers: newLayers };
         this.canvas?.pushLayerOperation({ type: 'rename', layerId: id, before, after: name });
+        this._markDirty();
+      },
+      mergeLayerDown: (id: string) => {
+        const layers = this._state.layers;
+        const idx = layers.findIndex(l => l.id === id);
+        if (idx <= 0) return; // bottom layer or not found
+
+        this.canvas?.clearSelection();
+        const beforeLayers = this._snapshotAllLayers();
+        const previousActiveLayerId = this._state.activeLayerId;
+
+        // Composite: bottom layer first, then active layer on top
+        const bottomLayer = layers[idx - 1];
+        const topLayer = layers[idx];
+        const mergedCanvas = this._compositeLayers([bottomLayer, topLayer]);
+
+        // Build new layers array: remove topLayer, replace bottomLayer's canvas
+        const newLayers = layers
+          .filter(l => l.id !== topLayer.id)
+          .map(l => l.id === bottomLayer.id
+            ? { ...l, canvas: mergedCanvas, opacity: 1 }
+            : l);
+
+        this._state = { ...this._state, layers: newLayers, activeLayerId: bottomLayer.id };
+        const afterLayers = this._snapshotAllLayers();
+        this.canvas?.pushLayerOperation({
+          type: 'merge',
+          beforeLayers,
+          afterLayers,
+          previousActiveLayerId,
+          afterActiveLayerId: bottomLayer.id,
+        });
+        this._markDirty();
+      },
+      mergeVisibleLayers: () => {
+        const layers = this._state.layers;
+        const visibleLayers = layers.filter(l => l.visible);
+        if (visibleLayers.length < 2) return;
+
+        this.canvas?.clearSelection();
+        const beforeLayers = this._snapshotAllLayers();
+        const previousActiveLayerId = this._state.activeLayerId;
+
+        // Target is the bottom-most visible layer
+        const target = visibleLayers[0];
+        const mergedCanvas = this._compositeLayers(visibleLayers);
+
+        // Remove all visible layers except target, replace target's canvas
+        const visibleIds = new Set(visibleLayers.map(l => l.id));
+        const newLayers = layers
+          .filter(l => !visibleIds.has(l.id) || l.id === target.id)
+          .map(l => l.id === target.id
+            ? { ...l, canvas: mergedCanvas, opacity: 1 }
+            : l);
+
+        // If active layer was hidden, it survives the merge — keep it active.
+        // Otherwise the merged result becomes active.
+        const activeLayerSurvived = newLayers.some(l => l.id === previousActiveLayerId);
+        const afterActiveLayerId = activeLayerSurvived ? previousActiveLayerId : target.id;
+
+        this._state = { ...this._state, layers: newLayers, activeLayerId: afterActiveLayerId };
+        const afterLayers = this._snapshotAllLayers();
+        this.canvas?.pushLayerOperation({
+          type: 'merge',
+          beforeLayers,
+          afterLayers,
+          previousActiveLayerId,
+          afterActiveLayerId,
+        });
+        this._markDirty();
+      },
+      flattenImage: () => {
+        if (this._state.layers.length <= 1) return;
+
+        this.canvas?.clearSelection();
+        const beforeLayers = this._snapshotAllLayers();
+        const previousActiveLayerId = this._state.activeLayerId;
+
+        // Composite only visible layers
+        const visibleLayers = this._state.layers.filter(l => l.visible);
+        const target = visibleLayers.length > 0 ? visibleLayers[0] : this._state.layers[0];
+        const mergedCanvas = this._compositeLayers(visibleLayers);
+
+        // Single layer remains
+        const flatLayer: Layer = {
+          id: target.id,
+          name: target.name,
+          visible: true,
+          opacity: 1,
+          canvas: mergedCanvas,
+        };
+
+        this._state = { ...this._state, layers: [flatLayer], activeLayerId: flatLayer.id };
+        const afterLayers = this._snapshotAllLayers();
+        this.canvas?.pushLayerOperation({
+          type: 'merge',
+          beforeLayers,
+          afterLayers,
+          previousActiveLayerId,
+          afterActiveLayerId: flatLayer.id,
+        });
         this._markDirty();
       },
       toggleLayersPanel: () => {
