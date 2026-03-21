@@ -330,6 +330,83 @@ export class LayersPanel extends LitElement {
       height: 14px;
     }
 
+    /* ── Context menu ──────────────────────────── */
+    .context-menu {
+      position: fixed;
+      z-index: 300;
+      background: #2a2a2a;
+      border: 1px solid #555;
+      border-radius: 6px;
+      padding: 4px 0;
+      min-width: 160px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }
+
+    .context-menu-item {
+      display: block;
+      width: 100%;
+      padding: 6px 14px;
+      border: none;
+      background: transparent;
+      color: #ddd;
+      font-size: 0.8125rem;
+      font-family: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .context-menu-item:hover:not(:disabled) {
+      background: #5b8cf7;
+      color: #fff;
+    }
+
+    .context-menu-item:disabled {
+      color: #666;
+      cursor: default;
+    }
+
+    /* ── Dropdown menu ─────────────────────────── */
+    .action-bar-wrapper {
+      position: relative;
+    }
+
+    .dropdown-menu {
+      position: absolute;
+      bottom: 100%;
+      right: 0;
+      margin-bottom: 4px;
+      background: #2a2a2a;
+      border: 1px solid #555;
+      border-radius: 6px;
+      padding: 4px 0;
+      min-width: 160px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+      z-index: 300;
+    }
+
+    .dropdown-menu button {
+      display: block;
+      width: 100%;
+      padding: 6px 14px;
+      border: none;
+      background: transparent;
+      color: #ddd;
+      font-size: 0.8125rem;
+      font-family: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .dropdown-menu button:hover:not(:disabled) {
+      background: #5b8cf7;
+      color: #fff;
+    }
+
+    .dropdown-menu button:disabled {
+      color: #666;
+      cursor: default;
+    }
+
     /* ── Mobile bottom sheet ───────────────────── */
     .sheet-backdrop {
       display: none;
@@ -419,17 +496,33 @@ export class LayersPanel extends LitElement {
     this._updateThumbnails();
   };
 
+  private _onDocClick = () => {
+    this._closeContextMenu();
+    this._dropdownOpen = false;
+  };
+
+  private _onDocKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      this._closeContextMenu();
+      this._dropdownOpen = false;
+    }
+  };
+
   override connectedCallback() {
     super.connectedCallback();
     // composited event bubbles from sibling drawing-canvas through the shared shadow root
     (this.getRootNode() as ShadowRoot | Document).addEventListener('composited', this._onComposited);
     window.addEventListener('resize', this._onResize);
+    document.addEventListener('click', this._onDocClick);
+    document.addEventListener('keydown', this._onDocKeyDown);
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
     (this.getRootNode() as ShadowRoot | Document).removeEventListener('composited', this._onComposited);
     window.removeEventListener('resize', this._onResize);
+    document.removeEventListener('click', this._onDocClick);
+    document.removeEventListener('keydown', this._onDocKeyDown);
   }
 
   @state() private _sheetOpen = false;
@@ -441,6 +534,11 @@ export class LayersPanel extends LitElement {
   private _sheetSnapHalf = 0;
   private _sheetSnapFull = 0;
   private _sheetDragTimestamps: { y: number; t: number }[] = [];
+
+  @state() private _contextMenuOpen = false;
+  @state() private _contextMenuX = 0;
+  @state() private _contextMenuY = 0;
+  @state() private _dropdownOpen = false;
 
   /** The layer id currently in rename mode */
   @state() private _editingLayerId: string | null = null;
@@ -758,6 +856,19 @@ export class LayersPanel extends LitElement {
     }
   }
 
+  // ── Context menu ───────────────────────────
+
+  private _onContextMenu(e: MouseEvent) {
+    e.preventDefault();
+    this._contextMenuX = e.clientX;
+    this._contextMenuY = e.clientY;
+    this._contextMenuOpen = true;
+  }
+
+  private _closeContextMenu() {
+    this._contextMenuOpen = false;
+  }
+
   // ── Helpers ────────────────────────────────
 
   private _getLayerById(id: string): Layer | undefined {
@@ -850,18 +961,64 @@ export class LayersPanel extends LitElement {
         ${reversed.map(layer => this._renderLayerRow(layer, layers, activeLayerId))}
       </div>
 
-      <div class="action-bar">
-        <button
-          class="action-btn"
-          title="Add layer"
-          @click=${() => this.ctx.addLayer()}
-        >${this._plusIcon} Add</button>
-        <button
-          class="action-btn"
-          title="Delete layer"
-          ?disabled=${layers.length <= 1}
-          @click=${() => this.ctx.deleteLayer(activeLayerId)}
-        >${this._trashIcon} Delete</button>
+      ${this._contextMenuOpen ? html`
+        <div
+          class="context-menu"
+          style="left:${this._contextMenuX}px;top:${this._contextMenuY}px"
+        >
+          <button
+            class="context-menu-item"
+            ?disabled=${layers.findIndex(l => l.id === activeLayerId) === 0}
+            @click=${() => { this.ctx.mergeLayerDown(activeLayerId); this._closeContextMenu(); }}
+          >Merge Down</button>
+          <button
+            class="context-menu-item"
+            ?disabled=${layers.filter(l => l.visible).length < 2}
+            @click=${() => { this.ctx.mergeVisibleLayers(); this._closeContextMenu(); }}
+          >Merge Visible</button>
+          <button
+            class="context-menu-item"
+            ?disabled=${layers.length <= 1}
+            @click=${() => { this.ctx.flattenImage(); this._closeContextMenu(); }}
+          >Flatten Image</button>
+        </div>
+      ` : nothing}
+
+      <div class="action-bar-wrapper">
+        ${this._dropdownOpen ? html`
+          <div class="dropdown-menu" @click=${(e: Event) => e.stopPropagation()}>
+            <button
+              ?disabled=${layers.findIndex(l => l.id === activeLayerId) === 0}
+              @click=${() => { this.ctx.mergeLayerDown(activeLayerId); this._dropdownOpen = false; }}
+            >Merge Down</button>
+            <button
+              ?disabled=${layers.filter(l => l.visible).length < 2}
+              @click=${() => { this.ctx.mergeVisibleLayers(); this._dropdownOpen = false; }}
+            >Merge Visible</button>
+            <button
+              ?disabled=${layers.length <= 1}
+              @click=${() => { this.ctx.flattenImage(); this._dropdownOpen = false; }}
+            >Flatten Image</button>
+          </div>
+        ` : nothing}
+        <div class="action-bar">
+          <button
+            class="action-btn"
+            title="Add layer"
+            @click=${() => this.ctx.addLayer()}
+          >${this._plusIcon} Add</button>
+          <button
+            class="action-btn"
+            title="Delete layer"
+            ?disabled=${layers.length <= 1}
+            @click=${() => this.ctx.deleteLayer(activeLayerId)}
+          >${this._trashIcon} Delete</button>
+          <button
+            class="action-btn"
+            title="More actions"
+            @click=${(e: Event) => { e.stopPropagation(); this._dropdownOpen = !this._dropdownOpen; }}
+          >&#8943;</button>
+        </div>
       </div>
     `;
   }
@@ -878,6 +1035,7 @@ export class LayersPanel extends LitElement {
         class="layer-row ${isActive ? 'active' : ''} ${this._draggedLayerId === layer.id ? 'dragging' : ''}"
         data-layer-id=${layer.id}
         @click=${() => this._selectLayer(layer.id)}
+        @contextmenu=${(e: MouseEvent) => this._onContextMenu(e)}
         @pointerdown=${(e: PointerEvent) => this._onReorderPointerDown(layer, e)}
         @pointermove=${(e: PointerEvent) => this._onReorderPointerMove(e)}
         @pointerup=${(e: PointerEvent) => this._onReorderPointerUp(e)}
