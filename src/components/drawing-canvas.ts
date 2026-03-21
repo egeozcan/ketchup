@@ -180,10 +180,18 @@ export class DrawingCanvas extends LitElement {
 
     // Composite layers bottom-to-top
     const layers = this._ctx.value?.state.layers ?? [];
+    const activeLayerId = this._ctx.value?.state.activeLayerId ?? null;
     for (const layer of layers) {
       if (!layer.visible) continue;
       displayCtx.globalAlpha = layer.opacity;
       displayCtx.drawImage(layer.canvas, 0, 0);
+      // Draw the float right after its owning layer so it composites
+      // at the correct z-position instead of on top of everything.
+      if (this._float && layer.id === activeLayerId) {
+        const { currentRect, tempCanvas } = this._float;
+        displayCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y),
+          Math.round(currentRect.w), Math.round(currentRect.h));
+      }
       displayCtx.globalAlpha = 1.0;
     }
 
@@ -194,7 +202,6 @@ export class DrawingCanvas extends LitElement {
 
     displayCtx.restore();
 
-    const activeLayerId = this._ctx.value?.state.activeLayerId ?? null;
     const floatDetail = this._float && activeLayerId
       ? { tempCanvas: this._float.tempCanvas, rect: this._float.currentRect, layerId: activeLayerId }
       : null;
@@ -1558,6 +1565,7 @@ export class DrawingCanvas extends LitElement {
 
     if (this._floatResizing && this._float && this._floatResizeOrigin) {
       this._applyResize(p);
+      this.composite();
       this._redrawFloatPreview();
       return;
     }
@@ -1565,6 +1573,7 @@ export class DrawingCanvas extends LitElement {
     if (this._floatMoving && this._float && this._floatDragOffset) {
       this._float.currentRect.x = p.x - this._floatDragOffset.x;
       this._float.currentRect.y = p.y - this._floatDragOffset.y;
+      this.composite();
       this._redrawFloatPreview();
       return;
     }
@@ -2200,24 +2209,14 @@ export class DrawingCanvas extends LitElement {
     previewCtx.clearRect(0, 0, this._vw, this._vh);
 
     if (!this._float) return;
-    const { currentRect, tempCanvas } = this._float;
-
-    // Look up owning layer's compositing state.
-    const state = this._ctx.value?.state;
-    const activeLayer = state?.layers.find(l => l.id === state.activeLayerId);
+    const { currentRect } = this._float;
 
     previewCtx.save();
     previewCtx.translate(this._panX, this._panY);
     previewCtx.scale(this._zoom, this._zoom);
 
-    // Only draw the float image if the owning layer is visible; apply its opacity.
-    if (!activeLayer || activeLayer.visible) {
-      previewCtx.globalAlpha = activeLayer?.opacity ?? 1.0;
-      previewCtx.drawImage(tempCanvas, currentRect.x, currentRect.y, currentRect.w, currentRect.h);
-      previewCtx.globalAlpha = 1.0;
-    }
-
-    // Always draw marching ants + handles so the user can interact with the float bounds.
+    // Float image is drawn in composite() at the correct z-position within the layer stack.
+    // Only draw marching ants + handles here so the user can interact with the float bounds.
     drawSelectionRect(previewCtx, currentRect.x, currentRect.y, currentRect.w, currentRect.h, this._selectionDashOffset);
     previewCtx.restore();
 
