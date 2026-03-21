@@ -56,7 +56,8 @@ export function measureTextBlock(
   const lines = text.split('\n');
   const lineHeight = fontSize * LINE_HEIGHT;
   const lineWidths = lines.map(line => ctx.measureText(line).width);
-  const width = Math.max(0, ...lineWidths);
+  let width = 0;
+  for (const w of lineWidths) { if (w > width) width = w; }
   // Always at least one line tall even if text is empty
   const height = Math.max(1, lines.length) * lineHeight;
   ctx.restore();
