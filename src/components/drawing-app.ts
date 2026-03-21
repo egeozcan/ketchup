@@ -1000,7 +1000,8 @@ export class DrawingApp extends LitElement {
         const newLayers = [...this._state.layers];
         const idx = detail.index === -1 ? newLayers.length : detail.index;
         newLayers.splice(idx, 0, layer);
-        this._state = { ...this._state, layers: newLayers, activeLayerId: layer.id };
+        const activeStillExists = newLayers.some(l => l.id === this._state.activeLayerId);
+        this._state = { ...this._state, layers: newLayers, activeLayerId: activeStillExists ? this._state.activeLayerId : layer.id };
         break;
       }
       case 'reorder': {
