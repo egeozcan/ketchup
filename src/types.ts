@@ -26,6 +26,8 @@ export interface FloatingSelection {
   currentRect: { x: number; y: number; w: number; h: number };
   /** Cached render of originalImageData at currentRect size */
   tempCanvas: HTMLCanvasElement;
+  /** Rotation angle in radians (clockwise) */
+  rotation: number;
 }
 
 export interface Layer {

@@ -8,7 +8,7 @@ import { drawMarkerSegment } from '../tools/marker.js';
 import { drawEraserSegment } from '../tools/eraser.js';
 import { drawShapePreview } from '../tools/shapes.js';
 import { floodFill } from '../tools/fill.js';
-import { drawSelectionRect } from '../tools/select.js';
+import { drawSelectionRect, drawRotationHandle, ROTATION_HANDLE_OFFSET, ROTATION_HANDLE_RADIUS } from '../tools/select.js';
 import { drawCropOverlay, hitTestCropHandle, parseAspectRatio, constrainCropToRatio, type CropRect, type CropHandle } from '../tools/crop.js';
 import { drawText, measureTextBlock, buildFontString, LINE_HEIGHT } from '../tools/text.js';
 import './resize-dialog.js';
@@ -112,6 +112,11 @@ export class DrawingCanvas extends LitElement {
   private _floatDragOffset: Point | null = null;
   private _floatResizeOrigin: { rect: { x: number; y: number; w: number; h: number }; point: Point } | null = null;
 
+  // Rotation interaction state
+  private _floatRotating = false;
+  private _floatRotateStartAngle = 0;
+  private _floatRotateStartRotation = 0;
+
   // --- Crop tool state ---
   private _cropRect: CropRect | null = null;
   private _cropDragging = false;
@@ -190,8 +195,20 @@ export class DrawingCanvas extends LitElement {
       // at the correct z-position instead of on top of everything.
       if (this._float && layer.id === activeLayerId) {
         const { currentRect, tempCanvas } = this._float;
-        displayCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y),
-          Math.round(currentRect.w), Math.round(currentRect.h));
+        const rotation = this._float.rotation ?? 0;
+        if (rotation !== 0) {
+          const cx = currentRect.x + currentRect.w / 2;
+          const cy = currentRect.y + currentRect.h / 2;
+          displayCtx.save();
+          displayCtx.translate(cx, cy);
+          displayCtx.rotate(rotation);
+          displayCtx.drawImage(tempCanvas, -Math.round(currentRect.w) / 2, -Math.round(currentRect.h) / 2,
+            Math.max(1, Math.round(currentRect.w)), Math.max(1, Math.round(currentRect.h)));
+          displayCtx.restore();
+        } else {
+          displayCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y),
+            Math.round(currentRect.w), Math.round(currentRect.h));
+        }
       }
       displayCtx.globalAlpha = 1.0;
     }
@@ -204,7 +221,7 @@ export class DrawingCanvas extends LitElement {
     displayCtx.restore();
 
     const floatDetail = this._float && activeLayerId
-      ? { tempCanvas: this._float.tempCanvas, rect: this._float.currentRect, layerId: activeLayerId }
+      ? { tempCanvas: this._float.tempCanvas, rect: this._float.currentRect, layerId: activeLayerId, rotation: this._float.rotation ?? 0 }
       : null;
     this.dispatchEvent(new CustomEvent('composited', {
       bubbles: true, composed: true,
@@ -711,7 +728,18 @@ export class DrawingCanvas extends LitElement {
       // at the correct z-position instead of on top of everything.
       if (this._float && layer.id === activeLayerId) {
         const { currentRect, tempCanvas } = this._float;
-        exportCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y));
+        const rotation = this._float.rotation ?? 0;
+        if (rotation !== 0) {
+          const cx = currentRect.x + currentRect.w / 2;
+          const cy = currentRect.y + currentRect.h / 2;
+          exportCtx.save();
+          exportCtx.translate(cx, cy);
+          exportCtx.rotate(rotation);
+          exportCtx.drawImage(tempCanvas, -currentRect.w / 2, -currentRect.h / 2);
+          exportCtx.restore();
+        } else {
+          exportCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y));
+        }
       }
       exportCtx.globalAlpha = 1.0;
     }
@@ -1458,8 +1486,23 @@ export class DrawingCanvas extends LitElement {
     return DrawingCanvas.HANDLE_SIZE / this._zoom;
   }
 
+  /** Transform a document-space point into the float's local (unrotated) coordinate space */
+  private _toFloatLocal(p: Point): Point {
+    if (!this._float) return p;
+    const { x, y, w, h } = this._float.currentRect;
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const angle = -(this._float.rotation ?? 0);
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const dx = p.x - cx;
+    const dy = p.y - cy;
+    return { x: cos * dx - sin * dy + cx, y: sin * dx + cos * dy + cy };
+  }
+
   private _hitTestHandle(p: Point): ResizeHandle | null {
     if (!this._float) return null;
+    const lp = this._toFloatLocal(p);
     const { x, y, w, h } = this._float.currentRect;
     const hs = this._handleSizeDoc();
     const half = hs / 2;
@@ -1476,17 +1519,41 @@ export class DrawingCanvas extends LitElement {
     ];
 
     for (const { handle, cx, cy } of handles) {
-      if (p.x >= cx - half && p.x <= cx + half && p.y >= cy - half && p.y <= cy + half) {
+      if (lp.x >= cx - half && lp.x <= cx + half && lp.y >= cy - half && lp.y <= cy + half) {
         return handle;
       }
     }
     return null;
   }
 
-  private _isInsideFloat(p: Point): boolean {
+  /** Hit-test the rotation handle. Works in document-space. */
+  private _hitTestRotationHandle(p: Point): boolean {
     if (!this._float) return false;
     const { x, y, w, h } = this._float.currentRect;
-    return p.x >= x && p.x <= x + w && p.y >= y && p.y <= y + h;
+    const rotation = this._float.rotation ?? 0;
+    const tcx = x + w / 2;
+    const tcy = y;
+    const offsetDoc = ROTATION_HANDLE_OFFSET / this._zoom;
+    const centerX = x + w / 2;
+    const centerY = y + h / 2;
+    const localHx = tcx - centerX;
+    const localHy = (tcy - offsetDoc) - centerY;
+    const cos = Math.cos(rotation);
+    const sin = Math.sin(rotation);
+    const hx = cos * localHx - sin * localHy + centerX;
+    const hy = sin * localHx + cos * localHy + centerY;
+
+    const radiusDoc = ROTATION_HANDLE_RADIUS / this._zoom;
+    const dx = p.x - hx;
+    const dy = p.y - hy;
+    return dx * dx + dy * dy <= (radiusDoc + 2 / this._zoom) * (radiusDoc + 2 / this._zoom);
+  }
+
+  private _isInsideFloat(p: Point): boolean {
+    if (!this._float) return false;
+    const lp = this._toFloatLocal(p);
+    const { x, y, w, h } = this._float.currentRect;
+    return lp.x >= x && lp.x <= x + w && lp.y >= y && lp.y <= y + h;
   }
 
   private _handleCursor(handle: ResizeHandle): string {
@@ -1498,6 +1565,18 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _handleSelectPointerDown(p: Point) {
+    // Check rotation handle first (it's furthest from selection body)
+    if (this._float && this._hitTestRotationHandle(p)) {
+      this._floatRotating = true;
+      const { x, y, w, h } = this._float.currentRect;
+      const centerX = x + w / 2;
+      const centerY = y + h / 2;
+      this._floatRotateStartAngle = Math.atan2(p.y - centerY, p.x - centerX);
+      this._floatRotateStartRotation = this._float.rotation ?? 0;
+      this._stopSelectionAnimation();
+      return;
+    }
+
     const handle = this._hitTestHandle(p);
     if (handle) {
       this._floatResizing = true;
@@ -1549,19 +1628,42 @@ export class DrawingCanvas extends LitElement {
   private _handleSelectPointerMove(e: PointerEvent) {
     const p = this._getDocPoint(e);
 
-    if (this._floatResizing) {
+    if (this._floatRotating) {
+      this.mainCanvas.style.cursor = 'grabbing';
+    } else if (this._floatResizing) {
       this.mainCanvas.style.cursor = this._handleCursor(this._floatResizeHandle!);
     } else if (this._floatMoving) {
       this.mainCanvas.style.cursor = 'move';
     } else {
-      const handle = this._hitTestHandle(p);
-      if (handle) {
-        this.mainCanvas.style.cursor = this._handleCursor(handle);
-      } else if (this._isInsideFloat(p)) {
-        this.mainCanvas.style.cursor = 'move';
+      if (this._float && this._hitTestRotationHandle(p)) {
+        this.mainCanvas.style.cursor = 'grab';
       } else {
-        this.mainCanvas.style.cursor = 'crosshair';
+        const handle = this._hitTestHandle(p);
+        if (handle) {
+          this.mainCanvas.style.cursor = this._handleCursor(handle);
+        } else if (this._isInsideFloat(p)) {
+          this.mainCanvas.style.cursor = 'move';
+        } else {
+          this.mainCanvas.style.cursor = 'crosshair';
+        }
       }
+    }
+
+    if (this._floatRotating && this._float) {
+      const { x, y, w, h } = this._float.currentRect;
+      const centerX = x + w / 2;
+      const centerY = y + h / 2;
+      const currentAngle = Math.atan2(p.y - centerY, p.x - centerX);
+      let newRotation = this._floatRotateStartRotation + (currentAngle - this._floatRotateStartAngle);
+      // Snap to 45-degree increments when Shift is held
+      if (e.shiftKey) {
+        const snap = Math.PI / 4;
+        newRotation = Math.round(newRotation / snap) * snap;
+      }
+      this._float.rotation = newRotation;
+      this.composite();
+      this._redrawFloatPreview();
+      return;
     }
 
     if (this._floatResizing && this._float && this._floatResizeOrigin) {
@@ -1595,6 +1697,12 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _handleSelectPointerUp(e: PointerEvent) {
+    if (this._floatRotating) {
+      this._floatRotating = false;
+      this._startSelectionAnimation();
+      return;
+    }
+
     if (this._floatResizing) {
       this._floatResizing = false;
       this._floatResizeHandle = null;
@@ -1925,6 +2033,7 @@ export class DrawingCanvas extends LitElement {
       originalImageData: imageData,
       currentRect: { x: clampedX, y: clampedY, w: clampedW, h: clampedH },
       tempCanvas: tmp,
+      rotation: 0,
     };
     this.composite();
     this._startSelectionAnimation();
@@ -1954,6 +2063,7 @@ export class DrawingCanvas extends LitElement {
       originalImageData: imageData,
       currentRect: { x, y, w, h },
       tempCanvas: tmp,
+      rotation: 0,
     };
     this._startSelectionAnimation();
   }
@@ -1984,6 +2094,7 @@ export class DrawingCanvas extends LitElement {
       originalImageData: imageData,
       currentRect: { x, y, w, h },
       tempCanvas: tmp,
+      rotation: 0,
     };
     this._startSelectionAnimation();
   }
@@ -2036,7 +2147,20 @@ export class DrawingCanvas extends LitElement {
     }
 
     const { currentRect, tempCanvas } = this._float;
-    layerCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y), Math.max(1, Math.round(currentRect.w)), Math.max(1, Math.round(currentRect.h)));
+    const rotation = this._float.rotation ?? 0;
+
+    if (rotation !== 0) {
+      const cx = currentRect.x + currentRect.w / 2;
+      const cy = currentRect.y + currentRect.h / 2;
+      layerCtx.save();
+      layerCtx.translate(cx, cy);
+      layerCtx.rotate(rotation);
+      layerCtx.drawImage(tempCanvas, -Math.max(1, Math.round(currentRect.w)) / 2, -Math.max(1, Math.round(currentRect.h)) / 2,
+        Math.max(1, Math.round(currentRect.w)), Math.max(1, Math.round(currentRect.h)));
+      layerCtx.restore();
+    } else {
+      layerCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y), Math.max(1, Math.round(currentRect.w)), Math.max(1, Math.round(currentRect.h)));
+    }
 
     this._pushDrawHistory(true);
     this.composite();
@@ -2069,6 +2193,7 @@ export class DrawingCanvas extends LitElement {
     this._floatResizeHandle = null;
     this._floatDragOffset = null;
     this._floatResizeOrigin = null;
+    this._floatRotating = false;
     this._selectionDrawing = false;
     this._stopSelectionAnimation();
     if (this.previewCanvas) {
@@ -2180,10 +2305,20 @@ export class DrawingCanvas extends LitElement {
 
     if (!this._float) return;
     const { currentRect } = this._float;
+    const rotation = this._float.rotation ?? 0;
+
+    // Center of the selection in document space
+    const cx = currentRect.x + currentRect.w / 2;
+    const cy = currentRect.y + currentRect.h / 2;
 
     previewCtx.save();
     previewCtx.translate(this._panX, this._panY);
     previewCtx.scale(this._zoom, this._zoom);
+
+    // Apply rotation around selection center
+    previewCtx.translate(cx, cy);
+    previewCtx.rotate(rotation);
+    previewCtx.translate(-cx, -cy);
 
     // Float image is drawn in composite() at the correct z-position within the layer stack.
     // Only draw marching ants + handles here so the user can interact with the float bounds.
@@ -2191,6 +2326,24 @@ export class DrawingCanvas extends LitElement {
     previewCtx.restore();
 
     this._drawResizeHandles(previewCtx);
+    this._drawRotationHandle(previewCtx);
+  }
+
+  /** Convert a document-space point to viewport-space, applying float rotation around selection center */
+  private _docToViewportRotated(dx: number, dy: number): [number, number] {
+    if (!this._float) return [dx * this._zoom + this._panX, dy * this._zoom + this._panY];
+    const { x, y, w, h } = this._float.currentRect;
+    const rotation = this._float.rotation ?? 0;
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    // Rotate around center
+    const rx = dx - cx;
+    const ry = dy - cy;
+    const cos = Math.cos(rotation);
+    const sin = Math.sin(rotation);
+    const rotX = cos * rx - sin * ry + cx;
+    const rotY = sin * rx + cos * ry + cy;
+    return [rotX * this._zoom + this._panX, rotY * this._zoom + this._panY];
   }
 
   private _drawResizeHandles(ctx: CanvasRenderingContext2D) {
@@ -2207,9 +2360,8 @@ export class DrawingCanvas extends LitElement {
     ];
 
     ctx.save();
-    for (const [cx, cy] of positions) {
-      const sx = cx * this._zoom + this._panX;
-      const sy = cy * this._zoom + this._panY;
+    for (const [px, py] of positions) {
+      const [sx, sy] = this._docToViewportRotated(px, py);
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(sx - half, sy - half, hs, hs);
       ctx.strokeStyle = '#3b82f6';
@@ -2218,6 +2370,15 @@ export class DrawingCanvas extends LitElement {
       ctx.strokeRect(sx - half, sy - half, hs, hs);
     }
     ctx.restore();
+  }
+
+  private _drawRotationHandle(ctx: CanvasRenderingContext2D) {
+    if (!this._float) return;
+    const { x, y, w } = this._float.currentRect;
+    const rotation = this._float.rotation ?? 0;
+    // Top-center in viewport space, rotated
+    const [tcx, tcy] = this._docToViewportRotated(x + w / 2, y);
+    drawRotationHandle(ctx, tcx, tcy, rotation);
   }
 
   private _startSelectionAnimation() {
@@ -2302,6 +2463,7 @@ export class DrawingCanvas extends LitElement {
       ),
       currentRect: { x, y, w, h },
       tempCanvas: tmp,
+      rotation: 0,
     };
     this._startSelectionAnimation();
   }
@@ -2420,6 +2582,7 @@ export class DrawingCanvas extends LitElement {
         originalImageData: new ImageData(new Uint8ClampedArray(imageData.data), w, h),
         currentRect: { x: origin.x, y: origin.y, w, h },
         tempCanvas: tmp,
+        rotation: 0,
       };
       this.composite();
       this._startSelectionAnimation();
