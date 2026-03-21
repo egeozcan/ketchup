@@ -30,7 +30,7 @@ All three operations share a core merge function:
    - `drawImage(layer.canvas, 0, 0)` onto the temp canvas.
 3. The temp canvas becomes the merged layer's canvas, with opacity set to 1.0.
 
-**Merge Down** composites exactly 2 layers: the layer below first (at its opacity), then the active layer on top (at its opacity).
+**Merge Down** composites exactly 2 layers: the layer below first (at its opacity), then the active layer on top (at its opacity). Both layers' opacities are intentionally baked into the result — this matches Photoshop behavior. The bottom layer is drawn at its own opacity (not 1.0), so if it had reduced opacity, its pixels become semi-transparent in the merged result.
 
 **Merge Visible** composites all layers where `visible === true`, in their z-order.
 
@@ -78,6 +78,14 @@ Merge operations are layer structural operations and follow the existing event-b
 3. `drawing-app.ts` handles it via the same `'stack-replace'` handler.
 
 **Note:** The existing `crop-restore` handler maps over current layers by ID and cannot add/remove layers. A new `'stack-replace'` action is needed that fully replaces the layer array from snapshots. This handler does not change document dimensions (unlike crop). The `_getEntryLayerId` method in `drawing-canvas.ts` needs a `case 'merge'` returning `null`.
+
+**`layer-undo` event detail shape for `'stack-replace'`:**
+
+```typescript
+{ action: 'stack-replace'; layers: LayerSnapshot[]; activeLayerId: string }
+```
+
+The handler recreates the full `Layer[]` from the snapshots (new `HTMLCanvasElement` per snapshot, `putImageData` from each `LayerSnapshot.imageData`), replaces `this._state.layers`, and sets `this._state.activeLayerId` to the provided `activeLayerId`.
 
 ## UI Integration
 
