@@ -544,11 +544,16 @@ export class DrawingApp extends LitElement {
       this.canvas?.cutSelection();
     } else if (ctrl && key === 'v') {
       e.preventDefault();
-      if (this.canvas?.hasClipboardData) {
-        this.canvas.pasteSelection();
-      } else {
-        this.canvas?.pasteExternalImage();
+      this.canvas?.paste();
+    } else if (ctrl && key === 'd') {
+      e.preventDefault();
+      if (this._state.activeTool !== 'select') {
+        this.canvas?.cancelCrop();
+        this.canvas?.clearSelection();
+        this._state = { ...this._state, activeTool: 'select' };
+        this._markDirty();
       }
+      this.canvas?.duplicateInPlace();
     } else if (
       (e.key === 'Delete' || e.key === 'Backspace') &&
       (this._state.activeTool === 'select' || this._state.activeTool === 'stamp')
@@ -566,6 +571,24 @@ export class DrawingApp extends LitElement {
       } else {
         this.canvas?.clearSelection();
       }
+    } else if (ctrl && key === 'a' && e.shiftKey) {
+      e.preventDefault();
+      if (this._state.activeTool !== 'select') {
+        this.canvas?.cancelCrop();
+        this.canvas?.clearSelection();
+        this._state = { ...this._state, activeTool: 'select' };
+        this._markDirty();
+      }
+      this.canvas?.selectAllCanvas();
+    } else if (ctrl && key === 'a' && !e.shiftKey) {
+      e.preventDefault();
+      if (this._state.activeTool !== 'select') {
+        this.canvas?.cancelCrop();
+        this.canvas?.clearSelection();
+        this._state = { ...this._state, activeTool: 'select' };
+        this._markDirty();
+      }
+      this.canvas?.selectAll();
     } else if (e.key === '0' && ctrl) {
       e.preventDefault();
       this.canvas?.zoomToFit();

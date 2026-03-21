@@ -94,6 +94,7 @@ export class DrawingCanvas extends LitElement {
   private _float: FloatingSelection | null = null;
   private _clipboard: ImageData | null = null;
   private _clipboardOrigin: Point | null = null;
+  private _clipboardBlobSize: number | null = null;
   private _selectionDashOffset = 0;
   private _selectionAnimFrame: number | null = null;
 
@@ -2025,37 +2026,6 @@ export class DrawingCanvas extends LitElement {
     this._createFloatFromImageDirect(img, w, h);
   }
 
-  /**
-   * Read system clipboard for an image and handle it as a new layer.
-   * Called by drawing-app when Ctrl+V is pressed and no internal clipboard data exists.
-   */
-  public async pasteExternalImage() {
-    try {
-      const items = await navigator.clipboard.read();
-      for (const item of items) {
-        const imageType = item.types.find(t => t.startsWith('image/'));
-        if (!imageType) continue;
-        const blob = await item.getType(imageType);
-        const url = URL.createObjectURL(blob);
-        try {
-          const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-            const el = new Image();
-            el.onload = () => resolve(el);
-            el.onerror = () => reject(new Error('Image load failed'));
-            el.src = url;
-          });
-          URL.revokeObjectURL(url);
-          await this._handleExternalImage(img, 'Pasted Image');
-        } catch {
-          URL.revokeObjectURL(url);
-        }
-        return; // Use first image found
-      }
-    } catch {
-      // Clipboard API denied or unavailable — silently ignore
-    }
-  }
-
   private _commitFloat() {
     if (!this._float) return;
     const layerCtx = this._getActiveLayerCtx();
@@ -2277,6 +2247,19 @@ export class DrawingCanvas extends LitElement {
     const ctx = tempCanvas.getContext('2d')!;
     this._clipboard = ctx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
     this._clipboardOrigin = { x: currentRect.x, y: currentRect.y };
+    this._writeToSystemClipboard(tempCanvas);
+  }
+
+  private _writeToSystemClipboard(canvas: HTMLCanvasElement) {
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      this._clipboardBlobSize = blob.size;
+      navigator.clipboard.write([
+        new ClipboardItem({ 'image/png': blob }),
+      ]).catch(() => {
+        // Clipboard API denied or unavailable — internal clipboard still works
+      });
+    }, 'image/png');
   }
 
   public cutSelection() {
@@ -2321,6 +2304,129 @@ export class DrawingCanvas extends LitElement {
       tempCanvas: tmp,
     };
     this._startSelectionAnimation();
+  }
+
+  public async paste() {
+    try {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const imageType = item.types.find(t => t.startsWith('image/'));
+        if (!imageType) continue;
+        const blob = await item.getType(imageType);
+
+        // Blob size matches what we wrote — use fast internal clipboard
+        if (this._clipboard && this._clipboardBlobSize === blob.size) {
+          this.pasteSelection();
+          return;
+        }
+
+        // External content — decode and handle
+        const url = URL.createObjectURL(blob);
+        try {
+          const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const el = new Image();
+            el.onload = () => resolve(el);
+            el.onerror = () => reject(new Error('Image load failed'));
+            el.src = url;
+          });
+          URL.revokeObjectURL(url);
+          await this._handleExternalImage(img, 'Pasted Image');
+        } catch {
+          URL.revokeObjectURL(url);
+        }
+        return;
+      }
+    } catch {
+      // Clipboard API denied — fall back to internal
+    }
+
+    // No system clipboard image available — try internal clipboard
+    this.pasteSelection();
+  }
+
+  public selectAll() {
+    const layerCtx = this._getActiveLayerCtx();
+    if (!layerCtx) return;
+
+    this._commitFloat();
+
+    const w = this._docWidth;
+    const h = this._docHeight;
+    const imageData = layerCtx.getImageData(0, 0, w, h);
+    const data = imageData.data;
+
+    // Find bounding box of non-transparent pixels
+    let minX = w, minY = h, maxX = -1, maxY = -1;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (data[(y * w + x) * 4 + 3] > 0) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    // Layer is empty — no-op
+    if (maxX < 0) return;
+
+    this._liftToFloat(minX, minY, maxX - minX + 1, maxY - minY + 1);
+  }
+
+  public selectAllCanvas() {
+    const layerCtx = this._getActiveLayerCtx();
+    if (!layerCtx) return;
+
+    this._commitFloat();
+    this._liftToFloat(0, 0, this._docWidth, this._docHeight);
+  }
+
+  public duplicateInPlace() {
+    if (this._float) {
+      // Copy the current float's data before committing
+      const { tempCanvas, currentRect } = this._float;
+      const ctx = tempCanvas.getContext('2d')!;
+      const imageData = ctx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+      const origin = { x: currentRect.x, y: currentRect.y };
+      const w = tempCanvas.width;
+      const h = tempCanvas.height;
+
+      // Store in clipboard (same as copy)
+      this._clipboard = imageData;
+      this._clipboardOrigin = origin;
+      this._writeToSystemClipboard(tempCanvas);
+
+      // Commit the current float to the layer
+      this._commitFloat();
+
+      // Create new float from the copied data at the same position
+      if (!this._beforeDrawData) {
+        this._captureBeforeDraw();
+      }
+
+      const src = document.createElement('canvas');
+      src.width = w;
+      src.height = h;
+      src.getContext('2d')!.putImageData(imageData, 0, 0);
+      this._floatSrcCanvas = src;
+
+      const tmp = document.createElement('canvas');
+      tmp.width = w;
+      tmp.height = h;
+      tmp.getContext('2d')!.drawImage(src, 0, 0);
+
+      this._float = {
+        originalImageData: new ImageData(new Uint8ClampedArray(imageData.data), w, h),
+        currentRect: { x: origin.x, y: origin.y, w, h },
+        tempCanvas: tmp,
+      };
+      this.composite();
+      this._startSelectionAnimation();
+    } else {
+      // No active float — paste from internal clipboard if available
+      this.pasteSelection();
+    }
   }
 
   public deleteSelection() {
@@ -2424,11 +2530,6 @@ export class DrawingCanvas extends LitElement {
     }));
     this.composite();
     this._notifyHistory();
-  }
-
-  /** Whether the internal clipboard has data (used by drawing-app to decide paste path) */
-  public get hasClipboardData(): boolean {
-    return this._clipboard !== null;
   }
 
   /** Whether an external image float is active (used by drawing-app for Escape handling) */
