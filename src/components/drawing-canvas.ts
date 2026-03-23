@@ -102,6 +102,8 @@ export class DrawingCanvas extends LitElement {
   private _engine = new StampStrokeEngine();
   private _tintPreviewCanvas: HTMLCanvasElement | null = null;
   private _samplingDirty = true;
+  private _samplingBuffer: HTMLCanvasElement | null = null;
+  private _altSampling = false;
 
   /** Cached canvas of originalImageData at original size — avoids re-creating per resize tick */
   private _floatSrcCanvas: HTMLCanvasElement | null = null;
@@ -1041,6 +1043,75 @@ export class DrawingCanvas extends LitElement {
     this._dispatchZoomChange();
   }
 
+  // --- Eyedropper helpers ---
+
+  private _ensureSamplingBuffer(): CanvasRenderingContext2D {
+    if (!this._samplingBuffer || this._samplingBuffer.width !== this._docWidth || this._samplingBuffer.height !== this._docHeight) {
+      this._samplingBuffer = document.createElement('canvas');
+      this._samplingBuffer.width = this._docWidth;
+      this._samplingBuffer.height = this._docHeight;
+      this._samplingDirty = true;
+    }
+    const ctx = this._samplingBuffer.getContext('2d', { willReadFrequently: true })!;
+    if (this._samplingDirty) {
+      ctx.clearRect(0, 0, this._docWidth, this._docHeight);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, this._docWidth, this._docHeight);
+      const layers = this._ctx.value?.state.layers ?? [];
+      for (const layer of layers) {
+        if (!layer.visible) continue;
+        ctx.globalAlpha = layer.opacity;
+        ctx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
+        ctx.drawImage(layer.canvas, 0, 0);
+        ctx.globalCompositeOperation = 'source-over';
+      }
+      ctx.globalAlpha = 1;
+      this._samplingDirty = false;
+    }
+    return ctx;
+  }
+
+  private _sampleColor(docX: number, docY: number): string | null {
+    const x = Math.round(docX);
+    const y = Math.round(docY);
+    if (x < 0 || y < 0 || x >= this._docWidth || y >= this._docHeight) return null;
+
+    const sampleAll = this.ctx.state.eyedropperSampleAll;
+
+    if (sampleAll) {
+      const ctx = this._ensureSamplingBuffer();
+      const data = ctx.getImageData(x, y, 1, 1).data;
+      return `#${data[0].toString(16).padStart(2, '0')}${data[1].toString(16).padStart(2, '0')}${data[2].toString(16).padStart(2, '0')}`;
+    } else {
+      const layerCtx = this._getActiveLayerCtx();
+      if (!layerCtx) return null;
+      const data = layerCtx.getImageData(x, y, 1, 1).data;
+      if (data[3] === 0) return null;
+      if (data[3] < 255) {
+        const a = data[3] / 255;
+        const r = Math.round(data[0] * a + 255 * (1 - a));
+        const g = Math.round(data[1] * a + 255 * (1 - a));
+        const b = Math.round(data[2] * a + 255 * (1 - a));
+        return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+      }
+      return `#${data[0].toString(16).padStart(2, '0')}${data[1].toString(16).padStart(2, '0')}${data[2].toString(16).padStart(2, '0')}`;
+    }
+  }
+
+  private _renderEyedropperPreview(_e: PointerEvent) {
+    // Implemented in Task 10
+  }
+
+  private _clearEyedropperPreview() {
+    const previewCtx = this.previewCanvas?.getContext('2d');
+    if (previewCtx) previewCtx.clearRect(0, 0, this._vw, this._vh);
+  }
+
+  private _onWindowBlur = () => {
+    this._altSampling = false;
+    this._clearEyedropperPreview();
+  };
+
   // --- Pointer events ---
 
   private _onPointerDown(e: PointerEvent) {
@@ -1069,6 +1140,15 @@ export class DrawingCanvas extends LitElement {
 
     const { activeTool } = this.ctx.state;
 
+    // Alt-hold eyedropper modifier for drawing tools
+    if (e.altKey && (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser')) {
+      this._altSampling = true;
+      const p = this._getDocPoint(e);
+      const color = this._sampleColor(p.x, p.y);
+      if (color) this.ctx.setStrokeColor(color);
+      return;
+    }
+
     // Hand tool → pan
     if (activeTool === 'hand') {
       this._startPan(e);
@@ -1079,6 +1159,14 @@ export class DrawingCanvas extends LitElement {
       this.mainCanvas.setPointerCapture(e.pointerId);
       const p = this._getDocPoint(e);
       this._handleCropPointerDown(p);
+      return;
+    }
+
+    // Eyedropper tool → sample color
+    if (activeTool === 'eyedropper') {
+      const p = this._getDocPoint(e);
+      const color = this._sampleColor(p.x, p.y);
+      if (color) this.ctx.setStrokeColor(color);
       return;
     }
 
@@ -1210,6 +1298,25 @@ export class DrawingCanvas extends LitElement {
     }
 
     if (!this._ctx.value) return;
+
+    {
+      const activeTool = this.ctx.state.activeTool;
+
+      if (activeTool === 'eyedropper') {
+        this._renderEyedropperPreview(e);
+        return;
+      }
+
+      if (this._altSampling || (e.altKey && (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser'))) {
+        this._altSampling = e.altKey;
+        if (!e.altKey) {
+          this._clearEyedropperPreview();
+          return;
+        }
+        this._renderEyedropperPreview(e);
+        return;
+      }
+    }
 
     // Handle panning
     if (this._panning) {
@@ -2906,6 +3013,7 @@ export class DrawingCanvas extends LitElement {
     this.addEventListener('dragenter', this._onDragEnter);
     this.addEventListener('dragleave', this._onDragLeave);
     this.addEventListener('drop', this._onDrop);
+    window.addEventListener('blur', this._onWindowBlur);
   }
 
   override disconnectedCallback() {
@@ -2930,6 +3038,7 @@ export class DrawingCanvas extends LitElement {
     this.removeEventListener('dragenter', this._onDragEnter);
     this.removeEventListener('dragleave', this._onDragLeave);
     this.removeEventListener('drop', this._onDrop);
+    window.removeEventListener('blur', this._onWindowBlur);
   }
 
   /** Re-render the text preview on the overlay canvas with cursor and bounding box. */

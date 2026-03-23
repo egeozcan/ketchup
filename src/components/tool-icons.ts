@@ -87,6 +87,15 @@ export const toolIcons: Record<ToolType, ReturnType<typeof svg>> = {
       <path d="M15 13v-1"/>
     </svg>`,
 
+  // Eyedropper — color picker
+  eyedropper: svg`
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m2 22 1-1h3l9-9"/>
+      <path d="M3 21v-3l9-9"/>
+      <path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9"/>
+      <path d="m15 6 3 3"/>
+    </svg>`,
+
   // Text — capital T letterform
   text: svg`
     <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -157,6 +166,7 @@ export const toolShortcuts: Record<ToolType, string> = {
   stamp: 'S',
   text: 'X',
   crop: 'R',
+  eyedropper: 'I',
 };
 
 const shortcutToTool = new Map<string, ToolType>(
@@ -182,4 +192,5 @@ export const toolLabels: Record<ToolType, string> = {
   text: 'Text',
   hand: 'Hand (Pan)',
   crop: 'Crop',
+  eyedropper: 'Eyedropper',
 };
