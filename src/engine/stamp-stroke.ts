@@ -34,7 +34,12 @@ export class StampStrokeEngine {
     const curveFn = PRESSURE_CURVES[p.pressureCurve];
     const mappedPressure = curveFn(pressure);
 
-    const effectiveSpacing = Math.max(1, p.spacing * p.size);
+    // Compute spacing from the effective (pressure-adjusted) diameter so stamps
+    // overlap correctly even when pressure shrinks the brush significantly.
+    const effectiveSize = p.pressureSize
+      ? Math.max(1, p.size * mappedPressure)
+      : p.size;
+    const effectiveSpacing = Math.max(1, p.spacing * effectiveSize);
     const stamps = this._smoother.addPoint(x, y, mappedPressure, effectiveSpacing);
 
     const buf = this._bufferPool.current;
@@ -42,17 +47,17 @@ export class StampStrokeEngine {
     const ctx = get2dContext(buf);
 
     for (const stamp of stamps) {
-      const effectiveSize = p.pressureSize
+      const stampSize = p.pressureSize
         ? Math.max(1, p.size * stamp.pressure)
         : p.size;
-      const effectiveOpacity = p.pressureOpacity
+      const stampOpacity = p.pressureOpacity
         ? p.flow * stamp.pressure
         : p.flow;
 
-      const diam = quantizeDiameter(effectiveSize);
+      const diam = quantizeDiameter(stampSize);
       const tip = this._tipCache.get(diam, p.hardness);
 
-      ctx.globalAlpha = effectiveOpacity;
+      ctx.globalAlpha = stampOpacity;
       ctx.globalCompositeOperation = 'source-over';
       ctx.drawImage(
         tip as any,
@@ -69,9 +74,10 @@ export class StampStrokeEngine {
   commit(target: CanvasRenderingContext2D) {
     if (!this._params) return;
 
-    // Flush any remaining path segment
-    const effectiveSpacing = Math.max(1, this._params.spacing * this._params.size);
-    const remaining = this._smoother.flush(effectiveSpacing);
+    // Flush any remaining path segment — use base size for flush spacing
+    // since we don't have a current pressure value at commit time
+    const flushSpacing = Math.max(1, this._params.spacing * this._params.size);
+    const remaining = this._smoother.flush(flushSpacing);
     if (remaining.length > 0) {
       // Stamp remaining points — pressure is already curve-mapped from stroke(),
       // so use stamp.pressure directly (do NOT re-apply the curve)
