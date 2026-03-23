@@ -1,4 +1,4 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
@@ -866,7 +866,8 @@ export class ToolSettings extends LitElement {
 
   override render() {
     if (!this._ctx.value) return html``;
-    const { strokeColor, fillColor, useFill, brushSize, activeTool, stampImage } = this.ctx.state;
+    const state = this.ctx.state;
+    const { strokeColor, fillColor, useFill, brushSize, activeTool, stampImage } = state;
 
     const isMobile = this.ctx.isMobile;
 
@@ -947,6 +948,62 @@ export class ToolSettings extends LitElement {
         />
         <span class="size-value">${brushSize}</span>
       </div>
+
+      ${(activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser') ? html`
+        <div class="separator"></div>
+        <div class="section">
+          <label>Opacity</label>
+          <input type="range" min="0" max="100" .value=${String(Math.round(state.opacity * 100))}
+            @input=${(e: Event) => this.ctx.setOpacity(Number((e.target as HTMLInputElement).value) / 100)} />
+          <span class="size-value">${Math.round(state.opacity * 100)}%</span>
+        </div>
+        <div class="section">
+          <label>Flow</label>
+          <input type="range" min="1" max="100" .value=${String(Math.round(state.flow * 100))}
+            @input=${(e: Event) => this.ctx.setFlow(Number((e.target as HTMLInputElement).value) / 100)} />
+          <span class="size-value">${Math.round(state.flow * 100)}%</span>
+        </div>
+        <div class="section">
+          <label>Hardness</label>
+          <input type="range" min="0" max="100" .value=${String(Math.round(state.hardness * 100))}
+            @input=${(e: Event) => this.ctx.setHardness(Number((e.target as HTMLInputElement).value) / 100)} />
+          <span class="size-value">${Math.round(state.hardness * 100)}%</span>
+        </div>
+        <div class="separator"></div>
+        <div class="section">
+          <label class="checkbox-label">
+            <input type="checkbox" .checked=${state.pressureSize}
+              @change=${(e: Event) => this.ctx.setPressureSize((e.target as HTMLInputElement).checked)} />
+            Pressure Size
+          </label>
+        </div>
+        <div class="section">
+          <label class="checkbox-label">
+            <input type="checkbox" .checked=${state.pressureOpacity}
+              @change=${(e: Event) => this.ctx.setPressureOpacity((e.target as HTMLInputElement).checked)} />
+            Pressure Opacity
+          </label>
+        </div>
+        <div class="section">
+          <label>Curve</label>
+          <select class="font-select" .value=${state.pressureCurve}
+            @change=${(e: Event) => this.ctx.setPressureCurve((e.target as HTMLSelectElement).value as any)}>
+            <option value="linear">Linear</option>
+            <option value="light">Light</option>
+            <option value="heavy">Heavy</option>
+          </select>
+        </div>
+      ` : nothing}
+
+      ${activeTool === 'eyedropper' ? html`
+        <div class="section">
+          <label class="checkbox-label">
+            <input type="checkbox" .checked=${state.eyedropperSampleAll}
+              @change=${(e: Event) => this.ctx.setEyedropperSampleAll((e.target as HTMLInputElement).checked)} />
+            Sample all layers
+          </label>
+        </div>
+      ` : nothing}
 
       ${this._showsShapeOptions()
         ? html`
