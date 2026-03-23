@@ -444,6 +444,7 @@ export class DrawingCanvas extends LitElement {
       case 'visibility':
       case 'opacity':
       case 'rename':
+      case 'blend-mode':
         return entry.layerId;
       case 'add-layer':
       case 'delete-layer':
@@ -602,6 +603,17 @@ export class DrawingCanvas extends LitElement {
         }
         break;
       }
+      case 'blend-mode': {
+        const layer = state.layers.find(l => l.id === entry.layerId);
+        if (layer) {
+          (layer as unknown as Record<string, unknown>).blendMode = entry.before;
+          this.dispatchEvent(new CustomEvent('layer-undo', {
+            bubbles: true, composed: true,
+            detail: { action: 'refresh' },
+          }));
+        }
+        break;
+      }
       case 'crop': {
         this.dispatchEvent(new CustomEvent('layer-undo', {
           bubbles: true, composed: true,
@@ -684,6 +696,17 @@ export class DrawingCanvas extends LitElement {
         const layer = state.layers.find(l => l.id === entry.layerId);
         if (layer) {
           layer.name = entry.after;
+          this.dispatchEvent(new CustomEvent('layer-undo', {
+            bubbles: true, composed: true,
+            detail: { action: 'refresh' },
+          }));
+        }
+        break;
+      }
+      case 'blend-mode': {
+        const layer = state.layers.find(l => l.id === entry.layerId);
+        if (layer) {
+          (layer as unknown as Record<string, unknown>).blendMode = entry.after;
           this.dispatchEvent(new CustomEvent('layer-undo', {
             bubbles: true, composed: true,
             detail: { action: 'refresh' },
@@ -1957,7 +1980,7 @@ export class DrawingCanvas extends LitElement {
     const beforeLayers: LayerSnapshot[] = state.layers.map(l => {
       const ctx = l.canvas.getContext('2d')!;
       return {
-        id: l.id, name: l.name, visible: l.visible, opacity: l.opacity,
+        id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode,
         imageData: ctx.getImageData(0, 0, l.canvas.width, l.canvas.height),
       };
     });
@@ -1977,7 +2000,7 @@ export class DrawingCanvas extends LitElement {
     const afterLayers: LayerSnapshot[] = state.layers.map(l => {
       const ctx = l.canvas.getContext('2d')!;
       return {
-        id: l.id, name: l.name, visible: l.visible, opacity: l.opacity,
+        id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode,
         imageData: ctx.getImageData(0, 0, l.canvas.width, l.canvas.height),
       };
     });

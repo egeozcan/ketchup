@@ -2,6 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
+import { blendModeToCompositeOp, type BlendMode, type PressureCurveName } from '../engine/types.js';
 import type { DrawingState, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
 import { IndexedDBBackend, ProjectService, StorageQuotaError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
@@ -90,6 +91,7 @@ export class DrawingApp extends LitElement {
       name: `Layer ${this._layerCounter}`,
       visible: true,
       opacity: 1.0,
+      blendMode: 'normal' as BlendMode,
       canvas,
     };
   }
@@ -171,6 +173,14 @@ export class DrawingApp extends LitElement {
       fontSize: 24,
       fontBold: false,
       fontItalic: false,
+      opacity: 1,
+      flow: 1,
+      hardness: 1,
+      spacing: 0.25,
+      pressureSize: true,
+      pressureOpacity: false,
+      pressureCurve: 'linear' as const,
+      eyedropperSampleAll: true,
     };
     this._provider = new ContextProvider(this, {
       context: drawingContext,
@@ -185,6 +195,7 @@ export class DrawingApp extends LitElement {
       name: layer.name,
       visible: layer.visible,
       opacity: layer.opacity,
+      blendMode: layer.blendMode,
       imageData: ctx.getImageData(0, 0, layer.canvas.width, layer.canvas.height),
     };
   }
@@ -197,16 +208,22 @@ export class DrawingApp extends LitElement {
    * Composites the given layers (in order, bottom-to-top) onto a new
    * offscreen canvas, baking each layer's opacity into the result.
    */
-  private _compositeLayers(layers: Layer[]): HTMLCanvasElement {
+  private _compositeLayers(layers: Layer[], background: string | null = '#ffffff'): HTMLCanvasElement {
     const w = this._state.documentWidth;
     const h = this._state.documentHeight;
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d')!;
+    if (background) {
+      ctx.fillStyle = background;
+      ctx.fillRect(0, 0, w, h);
+    }
     for (const layer of layers) {
       ctx.globalAlpha = layer.opacity;
+      ctx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
       ctx.drawImage(layer.canvas, 0, 0);
+      ctx.globalCompositeOperation = 'source-over';
     }
     ctx.globalAlpha = 1;
     return canvas;
@@ -295,6 +312,14 @@ export class DrawingApp extends LitElement {
             fillColor: this._state.fillColor,
             useFill: this._state.useFill,
             brushSize: this._state.brushSize,
+            opacity: this._state.opacity,
+            flow: this._state.flow,
+            hardness: this._state.hardness,
+            spacing: this._state.spacing,
+            pressureSize: this._state.pressureSize,
+            pressureOpacity: this._state.pressureOpacity,
+            pressureCurve: this._state.pressureCurve,
+            eyedropperSampleAll: this._state.eyedropperSampleAll,
           };
           const snapshotWidth = this._state.documentWidth;
           const snapshotHeight = this._state.documentHeight;
@@ -315,10 +340,10 @@ export class DrawingApp extends LitElement {
               const tmpCtx = tmp.getContext('2d')!;
               tmpCtx.putImageData(imageData, 0, 0);
               tmpCtx.drawImage(floatSnap.tempCanvas, floatSnap.x, floatSnap.y);
-              return { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity,
+              return { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode,
                 imageData: tmpCtx.getImageData(0, 0, tmp.width, tmp.height) };
             }
-            return { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, imageData };
+            return { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode, imageData };
           });
           const viewport = this.canvas?.getViewport() ?? { zoom: 1, panX: 0, panY: 0 };
           const historySnapshot = this.canvas?.getHistory() ?? [];
@@ -621,6 +646,26 @@ export class DrawingApp extends LitElement {
     } else if (ctrl && e.key === '-') {
       e.preventDefault();
       this.canvas?.zoomOut();
+    } else if (!ctrl && !e.altKey && (key === '[' || key === ']')) {
+      e.preventDefault();
+      const current = this._state.brushSize;
+      const maxSize = 200;
+      const minSize = 1;
+      if (key === ']') {
+        const newSize = Math.min(maxSize, Math.max(current + 1, Math.round(current * 1.1)));
+        this._state = { ...this._state, brushSize: newSize };
+      } else {
+        const newSize = Math.max(minSize, Math.min(current - 1, Math.round(current / 1.1)));
+        this._state = { ...this._state, brushSize: newSize };
+      }
+    } else if (!ctrl && !e.altKey && (e.key === '{' || e.key === '}')) {
+      e.preventDefault();
+      const current = this._state.hardness;
+      if (e.key === '}') {
+        this._state = { ...this._state, hardness: Math.round(Math.min(1, current + 0.1) * 10) / 10 };
+      } else {
+        this._state = { ...this._state, hardness: Math.round(Math.max(0, current - 0.1) * 10) / 10 };
+      }
     } else if (!ctrl && !e.altKey && !e.shiftKey && key.length === 1) {
       const tool = toolForShortcut(key);
       if (tool && tool !== this._state.activeTool) {
@@ -656,6 +701,14 @@ export class DrawingApp extends LitElement {
       fontSize: 24,
       fontBold: false,
       fontItalic: false,
+      opacity: 1,
+      flow: 1,
+      hardness: 1,
+      spacing: 0.25,
+      pressureSize: true,
+      pressureOpacity: false,
+      pressureCurve: 'linear' as const,
+      eyedropperSampleAll: true,
     };
     await this.updateComplete;
     this.canvas?.setHistory([], -1);
@@ -727,6 +780,14 @@ export class DrawingApp extends LitElement {
         fontSize: 24,
         fontBold: false,
         fontItalic: false,
+        opacity: record.toolSettings.opacity ?? 1,
+        flow: record.toolSettings.flow ?? 1,
+        hardness: record.toolSettings.hardness ?? 1,
+        spacing: record.toolSettings.spacing ?? 0.25,
+        pressureSize: record.toolSettings.pressureSize ?? true,
+        pressureOpacity: record.toolSettings.pressureOpacity ?? false,
+        pressureCurve: record.toolSettings.pressureCurve ?? 'linear',
+        eyedropperSampleAll: record.toolSettings.eyedropperSampleAll ?? true,
       };
       await this.updateComplete;
       this.canvas?.setHistory(history, record.historyIndex ?? (history.length - 1));
@@ -870,6 +931,17 @@ export class DrawingApp extends LitElement {
         this.canvas?.pushLayerOperation({ type: 'rename', layerId: id, before, after: name });
         this._markDirty();
       },
+      setLayerBlendMode: (id: string, mode: BlendMode) => {
+        const layer = this._state.layers.find(l => l.id === id);
+        if (!layer || layer.blendMode === mode) return;
+        const before = layer.blendMode;
+        const newLayers = this._state.layers.map(l =>
+          l.id === id ? { ...l, blendMode: mode } : l
+        );
+        this._state = { ...this._state, layers: newLayers };
+        this.canvas?.pushLayerOperation({ type: 'blend-mode', layerId: id, before, after: mode });
+        this._markDirty();
+      },
       mergeLayerDown: (id: string) => {
         const layers = this._state.layers;
         const idx = layers.findIndex(l => l.id === id);
@@ -888,7 +960,7 @@ export class DrawingApp extends LitElement {
         const newLayers = layers
           .filter(l => l.id !== topLayer.id)
           .map(l => l.id === bottomLayer.id
-            ? { ...l, canvas: mergedCanvas, opacity: 1 }
+            ? { ...l, canvas: mergedCanvas, opacity: 1, blendMode: 'normal' as BlendMode }
             : l);
 
         this._state = { ...this._state, layers: newLayers, activeLayerId: bottomLayer.id };
@@ -920,7 +992,7 @@ export class DrawingApp extends LitElement {
         const newLayers = layers
           .filter(l => !visibleIds.has(l.id) || l.id === target.id)
           .map(l => l.id === target.id
-            ? { ...l, canvas: mergedCanvas, opacity: 1 }
+            ? { ...l, canvas: mergedCanvas, opacity: 1, blendMode: 'normal' as BlendMode }
             : l);
 
         // If active layer was hidden, it survives the merge — keep it active.
@@ -957,6 +1029,7 @@ export class DrawingApp extends LitElement {
           name: target.name,
           visible: true,
           opacity: 1,
+          blendMode: 'normal' as BlendMode,
           canvas: mergedCanvas,
         };
 
@@ -996,6 +1069,14 @@ export class DrawingApp extends LitElement {
         this._state = { ...this._state, fontItalic: italic };
         this._markDirty();
       },
+      setOpacity: (v: number) => { this._state = { ...this._state, opacity: Math.max(0, Math.min(1, v)) }; },
+      setFlow: (v: number) => { this._state = { ...this._state, flow: Math.max(0, Math.min(1, v)) }; },
+      setHardness: (v: number) => { this._state = { ...this._state, hardness: Math.round(Math.max(0, Math.min(1, v)) * 10) / 10 }; },
+      setSpacing: (v: number) => { this._state = { ...this._state, spacing: Math.max(0.05, Math.min(1, v)) }; },
+      setPressureSize: (v: boolean) => { this._state = { ...this._state, pressureSize: v }; },
+      setPressureOpacity: (v: boolean) => { this._state = { ...this._state, pressureOpacity: v }; },
+      setPressureCurve: (v: PressureCurveName) => { this._state = { ...this._state, pressureCurve: v }; },
+      setEyedropperSampleAll: (v: boolean) => { this._state = { ...this._state, eyedropperSampleAll: v }; },
       canUndo: this._canUndo,
       canRedo: this._canRedo,
       // Project operations
@@ -1144,6 +1225,7 @@ export class DrawingApp extends LitElement {
           name: snapshot.name,
           visible: snapshot.visible,
           opacity: snapshot.opacity,
+          blendMode: snapshot.blendMode ?? ('normal' as BlendMode),
           canvas,
         };
         const newLayers = [...this._state.layers];
@@ -1179,7 +1261,7 @@ export class DrawingApp extends LitElement {
           canvas.width = snap.imageData.width;
           canvas.height = snap.imageData.height;
           canvas.getContext('2d')!.putImageData(snap.imageData, 0, 0);
-          return { ...layer, canvas, visible: snap.visible, opacity: snap.opacity, name: snap.name };
+          return { ...layer, canvas, visible: snap.visible, opacity: snap.opacity, blendMode: snap.blendMode ?? ('normal' as BlendMode), name: snap.name };
         });
         this._applyDocumentDimensions(width, height);
         this._state = { ...this._state, layers: newLayers };
@@ -1198,6 +1280,7 @@ export class DrawingApp extends LitElement {
             name: snap.name,
             visible: snap.visible,
             opacity: snap.opacity,
+            blendMode: snap.blendMode ?? ('normal' as BlendMode),
             canvas,
           };
         });

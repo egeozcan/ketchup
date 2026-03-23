@@ -1,5 +1,6 @@
 // src/utils/storage-serialization.ts
 import type { Layer, LayerSnapshot, HistoryEntry } from '../types.js';
+import type { BlendMode } from '../engine/types.js';
 import type {
   BlobStore,
   SerializedLayer,
@@ -34,6 +35,7 @@ async function serializeSnapshot(snapshot: LayerSnapshot, blobs: BlobStore): Pro
     name: snapshot.name,
     visible: snapshot.visible,
     opacity: snapshot.opacity,
+    blendMode: snapshot.blendMode,
     imageData: await serializeImageData(snapshot.imageData, blobs),
   };
 }
@@ -44,6 +46,7 @@ async function deserializeSnapshot(s: SerializedLayerSnapshot, blobs: BlobStore)
     name: s.name,
     visible: s.visible,
     opacity: s.opacity,
+    blendMode: (s.blendMode as BlendMode) ?? 'normal',
     imageData: await deserializeImageData(s.imageData, blobs),
   };
 }
@@ -53,13 +56,13 @@ async function deserializeSnapshot(s: SerializedLayerSnapshot, blobs: BlobStore)
 // ---------------------------------------------------------------------------
 
 export async function serializeLayerFromImageData(
-  meta: { id: string; name: string; visible: boolean; opacity: number },
+  meta: { id: string; name: string; visible: boolean; opacity: number; blendMode?: string },
   imageData: ImageData,
   blobs: BlobStore,
 ): Promise<SerializedLayer> {
   const blob = await imageDataToBlob(imageData);
   const imageBlobRef = await blobs.put(blob);
-  return { id: meta.id, name: meta.name, visible: meta.visible, opacity: meta.opacity, imageBlobRef };
+  return { id: meta.id, name: meta.name, visible: meta.visible, opacity: meta.opacity, blendMode: meta.blendMode ?? 'normal', imageBlobRef };
 }
 
 export async function deserializeLayer(
@@ -70,7 +73,7 @@ export async function deserializeLayer(
 ): Promise<Layer> {
   const blob = await blobs.get(sl.imageBlobRef);
   const canvas = await blobToCanvas(blob, width, height);
-  return { id: sl.id, name: sl.name, visible: sl.visible, opacity: sl.opacity, canvas };
+  return { id: sl.id, name: sl.name, visible: sl.visible, opacity: sl.opacity, blendMode: (sl.blendMode as BlendMode) ?? 'normal', canvas };
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +122,7 @@ export async function serializeHistoryEntry(
     case 'visibility':
     case 'opacity':
     case 'rename':
+    case 'blend-mode':
       return entry;
   }
 }
@@ -166,5 +170,7 @@ export async function deserializeHistoryEntry(
     case 'opacity':
     case 'rename':
       return entry;
+    case 'blend-mode':
+      return { type: 'blend-mode', layerId: entry.layerId, before: entry.before as BlendMode, after: entry.after as BlendMode };
   }
 }

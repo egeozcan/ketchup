@@ -363,6 +363,7 @@ describe('DrawingApp', () => {
       name: 'Layer 1',
       visible: true,
       opacity: 1,
+      blendMode: 'normal',
       canvas: document.createElement('canvas'),
     });
 
