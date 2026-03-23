@@ -1443,6 +1443,8 @@ export class DrawingCanvas extends LitElement {
     this._startPoint = p;
 
     if (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser') {
+      // Clear the brush cursor ring from the preview canvas before drawing starts
+      this.previewCanvas?.getContext('2d')?.clearRect(0, 0, this._vw, this._vh);
       this._captureBeforeDraw();
       const params = this._buildBrushParams();
       this._engine.begin(params, this._docWidth, this._docHeight);
