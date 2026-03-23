@@ -83,6 +83,8 @@ Raw pointer events fire at the browser polling rate (60–120Hz). Fast curves pr
 - At each subdivision point, **lerps pressure** between the two bracketing raw samples based on arc-length position along the spline.
 - Edge case: fewer than 4 points accumulated (stroke start) — falls back to linear interpolation until the window fills.
 
+**Arc-length interpolation (not time-based):** The spline subdivision must be based on spatial distance (arc length) between points, not timestamps. Browser pointer events can cluster with identical timestamps, which causes division-by-zero errors or bunched-up stamps if the math relies on time deltas. Timestamps are stored for pressure lerping reference but are not used for subdivision stepping.
+
 **Single-point strokes (click without drag):** When only 1 point is received (pointer down + pointer up at same position, no pointer move), the interpolator emits a single stamp at the click position with the pressure from that event. This matches the existing behavior where `_drawBrushAt(p, p)` draws a single dot.
 
 ### 1.5 Stamp Loop
@@ -218,6 +220,8 @@ Two modes controlled by a checkbox in tool-settings ("Sample all layers"):
 - **Active layer only:** `getImageData(x, y, 1, 1)` from the active layer's offscreen canvas directly.
 
 Default: composite.
+
+**`willReadFrequently` hint:** The sampling buffer and any canvas used for `getImageData` calls (including active layer canvases in eyedropper mode) should have their 2D context initialized with `{ willReadFrequently: true }`. On Chromium, this keeps canvas memory on the CPU rather than the GPU, preventing the pipeline stall that `getImageData` normally triggers. This hint should be applied at context creation time for the sampling buffer. For active layer canvases, evaluate whether the tradeoff is worthwhile (CPU-backed canvases are slower for `drawImage` operations).
 
 **Alpha guard:** In active-layer mode, if the sampled pixel's alpha is 0, the sample is ignored — `strokeColor` is not updated. If alpha is between 1 and 254 (semi-transparent), the color is composited against white to produce an opaque hex value matching what the user sees. In composite mode, the sampling buffer already has a white base, so all pixels are opaque and no guard is needed.
 
