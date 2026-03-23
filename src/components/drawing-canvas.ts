@@ -1098,8 +1098,80 @@ export class DrawingCanvas extends LitElement {
     }
   }
 
-  private _renderEyedropperPreview(_e: PointerEvent) {
-    // Implemented in Task 10
+  private _renderEyedropperPreview(e: PointerEvent) {
+    const previewCtx = this.previewCanvas.getContext('2d')!;
+    previewCtx.clearRect(0, 0, this._vw, this._vh);
+
+    const docPoint = this._getDocPoint(e);
+    const color = this._sampleColor(docPoint.x, docPoint.y);
+
+    const sampleAll = this.ctx.state.eyedropperSampleAll;
+    const sourceCanvas = sampleAll ? this.mainCanvas : (this._getActiveLayerCtx()?.canvas ?? this.mainCanvas);
+
+    const GRID_SIZE = 88;
+    const SWATCH_HEIGHT = 24;
+    const TOTAL_HEIGHT = GRID_SIZE + SWATCH_HEIGHT + 4;
+    const OFFSET = 20;
+
+    const rect = this.mainCanvas.getBoundingClientRect();
+    let destX = e.clientX - rect.left + OFFSET;
+    let destY = e.clientY - rect.top - OFFSET - TOTAL_HEIGHT;
+
+    if (destX + GRID_SIZE > this._vw) destX = destX - GRID_SIZE - 2 * OFFSET;
+    if (destY < 0) destY = destY + TOTAL_HEIGHT + 2 * OFFSET;
+
+    previewCtx.save();
+    previewCtx.imageSmoothingEnabled = false;
+
+    if (sampleAll) {
+      const srcX = e.clientX - rect.left;
+      const srcY = e.clientY - rect.top;
+      previewCtx.drawImage(this.mainCanvas, srcX - 5, srcY - 5, 11, 11, destX, destY, GRID_SIZE, GRID_SIZE);
+    } else {
+      const srcX = Math.round(docPoint.x);
+      const srcY = Math.round(docPoint.y);
+      previewCtx.drawImage(sourceCanvas, srcX - 5, srcY - 5, 11, 11, destX, destY, GRID_SIZE, GRID_SIZE);
+    }
+
+    previewCtx.restore();
+
+    // Grid lines
+    previewCtx.strokeStyle = 'rgba(255,255,255,0.3)';
+    previewCtx.lineWidth = 0.5;
+    const cellSize = GRID_SIZE / 11;
+    for (let i = 0; i <= 11; i++) {
+      const x = destX + i * cellSize;
+      const y = destY + i * cellSize;
+      previewCtx.beginPath();
+      previewCtx.moveTo(x, destY);
+      previewCtx.lineTo(x, destY + GRID_SIZE);
+      previewCtx.stroke();
+      previewCtx.beginPath();
+      previewCtx.moveTo(destX, y);
+      previewCtx.lineTo(destX + GRID_SIZE, y);
+      previewCtx.stroke();
+    }
+
+    // Center crosshair
+    const cx = destX + 5 * cellSize;
+    const cy = destY + 5 * cellSize;
+    previewCtx.strokeStyle = '#fff';
+    previewCtx.lineWidth = 1.5;
+    previewCtx.strokeRect(cx, cy, cellSize, cellSize);
+
+    // Border
+    previewCtx.strokeStyle = '#555';
+    previewCtx.lineWidth = 1;
+    previewCtx.strokeRect(destX - 0.5, destY - 0.5, GRID_SIZE + 1, TOTAL_HEIGHT + 1);
+
+    // Color swatch and hex label
+    if (color) {
+      previewCtx.fillStyle = color;
+      previewCtx.fillRect(destX, destY + GRID_SIZE + 2, SWATCH_HEIGHT, SWATCH_HEIGHT);
+      previewCtx.fillStyle = '#fff';
+      previewCtx.font = '11px monospace';
+      previewCtx.fillText(color.toUpperCase(), destX + SWATCH_HEIGHT + 6, destY + GRID_SIZE + 16);
+    }
   }
 
   private _clearEyedropperPreview() {
