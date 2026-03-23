@@ -101,6 +101,7 @@ export class DrawingCanvas extends LitElement {
 
   private _engine = new StampStrokeEngine();
   private _tintPreviewCanvas: HTMLCanvasElement | null = null;
+  private _strokeTintCanvas: HTMLCanvasElement | null = null;
   private _samplingDirty = true;
   private _samplingBuffer: HTMLCanvasElement | null = null;
   private _altSampling = false;
@@ -222,37 +223,64 @@ export class DrawingCanvas extends LitElement {
       if (hasBlend) {
         displayCtx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
       }
-      displayCtx.drawImage(layer.canvas, 0, 0);
-
-      // Show in-progress stroke during painting
+      // Show in-progress stroke preview merged with the layer content.
+      // Both eraser and paint previews are composited onto a temp canvas first,
+      // then drawn to the display — this avoids destination-out punching through
+      // the checkerboard/workspace on the display canvas.
       if (this._drawing && layer.id === activeLayerId) {
         const preview = this._engine.getStrokePreview();
         if (preview) {
-          displayCtx.save();
-          if (preview.eraser) {
-            displayCtx.globalAlpha = preview.opacity;
-            displayCtx.globalCompositeOperation = 'destination-out';
-            displayCtx.drawImage(preview.canvas as any, 0, 0);
-          } else {
-            // Tint a cached copy for display (don't mutate the stroke buffer)
-            if (!this._tintPreviewCanvas || this._tintPreviewCanvas.width !== this._docWidth || this._tintPreviewCanvas.height !== this._docHeight) {
-              this._tintPreviewCanvas = document.createElement('canvas');
-              this._tintPreviewCanvas.width = this._docWidth;
-              this._tintPreviewCanvas.height = this._docHeight;
-            }
-            const tintCtx = this._tintPreviewCanvas.getContext('2d')!;
-            tintCtx.globalCompositeOperation = 'source-over';
-            tintCtx.clearRect(0, 0, this._docWidth, this._docHeight);
-            tintCtx.drawImage(preview.canvas as any, 0, 0);
-            tintCtx.globalCompositeOperation = 'source-in';
-            tintCtx.fillStyle = preview.color;
-            tintCtx.fillRect(0, 0, this._docWidth, this._docHeight);
-            tintCtx.globalCompositeOperation = 'source-over';
-            displayCtx.globalAlpha = preview.opacity;
-            displayCtx.drawImage(this._tintPreviewCanvas, 0, 0);
+          if (!this._tintPreviewCanvas || this._tintPreviewCanvas.width !== this._docWidth || this._tintPreviewCanvas.height !== this._docHeight) {
+            this._tintPreviewCanvas = document.createElement('canvas');
+            this._tintPreviewCanvas.width = this._docWidth;
+            this._tintPreviewCanvas.height = this._docHeight;
           }
-          displayCtx.restore();
+          const tintCtx = this._tintPreviewCanvas.getContext('2d')!;
+          tintCtx.globalCompositeOperation = 'source-over';
+          tintCtx.clearRect(0, 0, this._docWidth, this._docHeight);
+
+          // Start with the layer content
+          tintCtx.drawImage(layer.canvas, 0, 0);
+
+          if (preview.eraser) {
+            // Apply eraser: destination-out on the layer copy
+            tintCtx.globalAlpha = preview.opacity;
+            tintCtx.globalCompositeOperation = 'destination-out';
+            tintCtx.drawImage(preview.canvas as any, 0, 0);
+          } else {
+            // Tint the stroke buffer, then overlay on the layer copy
+            // Use a second temp region: draw stroke mask, tint it, composite
+            const w = this._docWidth;
+            const h = this._docHeight;
+            if (!this._strokeTintCanvas || this._strokeTintCanvas.width !== w || this._strokeTintCanvas.height !== h) {
+              this._strokeTintCanvas = document.createElement('canvas');
+              this._strokeTintCanvas.width = w;
+              this._strokeTintCanvas.height = h;
+            }
+            const strokeCtx = this._strokeTintCanvas.getContext('2d')!;
+            strokeCtx.globalCompositeOperation = 'source-over';
+            strokeCtx.clearRect(0, 0, w, h);
+            strokeCtx.drawImage(preview.canvas as any, 0, 0);
+            strokeCtx.globalCompositeOperation = 'source-in';
+            strokeCtx.fillStyle = preview.color;
+            strokeCtx.fillRect(0, 0, w, h);
+            strokeCtx.globalCompositeOperation = 'source-over';
+
+            tintCtx.globalAlpha = preview.opacity;
+            tintCtx.globalCompositeOperation = 'source-over';
+            tintCtx.drawImage(this._strokeTintCanvas!, 0, 0);
+          }
+
+          tintCtx.globalAlpha = 1;
+          tintCtx.globalCompositeOperation = 'source-over';
+
+          // Draw the combined layer+stroke preview instead of the raw layer
+          displayCtx.drawImage(this._tintPreviewCanvas, 0, 0);
+        } else {
+          displayCtx.drawImage(layer.canvas, 0, 0);
         }
+      } else {
+        displayCtx.drawImage(layer.canvas, 0, 0);
       }
 
       // Draw the float right after its owning layer so it composites
