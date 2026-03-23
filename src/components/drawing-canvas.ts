@@ -105,6 +105,10 @@ export class DrawingCanvas extends LitElement {
   private _samplingBuffer: HTMLCanvasElement | null = null;
   private _altSampling = false;
 
+  private _lastPointerScreenX = 0;
+  private _lastPointerScreenY = 0;
+  private _pointerOnCanvas = false;
+
   /** Cached canvas of originalImageData at original size — avoids re-creating per resize tick */
   private _floatSrcCanvas: HTMLCanvasElement | null = null;
 
@@ -338,6 +342,8 @@ export class DrawingCanvas extends LitElement {
         this._renderTextPreview();
       }
     }
+
+    this._renderPreview();
   }
 
   override firstUpdated() {
@@ -1184,6 +1190,64 @@ export class DrawingCanvas extends LitElement {
     this._clearEyedropperPreview();
   };
 
+  // --- Brush cursor / preview ---
+
+  private _renderBrushCursor() {
+    if (!this._pointerOnCanvas) return;
+    if (this._altSampling) return;
+    const { activeTool, brushSize, hardness } = this.ctx.state;
+    if (activeTool !== 'pencil' && activeTool !== 'marker' && activeTool !== 'eraser') return;
+
+    const previewCtx = this.previewCanvas.getContext('2d')!;
+
+    const cx = this._lastPointerScreenX;
+    const cy = this._lastPointerScreenY;
+    const outerRadius = (brushSize / 2) * this._zoom;
+
+    // Outer ring: black + white (inverted outline)
+    previewCtx.beginPath();
+    previewCtx.arc(cx, cy, outerRadius, 0, Math.PI * 2);
+    previewCtx.strokeStyle = 'rgba(0,0,0,0.7)';
+    previewCtx.lineWidth = 1.5;
+    previewCtx.stroke();
+    previewCtx.beginPath();
+    previewCtx.arc(cx, cy, outerRadius, 0, Math.PI * 2);
+    previewCtx.strokeStyle = 'rgba(255,255,255,0.7)';
+    previewCtx.lineWidth = 0.75;
+    previewCtx.stroke();
+
+    // Inner dashed ring for hardness
+    if (hardness < 1) {
+      const innerRadius = outerRadius * hardness;
+      previewCtx.beginPath();
+      previewCtx.arc(cx, cy, innerRadius, 0, Math.PI * 2);
+      previewCtx.setLineDash([3, 3]);
+      previewCtx.strokeStyle = 'rgba(255,255,255,0.5)';
+      previewCtx.lineWidth = 0.75;
+      previewCtx.stroke();
+      previewCtx.setLineDash([]);
+    }
+  }
+
+  private _renderPreview() {
+    const previewCtx = this.previewCanvas?.getContext('2d');
+    if (!previewCtx) return;
+
+    const { activeTool } = this.ctx.state;
+
+    if (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser' || activeTool === 'eyedropper') {
+      previewCtx.clearRect(0, 0, this._vw, this._vh);
+
+      if (this._altSampling || activeTool === 'eyedropper') {
+        return;
+      }
+
+      if (!this._drawing) {
+        this._renderBrushCursor();
+      }
+    }
+  }
+
   // --- Pointer events ---
 
   private _onPointerDown(e: PointerEvent) {
@@ -1363,6 +1427,10 @@ export class DrawingCanvas extends LitElement {
       this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     }
 
+    const rect = this.mainCanvas.getBoundingClientRect();
+    this._lastPointerScreenX = e.clientX - rect.left;
+    this._lastPointerScreenY = e.clientY - rect.top;
+
     // Handle pinch/pan gesture
     if (this._pinching) {
       this._updatePinch();
@@ -1444,6 +1512,11 @@ export class DrawingCanvas extends LitElement {
     if (activeTool === 'stamp' && this._float) {
       this._handleSelectPointerMove(e);
       return;
+    }
+
+    // Render brush cursor when hovering (not drawing)
+    if (!this._drawing && (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser')) {
+      this._renderPreview();
     }
 
     if (!this._drawing || !this._lastPoint) return;
@@ -1609,7 +1682,17 @@ export class DrawingCanvas extends LitElement {
     this.composite();
   }
 
+  private _onPointerEnter = (e: PointerEvent) => {
+    this._pointerOnCanvas = true;
+    const rect = this.mainCanvas.getBoundingClientRect();
+    this._lastPointerScreenX = e.clientX - rect.left;
+    this._lastPointerScreenY = e.clientY - rect.top;
+    this._renderPreview();
+  };
+
   private _onPointerLeave(e: PointerEvent) {
+    this._pointerOnCanvas = false;
+    this._renderPreview();
     if (this._pinching) {
       return;
     }
@@ -3374,6 +3457,7 @@ export class DrawingCanvas extends LitElement {
     return html`
       <canvas
         id="main"
+        @pointerenter=${this._onPointerEnter}
         @pointerdown=${this._onPointerDown}
         @pointermove=${this._onPointerMove}
         @pointerup=${this._onPointerUp}
