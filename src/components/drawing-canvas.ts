@@ -3,10 +3,10 @@ import { customElement, query } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { Point, HistoryEntry, Layer, FloatingSelection, LayerSnapshot } from '../types.js';
-import { drawPencilSegment } from '../tools/pencil.js';
-import { drawMarkerSegment } from '../tools/marker.js';
-import { drawEraserSegment } from '../tools/eraser.js';
 import { drawShapePreview } from '../tools/shapes.js';
+import { StampStrokeEngine } from '../engine/stamp-stroke.js';
+import { blendModeToCompositeOp } from '../engine/types.js';
+import type { BrushParams } from '../engine/types.js';
 import { floodFill } from '../tools/fill.js';
 import { drawSelectionRect, drawRotationHandle, ROTATION_HANDLE_OFFSET, ROTATION_HANDLE_RADIUS } from '../tools/select.js';
 import { drawCropOverlay, hitTestCropHandle, parseAspectRatio, constrainCropToRatio, type CropRect, type CropHandle } from '../tools/crop.js';
@@ -99,6 +99,10 @@ export class DrawingCanvas extends LitElement {
   private _selectionDashOffset = 0;
   private _selectionAnimFrame: number | null = null;
 
+  private _engine = new StampStrokeEngine();
+  private _tintPreviewCanvas: HTMLCanvasElement | null = null;
+  private _samplingDirty = true;
+
   /** Cached canvas of originalImageData at original size — avoids re-creating per resize tick */
   private _floatSrcCanvas: HTMLCanvasElement | null = null;
 
@@ -146,12 +150,29 @@ export class DrawingCanvas extends LitElement {
   // --- Public dimension accessors ---
   public getWidth() { return this._docWidth; }
   public getHeight() { return this._docHeight; }
+  public invalidateSamplingBuffer() { this._samplingDirty = true; }
 
   // --- Viewport helpers ---
   private get _vw(): number { return this.mainCanvas?.width ?? 800; }
   private get _vh(): number { return this.mainCanvas?.height ?? 600; }
 
   // --- Layer-aware helpers ---
+
+  private _buildBrushParams(): BrushParams {
+    const s = this.ctx.state;
+    return {
+      size: s.brushSize,
+      opacity: s.opacity,
+      flow: s.flow,
+      hardness: s.hardness,
+      spacing: s.spacing,
+      pressureSize: s.pressureSize,
+      pressureOpacity: s.pressureOpacity,
+      pressureCurve: s.pressureCurve,
+      color: s.strokeColor,
+      eraser: s.activeTool === 'eraser',
+    };
+  }
 
   private _getActiveLayerCtx(): CanvasRenderingContext2D | null {
     const state = this._ctx.value?.state;
@@ -188,10 +209,44 @@ export class DrawingCanvas extends LitElement {
     // Composite layers bottom-to-top
     const layers = this._ctx.value?.state.layers ?? [];
     const activeLayerId = this._ctx.value?.state.activeLayerId ?? null;
+    const hasBlend = layers.some(l => l.visible && l.blendMode !== 'normal');
     for (const layer of layers) {
       if (!layer.visible) continue;
       displayCtx.globalAlpha = layer.opacity;
+      if (hasBlend) {
+        displayCtx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
+      }
       displayCtx.drawImage(layer.canvas, 0, 0);
+
+      // Show in-progress stroke during painting
+      if (this._drawing && layer.id === activeLayerId) {
+        const preview = this._engine.getStrokePreview();
+        if (preview) {
+          displayCtx.save();
+          if (preview.eraser) {
+            displayCtx.globalAlpha = preview.opacity;
+            displayCtx.globalCompositeOperation = 'destination-out';
+            displayCtx.drawImage(preview.canvas as any, 0, 0);
+          } else {
+            // Tint a cached copy for display (don't mutate the stroke buffer)
+            if (!this._tintPreviewCanvas || this._tintPreviewCanvas.width !== this._docWidth || this._tintPreviewCanvas.height !== this._docHeight) {
+              this._tintPreviewCanvas = document.createElement('canvas');
+              this._tintPreviewCanvas.width = this._docWidth;
+              this._tintPreviewCanvas.height = this._docHeight;
+            }
+            const tintCtx = this._tintPreviewCanvas.getContext('2d')!;
+            tintCtx.clearRect(0, 0, this._docWidth, this._docHeight);
+            tintCtx.drawImage(preview.canvas as any, 0, 0);
+            tintCtx.globalCompositeOperation = 'source-in';
+            tintCtx.fillStyle = preview.color;
+            tintCtx.fillRect(0, 0, this._docWidth, this._docHeight);
+            displayCtx.globalAlpha = preview.opacity;
+            displayCtx.drawImage(this._tintPreviewCanvas, 0, 0);
+          }
+          displayCtx.restore();
+        }
+      }
+
       // Draw the float right after its owning layer so it composites
       // at the correct z-position instead of on top of everything.
       if (this._float && layer.id === activeLayerId) {
@@ -211,6 +266,9 @@ export class DrawingCanvas extends LitElement {
             Math.round(currentRect.w), Math.round(currentRect.h));
         }
       }
+      if (hasBlend) {
+        displayCtx.globalCompositeOperation = 'source-over';
+      }
       displayCtx.globalAlpha = 1.0;
     }
 
@@ -228,6 +286,7 @@ export class DrawingCanvas extends LitElement {
       bubbles: true, composed: true,
       detail: floatDetail,
     }));
+    this.invalidateSamplingBuffer();
   }
 
   private _getCheckerboardPattern(ctx: CanvasRenderingContext2D): CanvasPattern {
@@ -764,12 +823,15 @@ export class DrawingCanvas extends LitElement {
     exportCanvas.width = this._docWidth;
     exportCanvas.height = this._docHeight;
     const exportCtx = exportCanvas.getContext('2d')!;
+    exportCtx.fillStyle = '#ffffff';
+    exportCtx.fillRect(0, 0, this._docWidth, this._docHeight);
     const state = this._ctx.value?.state;
     const layers = state?.layers ?? [];
     const activeLayerId = state?.activeLayerId ?? null;
     for (const layer of layers) {
       if (!layer.visible) continue;
       exportCtx.globalAlpha = layer.opacity;
+      exportCtx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
       exportCtx.drawImage(layer.canvas, 0, 0);
       // Draw the float right after its owning layer so it composites
       // at the correct z-position instead of on top of everything.
@@ -788,6 +850,7 @@ export class DrawingCanvas extends LitElement {
           exportCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y));
         }
       }
+      exportCtx.globalCompositeOperation = 'source-over';
       exportCtx.globalAlpha = 1.0;
     }
     const link = document.createElement('a');
@@ -804,6 +867,14 @@ export class DrawingCanvas extends LitElement {
     return {
       x: (e.clientX - rect.left - this._panX) / this._zoom,
       y: (e.clientY - rect.top - this._panY) / this._zoom,
+    };
+  }
+
+  private _clientToDoc(clientX: number, clientY: number): Point {
+    const rect = this.mainCanvas.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left - this._panX) / this._zoom,
+      y: (clientY - rect.top - this._panY) / this._zoom,
     };
   }
 
@@ -1117,10 +1188,12 @@ export class DrawingCanvas extends LitElement {
     this._lastPoint = p;
     this._startPoint = p;
 
-    // For brushes, capture before draw and draw a dot at start
     if (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser') {
       this._captureBeforeDraw();
-      this._drawBrushAt(p, p);
+      const params = this._buildBrushParams();
+      this._engine.begin(params, this._docWidth, this._docHeight);
+      this._engine.stroke(p.x, p.y, e.pressure || 0.5);
+      this.composite();
     }
   }
 
@@ -1198,8 +1271,9 @@ export class DrawingCanvas extends LitElement {
     const p = this._getDocPoint(e);
 
     if (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser') {
-      this._drawBrushAt(this._lastPoint, p);
+      this._engine.stroke(p.x, p.y, e.pressure || 0.5);
       this._lastPoint = p;
+      this.composite();
     } else if (
       activeTool === 'rectangle' ||
       activeTool === 'circle' ||
@@ -1265,6 +1339,8 @@ export class DrawingCanvas extends LitElement {
     if (this._drawing && activeTool !== 'pencil' && activeTool !== 'marker' &&
         activeTool !== 'eraser' && activeTool !== 'rectangle' &&
         activeTool !== 'circle' && activeTool !== 'line' && activeTool !== 'triangle') {
+      const layerCtx = this._getActiveLayerCtx();
+      if (layerCtx) this._engine.commit(layerCtx);
       this._drawing = false;
       this._lastPoint = null;
       this._startPoint = null;
@@ -1339,6 +1415,14 @@ export class DrawingCanvas extends LitElement {
       previewCtx.clearRect(0, 0, this._vw, this._vh);
     }
 
+    // Commit engine stroke buffer to layer before capturing history
+    if (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser') {
+      const layerCtx = this._getActiveLayerCtx();
+      if (layerCtx) {
+        this._engine.commit(layerCtx);
+      }
+    }
+
     this._drawing = false;
     this._lastPoint = null;
     this._startPoint = null;
@@ -1383,6 +1467,7 @@ export class DrawingCanvas extends LitElement {
     try { this.mainCanvas.releasePointerCapture(pointerId); } catch { /* not captured */ }
 
     // Cancel brush/shape strokes
+    this._engine.cancel();
     if (this._drawing) {
       this._drawing = false;
       this._lastPoint = null;
@@ -1504,25 +1589,6 @@ export class DrawingCanvas extends LitElement {
     if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
     this._dispatchZoomChange();
-  }
-
-  private _drawBrushAt(from: Point, to: Point) {
-    const layerCtx = this._getActiveLayerCtx();
-    if (!layerCtx) return;
-    const { activeTool, strokeColor, brushSize } = this.ctx.state;
-
-    switch (activeTool) {
-      case 'pencil':
-        drawPencilSegment(layerCtx, from, to, strokeColor, brushSize);
-        break;
-      case 'marker':
-        drawMarkerSegment(layerCtx, from, to, strokeColor, brushSize);
-        break;
-      case 'eraser':
-        drawEraserSegment(layerCtx, from, to, brushSize);
-        break;
-    }
-    this.composite();
   }
 
   // --- Selection / floating selection helpers ---
