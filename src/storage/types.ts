@@ -1,5 +1,6 @@
 // src/storage/types.ts
 import type { ToolType } from '../types.js';
+import type { PressureCurveName } from '../engine/types.js';
 
 // ---------------------------------------------------------------------------
 // BlobRef — branded string, opaque to consumers
@@ -21,6 +22,14 @@ export interface ToolSettings {
   fillColor: string;
   useFill: boolean;
   brushSize: number;
+  opacity?: number;
+  flow?: number;
+  hardness?: number;
+  spacing?: number;
+  pressureSize?: boolean;
+  pressureOpacity?: boolean;
+  pressureCurve?: PressureCurveName;
+  eyedropperSampleAll?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -38,6 +47,7 @@ export interface SerializedLayerSnapshot {
   name: string;
   visible: boolean;
   opacity: number;
+  blendMode?: string;
   imageData: SerializedImageData;
 }
 
@@ -64,13 +74,15 @@ export type SerializedHistoryEntry =
       afterLayers: SerializedLayerSnapshot[];
       previousActiveLayerId: string;
       afterActiveLayerId: string;
-    };
+    }
+  | { type: 'blend-mode'; layerId: string; before: string; after: string };
 
 export interface SerializedLayer {
   id: string;
   name: string;
   visible: boolean;
   opacity: number;
+  blendMode?: string;
   imageBlobRef: BlobRef;
 }
 

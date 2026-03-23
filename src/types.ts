@@ -1,3 +1,5 @@
+import type { BlendMode, PressureCurveName } from './engine/types.js';
+
 export type ToolType =
   | 'select'
   | 'move'
@@ -12,7 +14,8 @@ export type ToolType =
   | 'stamp'
   | 'text'
   | 'hand'
-  | 'crop';
+  | 'crop'
+  | 'eyedropper';
 
 export interface Point {
   x: number;
@@ -35,6 +38,7 @@ export interface Layer {
   name: string;
   visible: boolean;
   opacity: number;
+  blendMode: BlendMode;
   canvas: HTMLCanvasElement;
 }
 
@@ -43,6 +47,7 @@ export interface LayerSnapshot {
   name: string;
   visible: boolean;
   opacity: number;
+  blendMode: BlendMode;
   imageData: ImageData;
 }
 
@@ -63,6 +68,14 @@ export interface DrawingState {
   fontSize: number;
   fontBold: boolean;
   fontItalic: boolean;
+  opacity: number;
+  flow: number;
+  hardness: number;
+  spacing: number;
+  pressureSize: boolean;
+  pressureOpacity: boolean;
+  pressureCurve: PressureCurveName;
+  eyedropperSampleAll: boolean;
 }
 
 export type HistoryEntry =
@@ -88,4 +101,5 @@ export type HistoryEntry =
       afterLayers: LayerSnapshot[];
       previousActiveLayerId: string;
       afterActiveLayerId: string;
-    };
+    }
+  | { type: 'blend-mode'; layerId: string; before: BlendMode; after: BlendMode };

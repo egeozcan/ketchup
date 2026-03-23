@@ -1,6 +1,7 @@
 import { createContext } from '@lit/context';
 import type { DrawingState, ToolType } from '../types.js';
 import type { ProjectMeta } from '../storage/types.js';
+import type { BlendMode, PressureCurveName } from '../engine/types.js';
 
 export interface DrawingContextValue {
   state: DrawingState;
@@ -31,6 +32,15 @@ export interface DrawingContextValue {
   setFontSize: (size: number) => void;
   setFontBold: (bold: boolean) => void;
   setFontItalic: (italic: boolean) => void;
+  setOpacity: (v: number) => void;
+  setFlow: (v: number) => void;
+  setHardness: (v: number) => void;
+  setSpacing: (v: number) => void;
+  setPressureSize: (v: boolean) => void;
+  setPressureOpacity: (v: boolean) => void;
+  setPressureCurve: (v: PressureCurveName) => void;
+  setLayerBlendMode: (id: string, mode: BlendMode) => void;
+  setEyedropperSampleAll: (v: boolean) => void;
   canUndo: boolean;
   canRedo: boolean;
   // Project operations
