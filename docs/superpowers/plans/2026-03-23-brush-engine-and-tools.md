@@ -813,7 +813,10 @@ Adding `blendMode: BlendMode` as a required field on `Layer` will cause compile 
 3. `_onLayerUndo` handler, `'stack-replace'` case (around line 1196-1202) — add `blendMode: snap.blendMode ?? 'normal'` when constructing Layer objects from LayerSnapshot array
 4. `_onLayerUndo` handler, `'crop-restore'` case (around line 1182) — the existing spread `{ ...layer, canvas, ... }` will preserve `blendMode` IF the layer already has it. But when restoring from a snapshot, use `blendMode: snap.blendMode ?? layer.blendMode ?? 'normal'`
 5. Layer deserialization in the project load path — add `blendMode: (savedLayer.blendMode as BlendMode) ?? 'normal'`
-6. Any other site found by `npx tsc --noEmit` after Task 6
+6. `mergeLayerDown` (around line 890) — the spread `{ ...l, canvas: mergedCanvas, opacity: 1 }` will carry the old `blendMode`. Add `blendMode: 'normal' as BlendMode` to reset it. A merged layer contains baked-in composite results; keeping the old blend mode would apply it a second time.
+7. `mergeVisibleLayers` — same treatment as #6
+8. `flattenImage` `flatLayer` literal (around line 955) — add `blendMode: 'normal' as BlendMode`
+9. Any other site found by `npx tsc --noEmit` after Task 6
 
 Run `npx tsc --noEmit` after this step and fix any remaining Layer construction errors before proceeding.
 
