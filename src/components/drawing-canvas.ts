@@ -241,11 +241,13 @@ export class DrawingCanvas extends LitElement {
               this._tintPreviewCanvas.height = this._docHeight;
             }
             const tintCtx = this._tintPreviewCanvas.getContext('2d')!;
+            tintCtx.globalCompositeOperation = 'source-over';
             tintCtx.clearRect(0, 0, this._docWidth, this._docHeight);
             tintCtx.drawImage(preview.canvas as any, 0, 0);
             tintCtx.globalCompositeOperation = 'source-in';
             tintCtx.fillStyle = preview.color;
             tintCtx.fillRect(0, 0, this._docWidth, this._docHeight);
+            tintCtx.globalCompositeOperation = 'source-over';
             displayCtx.globalAlpha = preview.opacity;
             displayCtx.drawImage(this._tintPreviewCanvas, 0, 0);
           }
