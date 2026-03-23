@@ -3,6 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { Layer } from '../types.js';
+import { BLEND_MODE_LABELS } from '../engine/types.js';
 
 @customElement('layers-panel')
 export class LayersPanel extends LitElement {
@@ -477,6 +478,17 @@ export class LayersPanel extends LitElement {
     .rename-btn:hover {
       background: #444;
       color: #ddd;
+    }
+
+    .blend-mode-select {
+      width: 100%;
+      background: #444;
+      color: #ddd;
+      border: 1px solid #555;
+      border-radius: 4px;
+      padding: 2px 4px;
+      font-size: 0.75rem;
+      cursor: pointer;
     }
   `;
 
@@ -1101,6 +1113,15 @@ export class LayersPanel extends LitElement {
 
         ${isActive
           ? html`
+            <div class="opacity-row">
+              <select class="blend-mode-select"
+                .value=${layer.blendMode}
+                @change=${(e: Event) => this.ctx.setLayerBlendMode(layer.id, (e.target as HTMLSelectElement).value as any)}>
+                ${Object.entries(BLEND_MODE_LABELS).map(([value, label]) => html`
+                  <option value=${value}>${label}</option>
+                `)}
+              </select>
+            </div>
             <div class="opacity-row">
               <input
                 type="range"
