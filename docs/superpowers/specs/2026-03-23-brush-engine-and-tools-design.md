@@ -165,6 +165,8 @@ For export (PNG/JPEG), flatten, and merge operations, the opaque base is white (
 
 This ensures merge/flatten/export produce correct results for layers with non-normal blend modes.
 
+**`saveCanvas()` in `drawing-canvas.ts`:** This method has its own inline composite loop (separate from `_compositeLayers`) with float-handling logic. It must also apply `globalCompositeOperation` per layer. Either update the inline loop to match, or refactor `saveCanvas()` to delegate to the updated `_compositeLayers` helper (passing the float state for correct z-order compositing).
+
 ### 2.5 History
 
 New history entry variant:
@@ -253,7 +255,7 @@ The source canvas for the preview grid is:
 
 The only `getImageData` call is the single-pixel sample for the actual color value (from the sampling buffer or active layer, not the display canvas).
 
-**Coordinate space separation:** The `drawImage` source crop (`docX`, `docY`) uses document-space coordinates (pointer position run through the inverse pan/zoom transform via the existing `_viewportToDoc` method). The preview box position (`destX`, `destY`) uses raw screen-space pointer coordinates on the `#preview` overlay. These are two different coordinate systems and must not be mixed.
+**Coordinate space separation:** The `drawImage` source crop (`docX`, `docY`) uses document-space coordinates (pointer position run through the inverse pan/zoom transform). The existing `_getDocPoint(e)` method takes a `PointerEvent` — extract its coordinate math into a standalone `_clientToDoc(clientX, clientY)` helper so the eyedropper preview can convert raw coordinates without a `PointerEvent`. The formula is `(clientX - rect.left - _panX) / _zoom`. The preview box position (`destX`, `destY`) uses raw screen-space pointer coordinates on the `#preview` overlay. These are two different coordinate systems and must not be mixed.
 
 **Edge collision handling:** Preview is offset 20px right, 20px up from cursor by default. Before rendering, check bounds:
 - If `cursorX + offset + previewWidth > viewportWidth` → flip to left of cursor
