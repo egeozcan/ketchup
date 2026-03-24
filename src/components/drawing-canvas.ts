@@ -1099,12 +1099,31 @@ export class DrawingCanvas extends LitElement {
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, this._docWidth, this._docHeight);
       const layers = this._ctx.value?.state.layers ?? [];
+      const activeLayerId = this._ctx.value?.state.activeLayerId ?? null;
       for (const layer of layers) {
         if (!layer.visible) continue;
         ctx.globalAlpha = layer.opacity;
         ctx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
         ctx.drawImage(layer.canvas, 0, 0);
         ctx.globalCompositeOperation = 'source-over';
+        // Include floating selection at its z-position
+        if (this._float && layer.id === activeLayerId) {
+          const { currentRect, tempCanvas } = this._float;
+          const rotation = this._float.rotation ?? 0;
+          if (rotation !== 0) {
+            const cx = currentRect.x + currentRect.w / 2;
+            const cy = currentRect.y + currentRect.h / 2;
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.rotate(rotation);
+            ctx.drawImage(tempCanvas, -currentRect.w / 2, -currentRect.h / 2,
+              Math.max(1, Math.round(currentRect.w)), Math.max(1, Math.round(currentRect.h)));
+            ctx.restore();
+          } else {
+            ctx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y),
+              Math.round(currentRect.w), Math.round(currentRect.h));
+          }
+        }
       }
       ctx.globalAlpha = 1;
       this._samplingDirty = false;

@@ -956,7 +956,7 @@ export class DrawingApp extends LitElement {
         // Composite: bottom layer first, then active layer on top
         const bottomLayer = layers[idx - 1];
         const topLayer = layers[idx];
-        const mergedCanvas = this._compositeLayers([bottomLayer, topLayer]);
+        const mergedCanvas = this._compositeLayers([bottomLayer, topLayer], null);
 
         // Build new layers array: remove topLayer, replace bottomLayer's canvas
         const newLayers = layers
@@ -987,7 +987,7 @@ export class DrawingApp extends LitElement {
 
         // Target is the bottom-most visible layer
         const target = visibleLayers[0];
-        const mergedCanvas = this._compositeLayers(visibleLayers);
+        const mergedCanvas = this._compositeLayers(visibleLayers, null);
 
         // Remove all visible layers except target, replace target's canvas
         const visibleIds = new Set(visibleLayers.map(l => l.id));

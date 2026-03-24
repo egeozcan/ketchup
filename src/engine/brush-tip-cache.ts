@@ -16,7 +16,7 @@ export class BrushTipCache {
 
   /** Get or create an alpha-mask tip (white-on-transparent) for the given diameter and hardness. */
   get(diameter: number, hardness: number): TipCanvas {
-    const key = `${diameter}-${hardness}`;
+    const key = `${diameter}-${hardness.toFixed(2)}`;
     const existing = this._entries.get(key);
     if (existing) {
       existing.lastUsed = ++this._accessCounter;
