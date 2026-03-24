@@ -10,13 +10,19 @@ interface RawPoint {
  * Catmull-Rom spline interpolator for pointer events.
  * Subdivides curves by arc-length spacing, never by timestamp.
  * Lerps pressure between bracketing raw samples.
+ *
+ * Uses a rolling window of 4 points to avoid unbounded array growth.
  */
 export class PathSmoother {
-  private _points: RawPoint[] = [];
+  /** Rolling window — at most 4 points (oldest evicted as new ones arrive). */
+  private _window: RawPoint[] = [];
+  /** Total number of points received (not stored). */
+  private _count = 0;
   private _remainder = 0; // leftover distance from last subdivision
 
   reset() {
-    this._points = [];
+    this._window = [];
+    this._count = 0;
     this._remainder = 0;
   }
 
@@ -25,51 +31,70 @@ export class PathSmoother {
    * smoothed path spaced at `spacing` pixel intervals.
    */
   addPoint(x: number, y: number, pressure: number, spacing: number): StampPoint[] {
-    this._points.push({ x, y, pressure });
-    const n = this._points.length;
+    const pt: RawPoint = { x, y, pressure };
+    this._count++;
+
+    // Maintain rolling window of at most 4 points
+    this._window.push(pt);
+    if (this._window.length > 4) {
+      this._window.shift();
+    }
+
+    const n = this._count;
 
     // Single point (stroke start dot)
     if (n === 1) {
-      // Set remainder to spacing so _walkLinear won't re-emit at this position
       this._remainder = spacing;
       return [{ x, y, pressure }];
     }
 
-    // Fewer than 4 points: linear interpolation between last two
-    if (n < 4) {
-      const from = this._points[n - 2];
-      const to = this._points[n - 1];
-      return this._walkLinear(from, to, spacing);
+    // Second point: linear interpolation (only linear segment we emit)
+    if (n === 2) {
+      return this._walkLinear(this._window[0], this._window[1], spacing);
     }
 
-    // 4+ points: Catmull-Rom between P1 and P2 using P0 and P3 as control
-    const p0 = this._points[n - 4];
-    const p1 = this._points[n - 3];
-    const p2 = this._points[n - 2];
-    const p3 = this._points[n - 1];
+    // Third point: buffer — wait for 4th point to start Catmull-Rom.
+    // Walking linearly here would double-emit this segment when the
+    // CR walk covers it at n=4.
+    if (n === 3) {
+      return [];
+    }
+
+    // 4+ points: Catmull-Rom between window[1] and window[2]
+    // window has exactly 4 entries: [P0, P1, P2, P3]
+    // CR curve goes from P1 to P2, using P0 and P3 as control points.
+    const [p0, p1, p2, p3] = this._window;
     return this._walkCatmullRom(p0, p1, p2, p3, spacing);
   }
 
-  /** Flush: emit stamps for any remaining segment at stroke end. */
+  /** Flush: emit stamps for any remaining un-emitted segment at stroke end. */
   flush(spacing: number): StampPoint[] {
-    const n = this._points.length;
+    const n = this._count;
+    const w = this._window;
     if (n < 2) return [];
 
-    // Emit remaining segment from second-to-last to last point
-    if (n < 4) {
-      const from = this._points[n - 2];
-      const to = this._points[n - 1];
-      return this._walkLinear(from, to, spacing);
+    if (n === 2) {
+      // Only 2 points total — the linear segment was already emitted in addPoint.
+      // Nothing more to flush.
+      return [];
     }
 
-    // For 4+ points, the last Catmull-Rom segment is P[-3]→P[-2] with
-    // P[-4] and P[-1] as control points. But we already emitted that in
-    // addPoint. We need the segment P[-2]→P[-1]:
-    const p0 = this._points[n - 3];
-    const p1 = this._points[n - 2];
-    const p2 = this._points[n - 1];
-    // Mirror p2 past p1 for the final control point
-    const p3 = { x: p2.x + (p2.x - p1.x), y: p2.y + (p2.y - p1.y), pressure: p2.pressure };
+    if (n === 3) {
+      // 3 points: we emitted p[0]→p[1] linearly at n=2, but skipped p[1]→p[2]
+      // at n=3 (waiting for CR). Flush it linearly now.
+      return this._walkLinear(w[w.length - 2], w[w.length - 1], spacing);
+    }
+
+    // 4+ points: the last addPoint emitted CR for window[1]→window[2].
+    // The un-emitted tail is window[2]→window[3]. Use a mirrored control point.
+    const p0 = w[1];
+    const p1 = w[2];
+    const p2 = w[3];
+    const p3: RawPoint = {
+      x: p2.x + (p2.x - p1.x),
+      y: p2.y + (p2.y - p1.y),
+      pressure: p2.pressure,
+    };
     return this._walkCatmullRom(p0, p1, p2, p3, spacing);
   }
 

@@ -34,12 +34,10 @@ export class StampStrokeEngine {
     const curveFn = PRESSURE_CURVES[p.pressureCurve];
     const mappedPressure = curveFn(pressure);
 
-    // Compute spacing from the effective (pressure-adjusted) diameter so stamps
-    // overlap correctly even when pressure shrinks the brush significantly.
-    const effectiveSize = p.pressureSize
-      ? Math.max(1, p.size * mappedPressure)
-      : p.size;
-    const effectiveSpacing = Math.max(1, p.spacing * effectiveSize);
+    // Use base brush size for spacing — NOT pressure-adjusted size.
+    // Variable spacing per event would break the smoother's remainder tracking
+    // (the carried-over distance assumes consistent spacing between calls).
+    const effectiveSpacing = Math.max(1, p.spacing * p.size);
     const stamps = this._smoother.addPoint(x, y, mappedPressure, effectiveSpacing);
 
     const buf = this._bufferPool.current;
