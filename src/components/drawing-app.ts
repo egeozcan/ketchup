@@ -658,6 +658,7 @@ export class DrawingApp extends LitElement {
         const newSize = Math.max(minSize, Math.min(current - 1, Math.round(current / 1.1)));
         this._state = { ...this._state, brushSize: newSize };
       }
+      this._markDirty();
     } else if (!ctrl && !e.altKey && (e.key === '{' || e.key === '}')) {
       e.preventDefault();
       const current = this._state.hardness;
@@ -666,6 +667,7 @@ export class DrawingApp extends LitElement {
       } else {
         this._state = { ...this._state, hardness: Math.round(Math.max(0, current - 0.1) * 10) / 10 };
       }
+      this._markDirty();
     } else if (!ctrl && !e.altKey && !e.shiftKey && key.length === 1) {
       const tool = toolForShortcut(key);
       if (tool && tool !== this._state.activeTool) {
@@ -1069,14 +1071,14 @@ export class DrawingApp extends LitElement {
         this._state = { ...this._state, fontItalic: italic };
         this._markDirty();
       },
-      setOpacity: (v: number) => { this._state = { ...this._state, opacity: Math.max(0, Math.min(1, v)) }; },
-      setFlow: (v: number) => { this._state = { ...this._state, flow: Math.max(0, Math.min(1, v)) }; },
-      setHardness: (v: number) => { this._state = { ...this._state, hardness: Math.round(Math.max(0, Math.min(1, v)) * 10) / 10 }; },
-      setSpacing: (v: number) => { this._state = { ...this._state, spacing: Math.max(0.05, Math.min(1, v)) }; },
-      setPressureSize: (v: boolean) => { this._state = { ...this._state, pressureSize: v }; },
-      setPressureOpacity: (v: boolean) => { this._state = { ...this._state, pressureOpacity: v }; },
-      setPressureCurve: (v: PressureCurveName) => { this._state = { ...this._state, pressureCurve: v }; },
-      setEyedropperSampleAll: (v: boolean) => { this._state = { ...this._state, eyedropperSampleAll: v }; },
+      setOpacity: (v: number) => { this._state = { ...this._state, opacity: Math.max(0, Math.min(1, v)) }; this._markDirty(); },
+      setFlow: (v: number) => { this._state = { ...this._state, flow: Math.max(0, Math.min(1, v)) }; this._markDirty(); },
+      setHardness: (v: number) => { this._state = { ...this._state, hardness: Math.round(Math.max(0, Math.min(1, v)) * 10) / 10 }; this._markDirty(); },
+      setSpacing: (v: number) => { this._state = { ...this._state, spacing: Math.max(0.05, Math.min(1, v)) }; this._markDirty(); },
+      setPressureSize: (v: boolean) => { this._state = { ...this._state, pressureSize: v }; this._markDirty(); },
+      setPressureOpacity: (v: boolean) => { this._state = { ...this._state, pressureOpacity: v }; this._markDirty(); },
+      setPressureCurve: (v: PressureCurveName) => { this._state = { ...this._state, pressureCurve: v }; this._markDirty(); },
+      setEyedropperSampleAll: (v: boolean) => { this._state = { ...this._state, eyedropperSampleAll: v }; this._markDirty(); },
       canUndo: this._canUndo,
       canRedo: this._canRedo,
       // Project operations

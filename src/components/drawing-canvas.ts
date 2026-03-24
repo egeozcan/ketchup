@@ -575,6 +575,9 @@ export class DrawingCanvas extends LitElement {
       this._commitText();
     }
     if (this._drawing) {
+      // Commit the engine's stroke buffer to the layer before capturing history
+      const layerCtx = this._getActiveLayerCtx();
+      if (layerCtx) this._engine.commit(layerCtx);
       this._drawing = false;
       this._lastPoint = null;
       this._startPoint = null;
@@ -611,6 +614,8 @@ export class DrawingCanvas extends LitElement {
       this._commitText();
     }
     if (this._drawing) {
+      const layerCtx = this._getActiveLayerCtx();
+      if (layerCtx) this._engine.commit(layerCtx);
       this._drawing = false;
       this._lastPoint = null;
       this._startPoint = null;
