@@ -12,6 +12,8 @@ export class StampStrokeEngine {
   private _params: BrushParams | null = null;
   private _docWidth = 0;
   private _docHeight = 0;
+  /** Spacing in pixels, computed once at stroke begin to keep remainder tracking consistent. */
+  private _strokeSpacing = 1;
 
   /** Begin a new stroke. Acquires the buffer and resets the smoother. */
   begin(params: BrushParams, docWidth: number, docHeight: number) {
@@ -25,6 +27,22 @@ export class StampStrokeEngine {
     this._docHeight = docHeight;
     this._bufferPool.acquire(docWidth, docHeight);
     this._smoother.reset();
+
+    // Compute spacing once for the entire stroke. When stamps will be
+    // semi-transparent (pressureOpacity or flow < 1), tighten spacing so
+    // overlapping hard-edged circles don't produce visible scalloping.
+    let spacingFactor = params.spacing;
+    if (params.pressureOpacity || params.flow < 1) {
+      // Scale spacing down proportionally to expected stamp opacity.
+      // At flow=1 with pressureOpacity, typical pressure ~0.5 → alpha ~0.5.
+      // At flow=0.5 without pressureOpacity → alpha 0.5.
+      const expectedAlpha = params.pressureOpacity
+        ? params.flow * 0.5  // assume ~0.5 mean pressure
+        : params.flow;
+      // Tighten: multiply spacing by alpha, but clamp to [0.02, 1] range
+      spacingFactor *= Math.max(0.15, Math.min(1, expectedAlpha));
+    }
+    this._strokeSpacing = Math.max(1, spacingFactor * params.size);
   }
 
   /** Feed a pointer event. Stamps onto the buffer. */
@@ -34,10 +52,7 @@ export class StampStrokeEngine {
     const curveFn = PRESSURE_CURVES[p.pressureCurve];
     const mappedPressure = curveFn(pressure);
 
-    // Use base brush size for spacing — NOT pressure-adjusted size.
-    // Variable spacing per event would break the smoother's remainder tracking
-    // (the carried-over distance assumes consistent spacing between calls).
-    const effectiveSpacing = Math.max(1, p.spacing * p.size);
+    const effectiveSpacing = this._strokeSpacing;
     const stamps = this._smoother.addPoint(x, y, mappedPressure, effectiveSpacing);
 
     const buf = this._bufferPool.current;
@@ -72,9 +87,8 @@ export class StampStrokeEngine {
   commit(target: CanvasRenderingContext2D) {
     if (!this._params) return;
 
-    // Flush any remaining path segment — use base size for flush spacing
-    // since we don't have a current pressure value at commit time
-    const flushSpacing = Math.max(1, this._params.spacing * this._params.size);
+    // Flush remaining path segment using the same spacing computed at begin()
+    const flushSpacing = this._strokeSpacing;
     const remaining = this._smoother.flush(flushSpacing);
     if (remaining.length > 0) {
       // Stamp remaining points — pressure is already curve-mapped from stroke(),
