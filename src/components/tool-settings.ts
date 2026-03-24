@@ -984,6 +984,7 @@ export class ToolSettings extends LitElement {
             Pressure Opacity
           </label>
         </div>
+        ${(state.pressureSize || state.pressureOpacity) ? html`
         <div class="section">
           <label>Curve</label>
           <select class="font-select" .value=${state.pressureCurve}
@@ -993,6 +994,7 @@ export class ToolSettings extends LitElement {
             <option value="heavy">Heavy</option>
           </select>
         </div>
+        ` : nothing}
       ` : nothing}
 
       ${activeTool === 'eyedropper' ? html`
