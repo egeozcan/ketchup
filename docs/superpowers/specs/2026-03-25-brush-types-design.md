@@ -95,6 +95,7 @@ Replace individual brush fields (`brushSize`, `opacity`, `flow`, `hardness`, `sp
 interface DrawingState {
   brush: BrushDescriptor;
   activePreset: string;      // preset id
+  isPresetModified: boolean; // set true on any param change, cleared on preset select
   // ... all other fields unchanged
 }
 ```
@@ -131,7 +132,9 @@ The existing circle generation code in `brush-tip-cache.ts` moves into `generate
 - **Chisel**: Beveled rectangle — full width with angled/tapered ends (parallelogram shape). Hardness controls edge softness.
 - **Calligraphy**: Ellipse, major axis = diameter, minor axis = diameter / aspect. Hardness controls radial gradient falloff.
 - **Fan**: N bristle dots arranged in an arc. Each bristle is a small hardness-controlled circle. `bristles` controls count, `spread` controls arc angle.
-- **Splatter**: N bristle dots scattered randomly within a radius. `bristles` controls count, `spread` controls scatter radius. Uses seeded PRNG keyed on tip parameters for cache stability.
+- **Splatter**: N bristle dots scattered randomly within a radius. `bristles` controls count, `spread` controls scatter radius.
+
+**Splatter and fan: multi-variant caching.** A single cached splatter pattern stamped repeatedly looks like a spinning cluster, not a random spray. To break visual repetition, generate an array of 5-8 variants per cache key (each with a different PRNG seed derived from the base key + variant index). During stamping, cycle through variants sequentially. The cache key includes variant index: `"splatter-${diameter}-...-v${i}"`. Fan tips use the same multi-variant approach with 3-5 variants (bristle positions jittered slightly per variant).
 
 ### Cache
 
@@ -139,6 +142,7 @@ The existing LRU cache in `brush-tip-cache.ts` is reused. The cache key expands 
 
 ```
 "${shape}-${diameter}-${hardness}-${aspect}-${bristles}-${spread}"
+// For fan/splatter, variant suffix appended: "-v${variantIndex}"
 ```
 
 Orientation (rotation) is **not** baked into the cached tip. It is applied at stamp time via canvas transforms. This means one cached tip serves all rotation angles.
@@ -162,6 +166,7 @@ interface InkState {
   remainingPaint: number;      // 1.0 → 0.0 as brush dries
   currentColor: string;        // may drift from brush color via pickup
   stampCount: number;           // for buildup density calculation
+  layerSnapshot: ImageData | null;  // captured at begin() when wetness > 0
 }
 ```
 
@@ -194,17 +199,20 @@ Where `overlapDensity` is derived from the local stamp overlap (inversely propor
 ### Color Pickup (sample-and-blend)
 
 ```
-sampledColor = sampleCanvasAt(layerCtx, stampX, stampY)
-currentColor = lerp(currentColor, sampledColor, wetness)
+sampledColor = sampleSnapshot(snapshot, stampX, stampY)
+currentColor = lerpOklab(currentColor, sampledColor, wetness)
 ```
 
 - `wetness = 0`: brush color never changes (current behavior)
 - `wetness = 0.5`: gradual drift toward canvas color
 - `wetness = 1`: immediately takes on canvas color
 - `currentColor` is tracked in InkState across the entire stroke
-- Sampling reads from the target layer canvas (pre-commit state)
 
-Ink model functions live in a new file `src/engine/ink-model.ts` as stateless pure functions that take and return InkState.
+**Sampling strategy — snapshot, not live reads**: At `begin()`, if `wetness > 0`, take a single `getImageData()` snapshot of the active layer. All per-stamp color sampling during `stroke()` reads from this `ImageData` typed array via direct pixel indexing — zero GPU sync cost. Trade-off: the brush does not pick up paint it laid down in the current stroke, only what was on the canvas before the stroke started. This is acceptable; real brushes also load paint from the palette, not from their own wet trail.
+
+**Color interpolation in OKLab**: `lerpColor()` converts both colors to OKLab space, interpolates linearly, and converts back to sRGB. Standard sRGB interpolation produces muddy/grayish midpoints (e.g. red + green → brown). OKLab interpolation produces vibrant, perceptually uniform transitions that better simulate paint mixing.
+
+Ink model functions live in a new file `src/engine/ink-model.ts` as stateless pure functions that take and return InkState. Includes `srgbToOklab()`, `oklabToSrgb()`, and `lerpOklab()` for color space conversion.
 
 ## Engine Modifications
 
@@ -239,26 +247,37 @@ Ink model functions live in a new file `src/engine/ink-model.ts` as stateless pu
   - Alpha-mask mode (wetness = 0): tint entire buffer → composite (unchanged path)
   - Color mode (wetness > 0): composite buffer directly (stamps already tinted)
 
+**Intentional behavioral divergence between buffer modes**: In alpha-mask mode, the entire stroke buffer is tinted uniformly at commit — overlapping stamps within the same stroke do not multiply opacity (a 50% opacity stroke stays uniformly 50% even where it crosses itself). In color mode, stamps are tinted individually before compositing into the buffer, so overlapping regions within the same stroke will accumulate opacity (a 50% stroke crossing itself becomes ~75% at the intersection). This is intentional — wet paint naturally builds up when reapplied — but it means a wet brush behaves differently from a dry brush of the same opacity. Users will observe this as "wet brushes produce thicker marks where the stroke overlaps."
+
 ### Rotation computation
 
 ```typescript
+const MIN_DIRECTION_DIST_SQ = 0.25; // 0.5px threshold — below this, direction is noise
+
 function computeStampRotation(
   stamp: StampPoint,
   prevStamp: StampPoint | null,
+  prevRotation: number,
   tip: TipDescriptor
 ): number {
   if (tip.orientation === 'fixed') {
     return tip.angle * Math.PI / 180;
   }
   // direction-following
-  if (!prevStamp) return tip.angle * Math.PI / 180; // first stamp uses fixed angle
+  if (!prevStamp) return tip.angle * Math.PI / 180; // first stamp uses base angle
   const dx = stamp.x - prevStamp.x;
   const dy = stamp.y - prevStamp.y;
+  const distSq = dx * dx + dy * dy;
+  if (distSq < MIN_DIRECTION_DIST_SQ) {
+    return prevRotation; // carry over last valid angle to avoid jitter
+  }
   return Math.atan2(dy, dx) + tip.angle * Math.PI / 180;
 }
 ```
 
 `tip.angle` serves double duty: absolute angle for fixed mode, offset from direction for direction-following mode.
+
+**Directional jitter prevention**: When the pointer moves sub-pixel distances (slow stylus movement), `atan2` on tiny noisy deltas produces wildly jittery angles. The `MIN_DIRECTION_DIST_SQ` threshold (0.5px) causes the engine to carry over the previous valid rotation angle, producing smooth direction-following at all speeds. `prevRotation` is tracked in `InkState` (or a local variable in the stamp loop).
 
 ### Stroke buffer pool changes
 
@@ -301,7 +320,7 @@ function computeStampRotation(
 
 - Selecting a preset populates all `BrushDescriptor` fields from the preset's descriptor
 - Users can immediately tweak any parameter — no lock to the preset
-- Active preset indicator shows preset name; appends "modified" if any parameter differs from preset defaults
+- Active preset indicator shows preset name; shows "modified" badge when user has changed any parameter. Implementation: set an `isPresetModified` boolean to `true` the moment any slider/control changes a value, clear it when a preset thumbnail is clicked. Avoids expensive deep-equality checks on every slider move.
 - Re-selecting the same preset resets to its defaults
 - Presets are defined in `src/engine/brush-presets.ts` as a static `BrushPreset[]` array
 
@@ -335,7 +354,7 @@ Controls are hidden or dimmed when not applicable:
 | File | Purpose |
 |------|---------|
 | `src/engine/tip-generators.ts` | 6 tip generator functions + `tipGenerators` dispatch map |
-| `src/engine/ink-model.ts` | `InkState` interface, `initInkState()`, `applyDepletion()`, `applyBuildup()`, `applyPickup()`, `sampleCanvasAt()`, `lerpColor()` |
+| `src/engine/ink-model.ts` | `InkState` interface, `initInkState()`, `applyDepletion()`, `applyBuildup()`, `applyPickup()`, `sampleSnapshot()`, `lerpOklab()`, `srgbToOklab()`, `oklabToSrgb()` |
 | `src/engine/brush-presets.ts` | `BrushPreset[]` with ~9 built-in presets |
 
 ### Modified files
