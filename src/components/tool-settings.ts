@@ -4,8 +4,10 @@ import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import { storageBackendContext, projectServiceContext } from '../storage/storage-context.js';
 import type { StampEntry } from '../storage/types.js';
-import type { PressureCurveName, TipShape, OrientationMode } from '../engine/types.js';
+import type { PressureCurveName, TipShape, OrientationMode, BrushPreset } from '../engine/types.js';
+import { quantizeDiameter } from '../engine/types.js';
 import { BRUSH_PRESETS } from '../engine/brush-presets.js';
+import { tipGenerators, TIP_VARIANT_COUNTS } from '../engine/tip-generators.js';
 
 const documentPresets = [
   { label: '800 \u00d7 600', width: 800, height: 600 },
@@ -552,38 +554,86 @@ export class ToolSettings extends LitElement {
       border-color: #5b8cf7;
     }
 
-    /* Preset gallery */
-    .preset-grid {
-      display: grid;
-      grid-template-columns: repeat(5, 42px);
-      gap: 0.25rem;
+    /* Brush preset dropdown */
+    .brush-dropdown-wrap {
+      position: relative;
+      width: 100%;
     }
 
-    .preset-thumb-btn {
-      width: 42px;
-      height: 42px;
-      padding: 0;
-      border: 2px solid transparent;
-      border-radius: 0.25rem;
-      background: #222;
-      cursor: pointer;
+    .brush-dropdown-btn {
       display: flex;
       align-items: center;
-      justify-content: center;
-      overflow: hidden;
+      gap: 0.5rem;
+      width: 100%;
+      padding: 0.25rem 0.5rem;
+      background: #2a2a2a;
+      border: 1px solid #555;
+      border-radius: 0.375rem;
+      cursor: pointer;
+      color: #ddd;
+      font-size: 0.8125rem;
     }
 
-    .preset-thumb-btn:hover {
+    .brush-dropdown-btn:hover {
       border-color: #888;
     }
 
-    .preset-thumb-btn.active {
-      border-color: #5b8cf7;
+    .brush-dropdown-btn img {
+      width: 80px;
+      height: 24px;
+      border-radius: 0.125rem;
+      object-fit: cover;
     }
 
-    .preset-thumb-btn svg {
-      width: 32px;
-      height: 32px;
+    .brush-dropdown-btn .chevron {
+      margin-left: auto;
+      font-size: 0.625rem;
+      color: #888;
+    }
+
+    .brush-dropdown-panel {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      z-index: 50;
+      background: #333;
+      border: 1px solid #555;
+      border-radius: 0.375rem;
+      margin-top: 0.125rem;
+      max-height: 300px;
+      overflow-y: auto;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    }
+
+    .brush-dropdown-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      width: 100%;
+      padding: 0.375rem 0.5rem;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #ccc;
+      font-size: 0.8125rem;
+      text-align: left;
+    }
+
+    .brush-dropdown-item:hover {
+      background: #444;
+    }
+
+    .brush-dropdown-item.active {
+      background: #3a3a4a;
+      color: #5b8cf7;
+    }
+
+    .brush-dropdown-item img {
+      width: 120px;
+      height: 36px;
+      border-radius: 0.25rem;
+      object-fit: cover;
     }
 
     /* Pill-button shape selector */
@@ -649,6 +699,8 @@ export class ToolSettings extends LitElement {
   @state() private _activeStampId: string | null = null;
   @state() private _projectDropdownOpen = false;
   @state() private _advancedOpen = false;
+  @state() private _brushDropdownOpen = false;
+  private _previewCache = new Map<string, string>();
   @state() private _renamingProjectId: string | null = null;
   @state() private _newProjectName = 'Untitled';
   @state() private _newProjectWidth = '800';
@@ -691,6 +743,7 @@ export class ToolSettings extends LitElement {
   override disconnectedCallback() {
     super.disconnectedCallback();
     this._closeDropdown();
+    document.removeEventListener('click', this._onBrushDropdownOutsideClick);
     for (const url of this._thumbUrls.values()) {
       URL.revokeObjectURL(url);
     }
@@ -937,67 +990,146 @@ export class ToolSettings extends LitElement {
     return t === 'rectangle' || t === 'circle' || t === 'triangle';
   }
 
-  private _presetSvg(presetId: string) {
-    // Return an inline SVG icon representing each brush preset's tip shape
-    switch (presetId) {
-      case 'round':
-        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="16" cy="16" r="10" fill="#ccc"/>
-        </svg>`;
-      case 'soft-round':
-        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <defs><radialGradient id="sg"><stop offset="0%" stop-color="#ddd"/><stop offset="100%" stop-color="#555"/></radialGradient></defs>
-          <circle cx="16" cy="16" r="12" fill="url(#sg)"/>
-        </svg>`;
-      case 'flat':
-        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect x="6" y="11" width="20" height="10" rx="2" fill="#ccc"/>
-        </svg>`;
-      case 'chisel':
-        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <polygon points="6,22 26,22 22,10 10,10" fill="#ccc"/>
-        </svg>`;
-      case 'calligraphy':
-        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <ellipse cx="16" cy="16" rx="12" ry="5" transform="rotate(-45 16 16)" fill="#ccc"/>
-        </svg>`;
-      case 'fan':
-        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <line x1="16" y1="24" x2="6" y2="8" stroke="#ccc" stroke-width="1.5"/>
-          <line x1="16" y1="24" x2="10" y2="7" stroke="#ccc" stroke-width="1.5"/>
-          <line x1="16" y1="24" x2="14" y2="7" stroke="#ccc" stroke-width="1.5"/>
-          <line x1="16" y1="24" x2="18" y2="7" stroke="#ccc" stroke-width="1.5"/>
-          <line x1="16" y1="24" x2="22" y2="7" stroke="#ccc" stroke-width="1.5"/>
-          <line x1="16" y1="24" x2="26" y2="8" stroke="#ccc" stroke-width="1.5"/>
-        </svg>`;
-      case 'splatter':
-        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="16" cy="16" r="3" fill="#ccc"/>
-          <circle cx="8" cy="10" r="1.5" fill="#aaa"/>
-          <circle cx="24" cy="10" r="2" fill="#aaa"/>
-          <circle cx="10" cy="23" r="2" fill="#aaa"/>
-          <circle cx="23" cy="22" r="1.5" fill="#aaa"/>
-          <circle cx="7" cy="17" r="1" fill="#888"/>
-          <circle cx="25" cy="16" r="1" fill="#888"/>
-          <circle cx="16" cy="7" r="1.5" fill="#888"/>
-          <circle cx="17" cy="25" r="1" fill="#888"/>
-        </svg>`;
-      case 'dry-brush':
-        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <line x1="8" y1="16" x2="24" y2="16" stroke="#ccc" stroke-width="3" stroke-dasharray="2 2"/>
-          <line x1="8" y1="13" x2="24" y2="13" stroke="#999" stroke-width="1.5" stroke-dasharray="3 3"/>
-          <line x1="8" y1="19" x2="24" y2="19" stroke="#999" stroke-width="1.5" stroke-dasharray="2 4"/>
-        </svg>`;
-      case 'wet-brush':
-        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <defs><radialGradient id="wg"><stop offset="0%" stop-color="#aaddff"/><stop offset="100%" stop-color="#446688"/></radialGradient></defs>
-          <ellipse cx="16" cy="16" rx="11" ry="8" fill="url(#wg)"/>
-        </svg>`;
-      default:
-        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="16" cy="16" r="8" fill="#888"/>
-        </svg>`;
+  private _generatePreview(preset: BrushPreset): string {
+    const cached = this._previewCache.get(preset.id);
+    if (cached) return cached;
+
+    const W = 160, H = 48;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d')!;
+
+    // Dark background
+    ctx.fillStyle = '#2a2a2a';
+    ctx.fillRect(0, 0, W, H);
+
+    const d = preset.descriptor;
+    const previewSize = Math.min(d.size, 20);
+    const spacing = Math.max(2, d.spacing * previewSize);
+
+    // Generate S-curve points
+    const padX = 12;
+    const amplitude = H * 0.3;
+    const cy = H / 2;
+    const totalLen = W - padX * 2;
+
+    // Accumulate stamps in alpha-mask mode
+    const stampCanvas = document.createElement('canvas');
+    stampCanvas.width = W;
+    stampCanvas.height = H;
+    const stampCtx = stampCanvas.getContext('2d')!;
+
+    let dist = 0;
+    let prevX = padX;
+    let prevY = cy;
+    const depletionRate = d.ink.depletion;
+    const depletionLen = d.ink.depletionLength || 500;
+
+    for (let x = padX; x <= W - padX; x += 1) {
+      const t = (x - padX) / totalLen;
+      const y = cy + amplitude * Math.sin(t * Math.PI * 2);
+
+      const dx = x - prevX;
+      const dy = y - prevY;
+      const segDist = Math.sqrt(dx * dx + dy * dy);
+      dist += segDist;
+      prevX = x;
+      prevY = y;
+
+      // Only stamp at spacing intervals
+      if (dist < spacing && x > padX) continue;
+      dist = 0;
+
+      // Pressure simulation: gentle pressure curve across the stroke
+      const pressure = 0.4 + 0.6 * Math.sin(t * Math.PI);
+      const stampSize = d.pressureSize ? Math.max(1, previewSize * pressure) : previewSize;
+      const diam = quantizeDiameter(stampSize);
+
+      // Get tip
+      const tipDesc = d.tip;
+      const tip = tipGenerators[tipDesc.shape](diam, d.hardness, tipDesc);
+
+      // Apply depletion
+      const strokeT = (x - padX) / totalLen;
+      const remaining = depletionRate > 0
+        ? Math.max(0, 1 - (strokeT * totalLen / depletionLen) * depletionRate)
+        : 1;
+
+      const stampAlpha = (d.pressureOpacity ? d.flow * pressure : d.flow) * remaining;
+      if (stampAlpha <= 0) continue;
+
+      // Rotation for direction-following tips
+      let rotation = 0;
+      if (tipDesc.orientation === 'direction') {
+        const nextX = x + 1;
+        const nextT = (nextX - padX) / totalLen;
+        const nextY = cy + amplitude * Math.sin(nextT * Math.PI * 2);
+        rotation = Math.atan2(nextY - y, 1) + tipDesc.angle * Math.PI / 180;
+      } else if (tipDesc.orientation === 'fixed' && tipDesc.angle !== 0) {
+        rotation = tipDesc.angle * Math.PI / 180;
+      }
+
+      const tipW = (tip as HTMLCanvasElement).width;
+      const tipH = (tip as HTMLCanvasElement).height;
+
+      stampCtx.globalAlpha = stampAlpha;
+      stampCtx.globalCompositeOperation = 'source-over';
+      if (rotation !== 0) {
+        stampCtx.save();
+        stampCtx.translate(Math.round(x), Math.round(y));
+        stampCtx.rotate(rotation);
+        stampCtx.drawImage(tip as HTMLCanvasElement, -tipW / 2, -tipH / 2, tipW, tipH);
+        stampCtx.restore();
+      } else {
+        stampCtx.drawImage(tip as HTMLCanvasElement, Math.round(x - tipW / 2), Math.round(y - tipH / 2), tipW, tipH);
+      }
     }
+
+    stampCtx.globalAlpha = 1;
+
+    // Tint the alpha mask with light gray
+    stampCtx.globalCompositeOperation = 'source-in';
+    stampCtx.fillStyle = '#cccccc';
+    stampCtx.fillRect(0, 0, W, H);
+    stampCtx.globalCompositeOperation = 'source-over';
+
+    // Composite onto the dark background
+    ctx.drawImage(stampCanvas, 0, 0);
+
+    const url = canvas.toDataURL();
+    this._previewCache.set(preset.id, url);
+    return url;
+  }
+
+  private _toggleBrushDropdown() {
+    this._brushDropdownOpen = !this._brushDropdownOpen;
+    if (this._brushDropdownOpen) {
+      // Close on outside click
+      requestAnimationFrame(() => {
+        document.addEventListener('click', this._onBrushDropdownOutsideClick);
+      });
+    } else {
+      document.removeEventListener('click', this._onBrushDropdownOutsideClick);
+    }
+  }
+
+  private _closeBrushDropdown() {
+    this._brushDropdownOpen = false;
+    document.removeEventListener('click', this._onBrushDropdownOutsideClick);
+  }
+
+  private _onBrushDropdownOutsideClick = (e: MouseEvent) => {
+    const path = e.composedPath();
+    const wrap = this.shadowRoot?.querySelector('.brush-dropdown-wrap');
+    if (wrap && !path.includes(wrap)) {
+      this._closeBrushDropdown();
+    }
+  };
+
+  private _selectPreset(presetId: string) {
+    this.ctx.selectPreset(presetId);
+    this._closeBrushDropdown();
   }
 
   override render() {
@@ -1089,14 +1221,25 @@ export class ToolSettings extends LitElement {
       ${(activeTool === 'pencil' || activeTool === 'eraser') ? html`
         <div class="separator"></div>
         <div class="section">
-          <div class="preset-grid">
-            ${BRUSH_PRESETS.map(preset => html`
-              <button
-                class="preset-thumb-btn ${state.activePreset === preset.id && !state.isPresetModified ? 'active' : ''}"
-                title=${preset.name}
-                @click=${() => this.ctx.selectPreset(preset.id)}
-              >${this._presetSvg(preset.id)}</button>
-            `)}
+          <div class="brush-dropdown-wrap">
+            <button class="brush-dropdown-btn" @click=${() => this._toggleBrushDropdown()}>
+              <img src=${this._generatePreview(BRUSH_PRESETS.find(p => p.id === state.activePreset) ?? BRUSH_PRESETS[0])} alt="" />
+              <span>${(BRUSH_PRESETS.find(p => p.id === state.activePreset) ?? BRUSH_PRESETS[0]).name}${state.isPresetModified ? ' *' : ''}</span>
+              <span class="chevron">&#9660;</span>
+            </button>
+            ${this._brushDropdownOpen ? html`
+              <div class="brush-dropdown-panel">
+                ${BRUSH_PRESETS.map(preset => html`
+                  <button
+                    class="brush-dropdown-item ${state.activePreset === preset.id && !state.isPresetModified ? 'active' : ''}"
+                    @click=${() => this._selectPreset(preset.id)}
+                  >
+                    <img src=${this._generatePreview(preset)} alt="" />
+                    <span>${preset.name}</span>
+                  </button>
+                `)}
+              </div>
+            ` : nothing}
           </div>
         </div>
         <div class="separator"></div>
