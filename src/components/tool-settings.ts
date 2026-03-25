@@ -552,6 +552,76 @@ export class ToolSettings extends LitElement {
       border-color: #5b8cf7;
     }
 
+    /* Preset gallery */
+    .preset-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 42px);
+      gap: 0.25rem;
+    }
+
+    .preset-thumb-btn {
+      width: 42px;
+      height: 42px;
+      padding: 0;
+      border: 2px solid transparent;
+      border-radius: 0.25rem;
+      background: #222;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .preset-thumb-btn:hover {
+      border-color: #888;
+    }
+
+    .preset-thumb-btn.active {
+      border-color: #5b8cf7;
+    }
+
+    .preset-thumb-btn svg {
+      width: 32px;
+      height: 32px;
+    }
+
+    /* Pill-button shape selector */
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+    }
+
+    .pill-btn {
+      background: #444;
+      color: #bbb;
+      border: 1px solid #555;
+      border-radius: 1rem;
+      padding: 0.15rem 0.5rem;
+      cursor: pointer;
+      font-size: 0.75rem;
+      white-space: nowrap;
+      height: auto;
+    }
+
+    .pill-btn:hover {
+      background: #555;
+      color: #ddd;
+    }
+
+    .pill-btn.active {
+      background: #5b8cf7;
+      color: #fff;
+      border-color: #5b8cf7;
+    }
+
+    /* Dimmed control */
+    .dimmed {
+      opacity: 0.4;
+      pointer-events: none;
+    }
+
     /* ── Inside mobile popover ─────────────────── */
     :host([mobile]) {
       flex-direction: column;
@@ -867,6 +937,69 @@ export class ToolSettings extends LitElement {
     return t === 'rectangle' || t === 'circle' || t === 'triangle';
   }
 
+  private _presetSvg(presetId: string) {
+    // Return an inline SVG icon representing each brush preset's tip shape
+    switch (presetId) {
+      case 'round':
+        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="16" cy="16" r="10" fill="#ccc"/>
+        </svg>`;
+      case 'soft-round':
+        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs><radialGradient id="sg"><stop offset="0%" stop-color="#ddd"/><stop offset="100%" stop-color="#555"/></radialGradient></defs>
+          <circle cx="16" cy="16" r="12" fill="url(#sg)"/>
+        </svg>`;
+      case 'flat':
+        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="6" y="11" width="20" height="10" rx="2" fill="#ccc"/>
+        </svg>`;
+      case 'chisel':
+        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <polygon points="6,22 26,22 22,10 10,10" fill="#ccc"/>
+        </svg>`;
+      case 'calligraphy':
+        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="16" cy="16" rx="12" ry="5" transform="rotate(-45 16 16)" fill="#ccc"/>
+        </svg>`;
+      case 'fan':
+        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <line x1="16" y1="24" x2="6" y2="8" stroke="#ccc" stroke-width="1.5"/>
+          <line x1="16" y1="24" x2="10" y2="7" stroke="#ccc" stroke-width="1.5"/>
+          <line x1="16" y1="24" x2="14" y2="7" stroke="#ccc" stroke-width="1.5"/>
+          <line x1="16" y1="24" x2="18" y2="7" stroke="#ccc" stroke-width="1.5"/>
+          <line x1="16" y1="24" x2="22" y2="7" stroke="#ccc" stroke-width="1.5"/>
+          <line x1="16" y1="24" x2="26" y2="8" stroke="#ccc" stroke-width="1.5"/>
+        </svg>`;
+      case 'splatter':
+        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="16" cy="16" r="3" fill="#ccc"/>
+          <circle cx="8" cy="10" r="1.5" fill="#aaa"/>
+          <circle cx="24" cy="10" r="2" fill="#aaa"/>
+          <circle cx="10" cy="23" r="2" fill="#aaa"/>
+          <circle cx="23" cy="22" r="1.5" fill="#aaa"/>
+          <circle cx="7" cy="17" r="1" fill="#888"/>
+          <circle cx="25" cy="16" r="1" fill="#888"/>
+          <circle cx="16" cy="7" r="1.5" fill="#888"/>
+          <circle cx="17" cy="25" r="1" fill="#888"/>
+        </svg>`;
+      case 'dry-brush':
+        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <line x1="8" y1="16" x2="24" y2="16" stroke="#ccc" stroke-width="3" stroke-dasharray="2 2"/>
+          <line x1="8" y1="13" x2="24" y2="13" stroke="#999" stroke-width="1.5" stroke-dasharray="3 3"/>
+          <line x1="8" y1="19" x2="24" y2="19" stroke="#999" stroke-width="1.5" stroke-dasharray="2 4"/>
+        </svg>`;
+      case 'wet-brush':
+        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs><radialGradient id="wg"><stop offset="0%" stop-color="#aaddff"/><stop offset="100%" stop-color="#446688"/></radialGradient></defs>
+          <ellipse cx="16" cy="16" rx="11" ry="8" fill="url(#wg)"/>
+        </svg>`;
+      default:
+        return html`<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="16" cy="16" r="8" fill="#888"/>
+        </svg>`;
+    }
+  }
+
   override render() {
     if (!this._ctx.value) return html``;
     const state = this.ctx.state;
@@ -955,13 +1088,16 @@ export class ToolSettings extends LitElement {
 
       ${(activeTool === 'pencil' || activeTool === 'eraser') ? html`
         <div class="separator"></div>
-        <div class="section" style="gap:0.25rem;">
-          ${BRUSH_PRESETS.map(preset => html`
-            <button
-              class="dialog-preset-btn ${state.activePreset === preset.id && !state.isPresetModified ? 'active' : ''}"
-              @click=${() => this.ctx.selectPreset(preset.id)}
-            >${preset.name}</button>
-          `)}
+        <div class="section">
+          <div class="preset-grid">
+            ${BRUSH_PRESETS.map(preset => html`
+              <button
+                class="preset-thumb-btn ${state.activePreset === preset.id && !state.isPresetModified ? 'active' : ''}"
+                title=${preset.name}
+                @click=${() => this.ctx.selectPreset(preset.id)}
+              >${this._presetSvg(preset.id)}</button>
+            `)}
+          </div>
         </div>
         <div class="separator"></div>
         <div class="section">
@@ -1020,30 +1156,27 @@ export class ToolSettings extends LitElement {
             <label style="flex-basis:100%;cursor:pointer;" @click=${() => { this._advancedOpen = false; }}>Advanced &#9650;</label>
             <div class="section">
               <label>Tip</label>
-              <select class="font-select" .value=${brush.tip.shape}
-                @change=${(e: Event) => this.ctx.setBrushTip({ shape: (e.target as HTMLSelectElement).value as TipShape })}>
-                <option value="round">Round</option>
-                <option value="flat">Flat</option>
-                <option value="chisel">Chisel</option>
-                <option value="calligraphy">Calligraphy</option>
-                <option value="fan">Fan</option>
-                <option value="splatter">Splatter</option>
-              </select>
+              <div class="pill-row">
+                ${(['round', 'flat', 'chisel', 'calligraphy', 'fan', 'splatter'] as TipShape[]).map(shape => html`
+                  <button
+                    class="pill-btn ${brush.tip.shape === shape ? 'active' : ''}"
+                    @click=${() => this.ctx.setBrushTip({ shape })}
+                  >${shape.charAt(0).toUpperCase() + shape.slice(1)}</button>
+                `)}
+              </div>
             </div>
-            ${brush.tip.shape !== 'round' ? html`
-              <div class="section">
-                <label>Aspect</label>
-                <input type="range" min="1" max="6" step="0.5" .value=${String(brush.tip.aspect)}
-                  @input=${(e: Event) => this.ctx.setBrushTip({ aspect: Number((e.target as HTMLInputElement).value) })} />
-                <span class="size-value">${brush.tip.aspect}</span>
-              </div>
-              <div class="section">
-                <label>Angle</label>
-                <input type="range" min="0" max="360" .value=${String(brush.tip.angle)}
-                  @input=${(e: Event) => this.ctx.setBrushTip({ angle: Number((e.target as HTMLInputElement).value) })} />
-                <span class="size-value">${brush.tip.angle}&deg;</span>
-              </div>
-            ` : nothing}
+            <div class="section ${brush.tip.shape === 'round' ? 'dimmed' : ''}">
+              <label>Aspect</label>
+              <input type="range" min="1" max="6" step="0.5" .value=${String(brush.tip.aspect)}
+                @input=${(e: Event) => this.ctx.setBrushTip({ aspect: Number((e.target as HTMLInputElement).value) })} />
+              <span class="size-value">${brush.tip.aspect}</span>
+            </div>
+            <div class="section">
+              <label>${brush.tip.orientation === 'direction' ? 'Offset' : 'Angle'}</label>
+              <input type="range" min="0" max="360" .value=${String(brush.tip.angle)}
+                @input=${(e: Event) => this.ctx.setBrushTip({ angle: Number((e.target as HTMLInputElement).value) })} />
+              <span class="size-value">${brush.tip.angle}&deg;</span>
+            </div>
             <div class="section">
               <label>Orient</label>
               <select class="font-select" .value=${brush.tip.orientation}
