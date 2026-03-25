@@ -81,6 +81,7 @@ export function initInkState(color: string, snapshot: ImageData | null): InkStat
   return {
     distanceTraveled: 0,
     remainingPaint: 1,
+    originalColor: color,
     currentColor: color,
     stampCount: 0,
     layerSnapshot: snapshot,
@@ -116,14 +117,19 @@ export function sampleSnapshot(snapshot: ImageData, x: number, y: number): { col
   return { color: `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`, alpha: a };
 }
 
-/** Apply color pickup: mutates state.currentColor toward the canvas color at (x, y).
- *  Skips blend when sampling transparent pixels — there's nothing to pick up. */
+/** Apply color pickup: sets state.currentColor as a blend of the original brush
+ *  color and the canvas color at (x, y). Wetness controls the mix ratio — the brush
+ *  always retains (1 - wetness) of its original color, never drifting fully away. */
 export function applyPickup(ink: InkDescriptor, state: InkState, x: number, y: number): void {
   if (ink.wetness <= 0 || !state.layerSnapshot) return;
   const sampled = sampleSnapshot(state.layerSnapshot, x, y);
-  // Only pick up color from pixels with meaningful alpha — transparent = nothing to absorb
-  if (sampled.alpha < 10) return;
-  // Scale the blend by the pixel's opacity so semi-transparent areas have less pull
+  // Transparent pixels have nothing to pick up — paint with original color
+  if (sampled.alpha < 10) {
+    state.currentColor = state.originalColor;
+    return;
+  }
+  // Blend from original brush color (not drifted currentColor) so wetness=0.4
+  // always means "60% brush + 40% canvas", not exponential decay toward canvas
   const alphaWeight = sampled.alpha / 255;
-  state.currentColor = lerpOklab(state.currentColor, sampled.color, ink.wetness * alphaWeight);
+  state.currentColor = lerpOklab(state.originalColor, sampled.color, ink.wetness * alphaWeight);
 }

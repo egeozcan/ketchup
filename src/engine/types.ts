@@ -42,6 +42,7 @@ export interface BrushPreset {
 export interface InkState {
   distanceTraveled: number;
   remainingPaint: number;
+  originalColor: string;
   currentColor: string;
   stampCount: number;
   layerSnapshot: ImageData | null;
