@@ -109,9 +109,8 @@ export class StampStrokeEngine {
       const baseFlow = d.pressureOpacity ? d.flow * stamp.pressure : d.flow;
       const effectiveFlow = applyBuildup(ink, baseFlow, spacingPx, stampDist);
 
-      applyPickup(ink, state, stamp.x, stamp.y);
-
       const stampSize = d.pressureSize ? Math.max(1, d.size * stamp.pressure) : d.size;
+      applyPickup(ink, state, stamp.x, stamp.y, stampSize / 2);
       const diam = quantizeDiameter(stampSize);
 
       let tip: AnyCanvas;

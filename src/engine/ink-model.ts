@@ -104,25 +104,60 @@ export function applyBuildup(ink: InkDescriptor, baseFlow: number, spacingPx: nu
   return Math.min(1, baseFlow * (1 + ink.buildup * overlapDensity));
 }
 
-/** Sample canvas color from snapshot at given document coordinates. Returns "#RRGGBB" and alpha (0-255). */
-export function sampleSnapshot(snapshot: ImageData, x: number, y: number): { color: string; alpha: number } {
-  const px = Math.round(x);
-  const py = Math.round(y);
-  if (px < 0 || py < 0 || px >= snapshot.width || py >= snapshot.height) return { color: '#000000', alpha: 0 };
-  const i = (py * snapshot.width + px) * 4;
-  const r = snapshot.data[i];
-  const g = snapshot.data[i + 1];
-  const b = snapshot.data[i + 2];
-  const a = snapshot.data[i + 3];
-  return { color: `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`, alpha: a };
+/** Sample averaged canvas color from a region around (x, y). Radius scales with
+ *  brush size to produce smooth color transitions instead of per-pixel noise. */
+export function sampleSnapshot(snapshot: ImageData, x: number, y: number, radius = 6): { color: string; alpha: number } {
+  const w = snapshot.width;
+  const h = snapshot.height;
+  const data = snapshot.data;
+  const cx = Math.round(x);
+  const cy = Math.round(y);
+  const r = Math.max(1, Math.round(radius));
+  const r2 = r * r;
+
+  let totalR = 0, totalG = 0, totalB = 0, totalA = 0, count = 0;
+
+  const x0 = Math.max(0, cx - r);
+  const x1 = Math.min(w - 1, cx + r);
+  const y0 = Math.max(0, cy - r);
+  const y1 = Math.min(h - 1, cy + r);
+
+  for (let py = y0; py <= y1; py++) {
+    const dy = py - cy;
+    for (let px = x0; px <= x1; px++) {
+      const dx = px - cx;
+      if (dx * dx + dy * dy > r2) continue;
+      const i = (py * w + px) * 4;
+      const a = data[i + 3];
+      if (a < 2) continue; // skip fully transparent
+      // Alpha-weighted accumulation so opaque pixels dominate
+      totalR += data[i] * a;
+      totalG += data[i + 1] * a;
+      totalB += data[i + 2] * a;
+      totalA += a;
+      count++;
+    }
+  }
+
+  if (count === 0 || totalA === 0) return { color: '#000000', alpha: 0 };
+
+  const avgR = Math.round(totalR / totalA);
+  const avgG = Math.round(totalG / totalA);
+  const avgB = Math.round(totalB / totalA);
+  const avgA = Math.round(totalA / count);
+
+  return {
+    color: `#${((1 << 24) | (avgR << 16) | (avgG << 8) | avgB).toString(16).slice(1)}`,
+    alpha: avgA,
+  };
 }
 
 /** Apply color pickup: sets state.currentColor as a blend of the original brush
  *  color and the canvas color at (x, y). Wetness controls the mix ratio — the brush
  *  always retains (1 - wetness) of its original color, never drifting fully away. */
-export function applyPickup(ink: InkDescriptor, state: InkState, x: number, y: number): void {
+export function applyPickup(ink: InkDescriptor, state: InkState, x: number, y: number, brushRadius = 6): void {
   if (ink.wetness <= 0 || !state.layerSnapshot) return;
-  const sampled = sampleSnapshot(state.layerSnapshot, x, y);
+  const sampled = sampleSnapshot(state.layerSnapshot, x, y, Math.max(4, brushRadius));
   // Transparent pixels have nothing to pick up — paint with original color
   if (sampled.alpha < 10) {
     state.currentColor = state.originalColor;
