@@ -581,8 +581,24 @@ export class DrawingApp extends LitElement {
     if (this._isTextEntryTarget(e)) {
       return;
     }
+    // Transform mode shortcuts
+    if (e.key === 'Escape' && this.canvas?.isTransformActive()) {
+      e.preventDefault();
+      this.canvas.cancelTransform();
+      return;
+    }
+    if (e.key === 'Enter' && this.canvas?.isTransformActive()) {
+      e.preventDefault();
+      this.canvas.commitTransform();
+      return;
+    }
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
+    if (ctrl && key === 't') {
+      e.preventDefault();
+      this.canvas?.enterTransformMode();
+      return;
+    }
     if (ctrl && key === 'z' && !e.shiftKey) {
       e.preventDefault();
       this.canvas?.undo();

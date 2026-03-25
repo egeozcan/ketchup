@@ -12,6 +12,8 @@ import { floodFill } from '../tools/fill.js';
 import { drawSelectionRect, drawRotationHandle, ROTATION_HANDLE_OFFSET, ROTATION_HANDLE_RADIUS } from '../tools/select.js';
 import { drawCropOverlay, hitTestCropHandle, parseAspectRatio, constrainCropToRatio, type CropRect, type CropHandle } from '../tools/crop.js';
 import { drawText, measureTextBlock, buildFontString, LINE_HEIGHT } from '../tools/text.js';
+import { TransformManager } from '../transform/transform-manager.js';
+import { detectContentBounds } from '../transform/transform-math.js';
 import './resize-dialog.js';
 import type { ResizeDialog } from './resize-dialog.js';
 
@@ -93,6 +95,7 @@ export class DrawingCanvas extends LitElement {
 
   // --- Floating selection state ---
   private _float: FloatingSelection | null = null;
+  private _transformManager: TransformManager | null = null;
   private _clipboard: ImageData | null = null;
   private _clipboardOrigin: Point | null = null;
   private _clipboardRotation = 0;
@@ -159,6 +162,140 @@ export class DrawingCanvas extends LitElement {
   public getWidth() { return this._docWidth; }
   public getHeight() { return this._docHeight; }
   public invalidateSamplingBuffer() { this._samplingDirty = true; }
+
+  // --- Transform mode ---
+
+  isTransformActive(): boolean {
+    return this._transformManager !== null;
+  }
+
+  enterTransformMode(): void {
+    if (this._transformManager) return;
+    const state = this._ctx.value?.state;
+    if (!state) return;
+    const layer = state.layers.find(l => l.id === state.activeLayerId);
+    if (!layer) return;
+    const ctx = layer.canvas.getContext('2d')!;
+
+    if (this._float) {
+      // Already have a floating selection — wrap in TransformManager
+      if (!this._beforeDrawData) this._captureBeforeDraw();
+      this._transformManager = new TransformManager(
+        this._float.originalImageData,
+        this._float.currentRect,
+        this.previewCanvas,
+        this._zoom,
+        { x: this._panX, y: this._panY },
+      );
+      if (this._float.rotation) {
+        this._transformManager.rotation = (this._float.rotation * 180) / Math.PI;
+      }
+      this._clearFloatState();
+    } else {
+      // No selection — transform entire layer
+      const imageData = ctx.getImageData(0, 0, layer.canvas.width, layer.canvas.height);
+      const bounds = detectContentBounds(imageData);
+      if (!bounds) return;
+      this._captureBeforeDraw();
+      const regionData = ctx.getImageData(bounds.x, bounds.y, bounds.w, bounds.h);
+      ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+      this._transformManager = new TransformManager(
+        regionData,
+        bounds,
+        this.previewCanvas,
+        this._zoom,
+        { x: this._panX, y: this._panY },
+      );
+    }
+    this.composite();
+    this.requestUpdate();
+  }
+
+  getTransformValues(): { x: number; y: number; width: number; height: number; rotation: number; skewX: number; skewY: number; flipH: boolean; flipV: boolean } | null {
+    if (!this._transformManager) return null;
+    const tm = this._transformManager;
+    return {
+      x: tm.x, y: tm.y, width: tm.width, height: tm.height,
+      rotation: tm.rotation, skewX: tm.skewX, skewY: tm.skewY,
+      flipH: tm.flipH, flipV: tm.flipV,
+    };
+  }
+
+  setTransformValue(key: string, value: number | boolean): void {
+    if (!this._transformManager) return;
+    const tm = this._transformManager;
+    switch (key) {
+      case 'x': tm.x = value as number; break;
+      case 'y': tm.y = value as number; break;
+      case 'width': tm.width = value as number; break;
+      case 'height': tm.height = value as number; break;
+      case 'rotation': tm.rotation = value as number; break;
+      case 'skewX': tm.skewX = value as number; break;
+      case 'skewY': tm.skewY = value as number; break;
+      case 'flipH': tm.flipH = value as boolean; break;
+      case 'flipV': tm.flipV = value as boolean; break;
+    }
+    this.composite();
+  }
+
+  commitTransform(): void {
+    if (!this._transformManager) return;
+    const state = this._ctx.value?.state;
+    if (!state) return;
+    const layer = state.layers.find(l => l.id === state.activeLayerId);
+    if (!layer) return;
+
+    if (this._transformManager.hasChanged()) {
+      this._transformManager.commit(layer.canvas);
+      const after = layer.canvas.getContext('2d')!.getImageData(
+        0, 0, layer.canvas.width, layer.canvas.height,
+      );
+      if (this._beforeDrawData) {
+        this._pushHistoryEntry({
+          type: 'transform',
+          layerId: layer.id,
+          before: this._beforeDrawData,
+          after,
+        });
+      }
+      this._beforeDrawData = null;
+    }
+
+    this._transformManager.dispose();
+    this._transformManager = null;
+    this.previewCanvas.getContext('2d')!.clearRect(
+      0, 0, this.previewCanvas.width, this.previewCanvas.height,
+    );
+    this.composite();
+    this.requestUpdate();
+  }
+
+  cancelTransform(): void {
+    if (!this._transformManager) return;
+    const state = this._ctx.value?.state;
+    if (!state) return;
+    const layer = state.layers.find(l => l.id === state.activeLayerId);
+    if (!layer) return;
+
+    const ctx = layer.canvas.getContext('2d')!;
+
+    if (this._beforeDrawData) {
+      ctx.putImageData(this._beforeDrawData, 0, 0);
+    } else {
+      const originalData = this._transformManager.cancel();
+      const srcRect = this._transformManager.getSourceRect();
+      ctx.putImageData(originalData, srcRect.x, srcRect.y);
+    }
+
+    this._transformManager.dispose();
+    this._transformManager = null;
+    this._beforeDrawData = null;
+    this.previewCanvas.getContext('2d')!.clearRect(
+      0, 0, this.previewCanvas.width, this.previewCanvas.height,
+    );
+    this.composite();
+    this.requestUpdate();
+  }
 
   // --- Viewport helpers ---
   private get _vw(): number { return this.mainCanvas?.width ?? 800; }
@@ -293,6 +430,10 @@ export class DrawingCanvas extends LitElement {
             Math.round(currentRect.w), Math.round(currentRect.h));
         }
       }
+      // Draw transform manager content after its owning layer
+      if (this._transformManager && layer.id === activeLayerId) {
+        this._transformManager.renderTransformed(displayCtx);
+      }
       if (hasBlend) {
         displayCtx.globalCompositeOperation = 'source-over';
       }
@@ -408,6 +549,7 @@ export class DrawingCanvas extends LitElement {
     if (!this.mainCanvas) return;
     this._panX = Math.round((this._vw - this._docWidth * this._zoom) / 2);
     this._panY = Math.round((this._vh - this._docHeight * this._zoom) / 2);
+    this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
     if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
@@ -439,6 +581,7 @@ export class DrawingCanvas extends LitElement {
     // Pattern is tied to canvas context, must recreate
     this._checkerboardPattern = null;
 
+    this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
     if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
@@ -638,7 +781,8 @@ export class DrawingCanvas extends LitElement {
     const state = this._ctx.value?.state;
     if (!state) return;
     switch (entry.type) {
-      case 'draw': {
+      case 'draw':
+      case 'transform': {
         const layer = state.layers.find(l => l.id === entry.layerId);
         if (layer) layer.canvas.getContext('2d')!.putImageData(entry.before, 0, 0);
         break;
@@ -738,7 +882,8 @@ export class DrawingCanvas extends LitElement {
     const state = this._ctx.value?.state;
     if (!state) return;
     switch (entry.type) {
-      case 'draw': {
+      case 'draw':
+      case 'transform': {
         const layer = state.layers.find(l => l.id === entry.layerId);
         if (layer) layer.canvas.getContext('2d')!.putImageData(entry.after, 0, 0);
         break;
@@ -930,6 +1075,7 @@ export class DrawingCanvas extends LitElement {
     if (!this._panning) return;
     this._panX = this._panStartOffsetX + (e.clientX - this._panStartX);
     this._panY = this._panStartOffsetY + (e.clientY - this._panStartY);
+    this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
     if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
@@ -986,6 +1132,7 @@ export class DrawingCanvas extends LitElement {
       this._panY = viewportY - docY * newZoom;
       this._zoom = newZoom;
 
+      this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
       this.composite();
       if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
@@ -997,6 +1144,7 @@ export class DrawingCanvas extends LitElement {
     e.preventDefault();
     this._panX -= e.deltaX;
     this._panY -= e.deltaY;
+    this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
     if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
@@ -1035,6 +1183,7 @@ export class DrawingCanvas extends LitElement {
     this._zoom = Math.min(DrawingCanvas.MAX_ZOOM, Math.max(DrawingCanvas.MIN_ZOOM, fitZoom));
     this._panX = Math.round((this._vw - this._docWidth * this._zoom) / 2);
     this._panY = Math.round((this._vh - this._docHeight * this._zoom) / 2);
+    this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
     if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
@@ -1051,6 +1200,7 @@ export class DrawingCanvas extends LitElement {
     this._zoom = Math.min(DrawingCanvas.MAX_ZOOM, Math.max(DrawingCanvas.MIN_ZOOM, zoom));
     this._panX = panX;
     this._panY = panY;
+    this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
     if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
@@ -1070,6 +1220,7 @@ export class DrawingCanvas extends LitElement {
     this._panY = cy - docY * clamped;
     this._zoom = clamped;
 
+    this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
     if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
@@ -1322,6 +1473,16 @@ export class DrawingCanvas extends LitElement {
 
     if (e.button !== 0) return;
 
+    // TransformManager intercepts all pointer events when active
+    if (this._transformManager) {
+      const p = this._getDocPoint(e);
+      if (e.pointerType === 'touch') this._transformManager.setTouchMode(true);
+      const modifiers = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey };
+      this._transformManager.onPointerDown(p, modifiers);
+      this.mainCanvas.setPointerCapture(e.pointerId);
+      return;
+    }
+
     const { activeTool } = this.ctx.state;
 
     // Alt-hold eyedropper modifier for drawing tools
@@ -1492,6 +1653,16 @@ export class DrawingCanvas extends LitElement {
 
     if (!this._ctx.value) return;
 
+    // TransformManager intercepts all pointer events when active
+    if (this._transformManager) {
+      const p = this._getDocPoint(e);
+      const modifiers = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey };
+      this._transformManager.onPointerMove(p, modifiers);
+      this.style.cursor = this._transformManager.getCursor(p);
+      this.composite();
+      return;
+    }
+
     {
       const activeTool = this.ctx.state.activeTool;
 
@@ -1620,6 +1791,19 @@ export class DrawingCanvas extends LitElement {
     }
 
     if (!this._ctx.value) return;
+
+    // TransformManager intercepts all pointer events when active
+    if (this._transformManager) {
+      const p = this._getDocPoint(e);
+      const result = this._transformManager.onPointerUp(p);
+      if (result === 'commit' || result === 'commit-button') {
+        this.commitTransform();
+      } else if (result === 'cancel-button') {
+        this.cancelTransform();
+      }
+      this.composite();
+      return;
+    }
 
     // Handle panning end
     if (this._panning) {
@@ -1902,6 +2086,7 @@ export class DrawingCanvas extends LitElement {
     this._lastPinchMidX = midX;
     this._lastPinchMidY = midY;
 
+    this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
     if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
