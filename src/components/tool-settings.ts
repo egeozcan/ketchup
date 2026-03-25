@@ -4,6 +4,8 @@ import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import { storageBackendContext, projectServiceContext } from '../storage/storage-context.js';
 import type { StampEntry } from '../storage/types.js';
+import type { PressureCurveName, TipShape, OrientationMode } from '../engine/types.js';
+import { BRUSH_PRESETS } from '../engine/brush-presets.js';
 
 const documentPresets = [
   { label: '800 \u00d7 600', width: 800, height: 600 },
@@ -576,6 +578,7 @@ export class ToolSettings extends LitElement {
   @state() private _recentStamps: StampEntry[] = [];
   @state() private _activeStampId: string | null = null;
   @state() private _projectDropdownOpen = false;
+  @state() private _advancedOpen = false;
   @state() private _renamingProjectId: string | null = null;
   @state() private _newProjectName = 'Untitled';
   @state() private _newProjectWidth = '800';
@@ -867,7 +870,8 @@ export class ToolSettings extends LitElement {
   override render() {
     if (!this._ctx.value) return html``;
     const state = this.ctx.state;
-    const { strokeColor, fillColor, useFill, brushSize, activeTool, stampImage } = state;
+    const { strokeColor, fillColor, useFill, activeTool, stampImage, brush } = state;
+    const brushSize = brush.size;
 
     const isMobile = this.ctx.isMobile;
 
@@ -949,52 +953,154 @@ export class ToolSettings extends LitElement {
         <span class="size-value">${brushSize}</span>
       </div>
 
-      ${(activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser') ? html`
+      ${(activeTool === 'pencil' || activeTool === 'eraser') ? html`
+        <div class="separator"></div>
+        <div class="section" style="gap:0.25rem;">
+          ${BRUSH_PRESETS.map(preset => html`
+            <button
+              class="dialog-preset-btn ${state.activePreset === preset.id && !state.isPresetModified ? 'active' : ''}"
+              @click=${() => this.ctx.selectPreset(preset.id)}
+            >${preset.name}</button>
+          `)}
+        </div>
         <div class="separator"></div>
         <div class="section">
           <label>Opacity</label>
-          <input type="range" min="0" max="100" .value=${String(Math.round(state.opacity * 100))}
-            @input=${(e: Event) => this.ctx.setOpacity(Number((e.target as HTMLInputElement).value) / 100)} />
-          <span class="size-value">${Math.round(state.opacity * 100)}%</span>
+          <input type="range" min="0" max="100" .value=${String(Math.round(brush.opacity * 100))}
+            @input=${(e: Event) => this.ctx.setBrush({ opacity: Number((e.target as HTMLInputElement).value) / 100 })} />
+          <span class="size-value">${Math.round(brush.opacity * 100)}%</span>
         </div>
         <div class="section">
           <label>Flow</label>
-          <input type="range" min="1" max="100" .value=${String(Math.round(state.flow * 100))}
-            @input=${(e: Event) => this.ctx.setFlow(Number((e.target as HTMLInputElement).value) / 100)} />
-          <span class="size-value">${Math.round(state.flow * 100)}%</span>
+          <input type="range" min="1" max="100" .value=${String(Math.round(brush.flow * 100))}
+            @input=${(e: Event) => this.ctx.setBrush({ flow: Number((e.target as HTMLInputElement).value) / 100 })} />
+          <span class="size-value">${Math.round(brush.flow * 100)}%</span>
         </div>
         <div class="section">
           <label>Hardness</label>
-          <input type="range" min="0" max="100" .value=${String(Math.round(state.hardness * 100))}
-            @input=${(e: Event) => this.ctx.setHardness(Number((e.target as HTMLInputElement).value) / 100)} />
-          <span class="size-value">${Math.round(state.hardness * 100)}%</span>
+          <input type="range" min="0" max="100" .value=${String(Math.round(brush.hardness * 100))}
+            @input=${(e: Event) => this.ctx.setBrush({ hardness: Number((e.target as HTMLInputElement).value) / 100 })} />
+          <span class="size-value">${Math.round(brush.hardness * 100)}%</span>
+        </div>
+        <div class="section">
+          <label>Spacing</label>
+          <input type="range" min="5" max="100" .value=${String(Math.round(brush.spacing * 100))}
+            @input=${(e: Event) => this.ctx.setBrush({ spacing: Number((e.target as HTMLInputElement).value) / 100 })} />
+          <span class="size-value">${Math.round(brush.spacing * 100)}%</span>
         </div>
         <div class="separator"></div>
         <div class="section">
           <label class="checkbox-label">
-            <input type="checkbox" .checked=${state.pressureSize}
-              @change=${(e: Event) => this.ctx.setPressureSize((e.target as HTMLInputElement).checked)} />
+            <input type="checkbox" .checked=${brush.pressureSize}
+              @change=${(e: Event) => this.ctx.setBrush({ pressureSize: (e.target as HTMLInputElement).checked })} />
             Pressure Size
           </label>
         </div>
         <div class="section">
           <label class="checkbox-label">
-            <input type="checkbox" .checked=${state.pressureOpacity}
-              @change=${(e: Event) => this.ctx.setPressureOpacity((e.target as HTMLInputElement).checked)} />
+            <input type="checkbox" .checked=${brush.pressureOpacity}
+              @change=${(e: Event) => this.ctx.setBrush({ pressureOpacity: (e.target as HTMLInputElement).checked })} />
             Pressure Opacity
           </label>
         </div>
-        ${(state.pressureSize || state.pressureOpacity) ? html`
+        ${(brush.pressureSize || brush.pressureOpacity) ? html`
         <div class="section">
           <label>Curve</label>
-          <select class="font-select" .value=${state.pressureCurve}
-            @change=${(e: Event) => this.ctx.setPressureCurve((e.target as HTMLSelectElement).value as any)}>
+          <select class="font-select" .value=${brush.pressureCurve}
+            @change=${(e: Event) => this.ctx.setBrush({ pressureCurve: (e.target as HTMLSelectElement).value as PressureCurveName })}>
             <option value="linear">Linear</option>
             <option value="light">Light</option>
             <option value="heavy">Heavy</option>
           </select>
         </div>
         ` : nothing}
+        <div class="separator"></div>
+        ${this._advancedOpen ? html`
+          <div class="section" style="flex-wrap:wrap;gap:0.5rem;">
+            <label style="flex-basis:100%;cursor:pointer;" @click=${() => { this._advancedOpen = false; }}>Advanced &#9650;</label>
+            <div class="section">
+              <label>Tip</label>
+              <select class="font-select" .value=${brush.tip.shape}
+                @change=${(e: Event) => this.ctx.setBrushTip({ shape: (e.target as HTMLSelectElement).value as TipShape })}>
+                <option value="round">Round</option>
+                <option value="flat">Flat</option>
+                <option value="chisel">Chisel</option>
+                <option value="calligraphy">Calligraphy</option>
+                <option value="fan">Fan</option>
+                <option value="splatter">Splatter</option>
+              </select>
+            </div>
+            ${brush.tip.shape !== 'round' ? html`
+              <div class="section">
+                <label>Aspect</label>
+                <input type="range" min="1" max="6" step="0.5" .value=${String(brush.tip.aspect)}
+                  @input=${(e: Event) => this.ctx.setBrushTip({ aspect: Number((e.target as HTMLInputElement).value) })} />
+                <span class="size-value">${brush.tip.aspect}</span>
+              </div>
+              <div class="section">
+                <label>Angle</label>
+                <input type="range" min="0" max="360" .value=${String(brush.tip.angle)}
+                  @input=${(e: Event) => this.ctx.setBrushTip({ angle: Number((e.target as HTMLInputElement).value) })} />
+                <span class="size-value">${brush.tip.angle}&deg;</span>
+              </div>
+            ` : nothing}
+            <div class="section">
+              <label>Orient</label>
+              <select class="font-select" .value=${brush.tip.orientation}
+                @change=${(e: Event) => this.ctx.setBrushTip({ orientation: (e.target as HTMLSelectElement).value as OrientationMode })}>
+                <option value="fixed">Fixed</option>
+                <option value="direction">Direction</option>
+              </select>
+            </div>
+            ${(brush.tip.shape === 'fan' || brush.tip.shape === 'splatter') ? html`
+              <div class="section">
+                <label>Bristles</label>
+                <input type="range" min="1" max="20" .value=${String(brush.tip.bristles ?? 8)}
+                  @input=${(e: Event) => this.ctx.setBrushTip({ bristles: Number((e.target as HTMLInputElement).value) })} />
+                <span class="size-value">${brush.tip.bristles ?? 8}</span>
+              </div>
+              <div class="section">
+                <label>Spread</label>
+                <input type="range" min="0" max="200" .value=${String(Math.round((brush.tip.spread ?? 1) * (brush.tip.shape === 'fan' ? 1 : 100)))}
+                  @input=${(e: Event) => {
+                    const v = Number((e.target as HTMLInputElement).value);
+                    this.ctx.setBrushTip({ spread: brush.tip.shape === 'fan' ? v : v / 100 });
+                  }} />
+                <span class="size-value">${brush.tip.shape === 'fan' ? (brush.tip.spread ?? 120) : Math.round((brush.tip.spread ?? 0.8) * 100) + '%'}</span>
+              </div>
+            ` : nothing}
+            <div class="section">
+              <label>Depletion</label>
+              <input type="range" min="0" max="100" .value=${String(Math.round(brush.ink.depletion * 100))}
+                @input=${(e: Event) => this.ctx.setBrushInk({ depletion: Number((e.target as HTMLInputElement).value) / 100 })} />
+              <span class="size-value">${Math.round(brush.ink.depletion * 100)}%</span>
+            </div>
+            ${brush.ink.depletion > 0 ? html`
+              <div class="section">
+                <label>Depl. Len</label>
+                <input type="range" min="100" max="2000" .value=${String(brush.ink.depletionLength)}
+                  @input=${(e: Event) => this.ctx.setBrushInk({ depletionLength: Number((e.target as HTMLInputElement).value) })} />
+                <span class="size-value">${brush.ink.depletionLength}px</span>
+              </div>
+            ` : nothing}
+            <div class="section">
+              <label>Buildup</label>
+              <input type="range" min="0" max="100" .value=${String(Math.round(brush.ink.buildup * 100))}
+                @input=${(e: Event) => this.ctx.setBrushInk({ buildup: Number((e.target as HTMLInputElement).value) / 100 })} />
+              <span class="size-value">${Math.round(brush.ink.buildup * 100)}%</span>
+            </div>
+            <div class="section">
+              <label>Wetness</label>
+              <input type="range" min="0" max="100" .value=${String(Math.round(brush.ink.wetness * 100))}
+                @input=${(e: Event) => this.ctx.setBrushInk({ wetness: Number((e.target as HTMLInputElement).value) / 100 })} />
+              <span class="size-value">${Math.round(brush.ink.wetness * 100)}%</span>
+            </div>
+          </div>
+        ` : html`
+          <div class="section">
+            <label style="cursor:pointer;" @click=${() => { this._advancedOpen = true; }}>Advanced &#9660;</label>
+          </div>
+        `}
       ` : nothing}
 
       ${activeTool === 'eyedropper' ? html`

@@ -2,6 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
+import { blendModeToCompositeOp } from '../engine/types.js';
 
 @customElement('navigator-panel')
 export class NavigatorPanel extends LitElement {
@@ -263,15 +264,20 @@ export class NavigatorPanel extends LitElement {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(this._minimapOffsetX, this._minimapOffsetY, scaledW, scaledH);
 
-    // Composite visible layers
+    // Composite visible layers (matching main canvas blend mode handling)
     ctx.save();
     ctx.translate(this._minimapOffsetX, this._minimapOffsetY);
+    const hasBlend = layers.some(l => l.visible && l.blendMode !== 'normal');
     for (const layer of layers) {
       if (!layer.visible) continue;
       ctx.globalAlpha = layer.opacity;
+      if (hasBlend) {
+        ctx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
+      }
       ctx.drawImage(layer.canvas, 0, 0, scaledW, scaledH);
-      ctx.globalAlpha = 1.0;
     }
+    ctx.globalAlpha = 1.0;
+    ctx.globalCompositeOperation = 'source-over';
     ctx.restore();
 
     // Draw viewport rectangle

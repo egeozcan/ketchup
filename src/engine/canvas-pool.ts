@@ -19,3 +19,34 @@ export function get2dContext(
 ): CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D {
   return canvas.getContext('2d', options)! as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 }
+
+export type AnyCanvas = HTMLCanvasElement | OffscreenCanvas;
+
+/** Type-safe drawImage that accepts both HTMLCanvasElement and OffscreenCanvas. */
+export function drawImageSafe(
+  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  source: AnyCanvas,
+  dx: number,
+  dy: number,
+  dw?: number,
+  dh?: number,
+) {
+  if (dw !== undefined && dh !== undefined) {
+    ctx.drawImage(source as HTMLCanvasElement, dx, dy, dw, dh);
+  } else {
+    ctx.drawImage(source as HTMLCanvasElement, dx, dy);
+  }
+}
+
+/** Tint an alpha-mask canvas with a solid color using source-in compositing. */
+export function tintAlphaMask(
+  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  color: string,
+  width: number,
+  height: number,
+) {
+  ctx.globalCompositeOperation = 'source-in';
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, width, height);
+  ctx.globalCompositeOperation = 'source-over';
+}

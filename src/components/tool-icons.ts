@@ -29,13 +29,6 @@ export const toolIcons: Record<ToolType, ReturnType<typeof svg>> = {
       <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
     </svg>`,
 
-  // Marker — thick marker/highlighter
-  marker: svg`
-    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="m9 11-6 6v3h9l3-3"/>
-      <path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/>
-    </svg>`,
-
   // Eraser — rectangular eraser
   eraser: svg`
     <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -156,7 +149,6 @@ export const toolShortcuts: Record<ToolType, string> = {
   move: 'M',
   hand: 'H',
   pencil: 'B',
-  marker: 'K',
   eraser: 'E',
   line: 'L',
   rectangle: 'U',
@@ -181,7 +173,6 @@ export const toolLabels: Record<ToolType, string> = {
   select: 'Select',
   move: 'Move',
   pencil: 'Pencil',
-  marker: 'Marker',
   eraser: 'Eraser',
   line: 'Line',
   rectangle: 'Rectangle',

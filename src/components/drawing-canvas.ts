@@ -6,7 +6,8 @@ import type { Point, HistoryEntry, Layer, FloatingSelection, LayerSnapshot } fro
 import { drawShapePreview } from '../tools/shapes.js';
 import { StampStrokeEngine } from '../engine/stamp-stroke.js';
 import { blendModeToCompositeOp } from '../engine/types.js';
-import type { BrushParams } from '../engine/types.js';
+import type { BrushDescriptor } from '../engine/types.js';
+import { tintAlphaMask } from '../engine/canvas-pool.js';
 import { floodFill } from '../tools/fill.js';
 import { drawSelectionRect, drawRotationHandle, ROTATION_HANDLE_OFFSET, ROTATION_HANDLE_RADIUS } from '../tools/select.js';
 import { drawCropOverlay, hitTestCropHandle, parseAspectRatio, constrainCropToRatio, type CropRect, type CropHandle } from '../tools/crop.js';
@@ -165,20 +166,8 @@ export class DrawingCanvas extends LitElement {
 
   // --- Layer-aware helpers ---
 
-  private _buildBrushParams(): BrushParams {
-    const s = this.ctx.state;
-    return {
-      size: s.brushSize,
-      opacity: s.opacity,
-      flow: s.flow,
-      hardness: s.hardness,
-      spacing: s.spacing,
-      pressureSize: s.pressureSize,
-      pressureOpacity: s.pressureOpacity,
-      pressureCurve: s.pressureCurve,
-      color: s.strokeColor,
-      eraser: s.activeTool === 'eraser',
-    };
+  private get _brushDescriptor(): BrushDescriptor {
+    return this.ctx.state.brush;
   }
 
   private _getActiveLayerCtx(): CanvasRenderingContext2D | null {
@@ -246,10 +235,15 @@ export class DrawingCanvas extends LitElement {
             // Apply eraser: destination-out on the layer copy
             tintCtx.globalAlpha = preview.opacity;
             tintCtx.globalCompositeOperation = 'destination-out';
-            tintCtx.drawImage(preview.canvas as any, 0, 0);
+            tintCtx.drawImage(preview.canvas as HTMLCanvasElement, 0, 0);
+          } else if (preview.color === null) {
+            // Color mode / wet brush — preview already has correct colors
+            tintCtx.globalAlpha = preview.opacity;
+            tintCtx.globalCompositeOperation = 'source-over';
+            tintCtx.drawImage(preview.canvas as HTMLCanvasElement, 0, 0);
           } else {
             // Tint the stroke buffer, then overlay on the layer copy
-            // Use a second temp region: draw stroke mask, tint it, composite
+            // Use a second temp canvas: copy stroke mask, tint it, composite
             const w = this._docWidth;
             const h = this._docHeight;
             if (!this._strokeTintCanvas || this._strokeTintCanvas.width !== w || this._strokeTintCanvas.height !== h) {
@@ -260,11 +254,8 @@ export class DrawingCanvas extends LitElement {
             const strokeCtx = this._strokeTintCanvas.getContext('2d')!;
             strokeCtx.globalCompositeOperation = 'source-over';
             strokeCtx.clearRect(0, 0, w, h);
-            strokeCtx.drawImage(preview.canvas as any, 0, 0);
-            strokeCtx.globalCompositeOperation = 'source-in';
-            strokeCtx.fillStyle = preview.color;
-            strokeCtx.fillRect(0, 0, w, h);
-            strokeCtx.globalCompositeOperation = 'source-over';
+            strokeCtx.drawImage(preview.canvas as HTMLCanvasElement, 0, 0);
+            tintAlphaMask(strokeCtx, preview.color, w, h);
 
             tintCtx.globalAlpha = preview.opacity;
             tintCtx.globalCompositeOperation = 'source-over';
@@ -1249,8 +1240,10 @@ export class DrawingCanvas extends LitElement {
   private _renderBrushCursor() {
     if (!this._pointerOnCanvas) return;
     if (this._altSampling) return;
-    const { activeTool, brushSize, hardness } = this.ctx.state;
-    if (activeTool !== 'pencil' && activeTool !== 'marker' && activeTool !== 'eraser') return;
+    const { activeTool } = this.ctx.state;
+    const brushSize = this.ctx.state.brush.size;
+    const hardness = this.ctx.state.brush.hardness;
+    if (activeTool !== 'pencil' && activeTool !== 'eraser') return;
 
     const previewCtx = this.previewCanvas.getContext('2d')!;
 
@@ -1289,7 +1282,7 @@ export class DrawingCanvas extends LitElement {
 
     const { activeTool } = this.ctx.state;
 
-    if (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser' || activeTool === 'eyedropper') {
+    if (activeTool === 'pencil' || activeTool === 'eraser' || activeTool === 'eyedropper') {
       previewCtx.clearRect(0, 0, this._vw, this._vh);
 
       if (this._altSampling || activeTool === 'eyedropper') {
@@ -1331,7 +1324,7 @@ export class DrawingCanvas extends LitElement {
     const { activeTool } = this.ctx.state;
 
     // Alt-hold eyedropper modifier for drawing tools
-    if (e.altKey && (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser')) {
+    if (e.altKey && (activeTool === 'pencil' || activeTool === 'eraser')) {
       this._altSampling = true;
       const p = this._getDocPoint(e);
       const color = this._sampleColor(p.x, p.y);
@@ -1420,7 +1413,7 @@ export class DrawingCanvas extends LitElement {
       this._commitFloat();
       if (this.ctx.state.stampImage) {
         this._captureBeforeDraw();
-        this._createFloatFromImage(this.ctx.state.stampImage, p.x, p.y, this.ctx.state.brushSize * 10);
+        this._createFloatFromImage(this.ctx.state.stampImage, p.x, p.y, this.ctx.state.brush.size * 10);
       }
       return;
     }
@@ -1466,13 +1459,16 @@ export class DrawingCanvas extends LitElement {
     this._lastPoint = p;
     this._startPoint = p;
 
-    if (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser') {
+    if (activeTool === 'pencil' || activeTool === 'eraser') {
       // Clear the brush cursor ring from the preview canvas before drawing starts
       this.previewCanvas?.getContext('2d')?.clearRect(0, 0, this._vw, this._vh);
       this._captureBeforeDraw();
-      const params = this._buildBrushParams();
-      this._engine.begin(params, this._docWidth, this._docHeight);
-      this._engine.stroke(p.x, p.y, e.pressure || 0.5);
+      const desc = this._brushDescriptor;
+      const color = this.ctx.state.strokeColor;
+      const eraser = this.ctx.state.activeTool === 'eraser';
+      this._engine.begin(desc, color, eraser, this._docWidth, this._docHeight);
+      const layerCtx = desc.ink.wetness > 0 ? this._getActiveLayerCtx() ?? undefined : undefined;
+      this._engine.stroke(p.x, p.y, e.pressure || 0.5, layerCtx);
       this.composite();
     }
   }
@@ -1503,7 +1499,7 @@ export class DrawingCanvas extends LitElement {
         return;
       }
 
-      if (this._altSampling || (e.altKey && (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser'))) {
+      if (this._altSampling || (e.altKey && (activeTool === 'pencil' || activeTool === 'eraser'))) {
         this._altSampling = e.altKey;
         if (!e.altKey) {
           this._clearEyedropperPreview();
@@ -1571,15 +1567,17 @@ export class DrawingCanvas extends LitElement {
     }
 
     // Render brush cursor when hovering (not drawing)
-    if (!this._drawing && (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser')) {
+    if (!this._drawing && (activeTool === 'pencil' || activeTool === 'eraser')) {
       this._renderPreview();
     }
 
     if (!this._drawing || !this._lastPoint) return;
     const p = this._getDocPoint(e);
 
-    if (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser') {
-      this._engine.stroke(p.x, p.y, e.pressure || 0.5);
+    if (activeTool === 'pencil' || activeTool === 'eraser') {
+      const desc = this._brushDescriptor;
+      const layerCtx = desc.ink.wetness > 0 ? this._getActiveLayerCtx() ?? undefined : undefined;
+      this._engine.stroke(p.x, p.y, e.pressure || 0.5, layerCtx);
       this._lastPoint = p;
       this.composite();
     } else if (
@@ -1602,7 +1600,7 @@ export class DrawingCanvas extends LitElement {
         this.ctx.state.strokeColor,
         this.ctx.state.fillColor,
         this.ctx.state.useFill,
-        this.ctx.state.brushSize,
+        this.ctx.state.brush.size,
       );
       previewCtx.restore();
     }
@@ -1644,7 +1642,7 @@ export class DrawingCanvas extends LitElement {
     // (e.g. via keyboard shortcut), finalize the orphaned stroke now.
     // Select, stamp, move, hand, and fill never set _drawing, so _drawing
     // being true here means the tool switched away from a brush/shape tool.
-    if (this._drawing && activeTool !== 'pencil' && activeTool !== 'marker' &&
+    if (this._drawing && activeTool !== 'pencil' &&
         activeTool !== 'eraser' && activeTool !== 'rectangle' &&
         activeTool !== 'circle' && activeTool !== 'line' && activeTool !== 'triangle') {
       const layerCtx = this._getActiveLayerCtx();
@@ -1715,7 +1713,7 @@ export class DrawingCanvas extends LitElement {
           this.ctx.state.strokeColor,
           this.ctx.state.fillColor,
           this.ctx.state.useFill,
-          this.ctx.state.brushSize,
+          this.ctx.state.brush.size,
         );
       }
       // Clear preview
@@ -1724,7 +1722,7 @@ export class DrawingCanvas extends LitElement {
     }
 
     // Commit engine stroke buffer to layer before capturing history
-    if (activeTool === 'pencil' || activeTool === 'marker' || activeTool === 'eraser') {
+    if (activeTool === 'pencil' || activeTool === 'eraser') {
       const layerCtx = this._getActiveLayerCtx();
       if (layerCtx) {
         this._engine.commit(layerCtx);

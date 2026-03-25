@@ -8,7 +8,7 @@ import './tool-settings.js';
 
 const toolGroups: ToolType[][] = [
   ['select', 'move', 'crop', 'hand'],
-  ['pencil', 'marker', 'eraser'],
+  ['pencil', 'eraser'],
   ['line', 'rectangle', 'circle', 'triangle'],
   ['fill', 'stamp', 'text', 'eyedropper'],
 ];

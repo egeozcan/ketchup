@@ -1,10 +1,9 @@
-import type { BlendMode, PressureCurveName } from './engine/types.js';
+import type { BlendMode, BrushDescriptor } from './engine/types.js';
 
 export type ToolType =
   | 'select'
   | 'move'
   | 'pencil'
-  | 'marker'
   | 'eraser'
   | 'line'
   | 'rectangle'
@@ -56,7 +55,9 @@ export interface DrawingState {
   strokeColor: string;
   fillColor: string;
   useFill: boolean;
-  brushSize: number;
+  brush: BrushDescriptor;
+  activePreset: string;
+  isPresetModified: boolean;
   stampImage: HTMLImageElement | null;
   layers: Layer[];
   activeLayerId: string;
@@ -68,13 +69,6 @@ export interface DrawingState {
   fontSize: number;
   fontBold: boolean;
   fontItalic: boolean;
-  opacity: number;
-  flow: number;
-  hardness: number;
-  spacing: number;
-  pressureSize: boolean;
-  pressureOpacity: boolean;
-  pressureCurve: PressureCurveName;
   eyedropperSampleAll: boolean;
 }
 

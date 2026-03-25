@@ -1,18 +1,5 @@
 export type PressureCurveName = 'linear' | 'light' | 'heavy';
 
-export interface BrushParams {
-  size: number;
-  opacity: number;
-  flow: number;
-  hardness: number;
-  spacing: number;
-  pressureSize: boolean;
-  pressureOpacity: boolean;
-  pressureCurve: PressureCurveName;
-  color: string;
-  eraser: boolean;
-}
-
 export type TipShape = 'round' | 'flat' | 'chisel' | 'calligraphy' | 'fan' | 'splatter';
 export type OrientationMode = 'fixed' | 'direction';
 

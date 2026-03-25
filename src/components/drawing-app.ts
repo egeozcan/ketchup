@@ -2,7 +2,8 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import { blendModeToCompositeOp, type BlendMode, type PressureCurveName } from '../engine/types.js';
+import { blendModeToCompositeOp, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor } from '../engine/types.js';
+import { getDefaultDescriptor, getPresetById } from '../engine/brush-presets.js';
 import type { DrawingState, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
 import { IndexedDBBackend, ProjectService, StorageQuotaError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
@@ -161,7 +162,9 @@ export class DrawingApp extends LitElement {
       strokeColor: '#000000',
       fillColor: '#ff0000',
       useFill: false,
-      brushSize: 4,
+      brush: getDefaultDescriptor(),
+      activePreset: 'round',
+      isPresetModified: false,
       stampImage: null,
       layers: [layer],
       activeLayerId: layer.id,
@@ -173,13 +176,6 @@ export class DrawingApp extends LitElement {
       fontSize: 24,
       fontBold: false,
       fontItalic: false,
-      opacity: 1,
-      flow: 1,
-      hardness: 1,
-      spacing: 0.15,
-      pressureSize: true,
-      pressureOpacity: false,
-      pressureCurve: 'linear' as const,
       eyedropperSampleAll: true,
     };
     this._provider = new ContextProvider(this, {
@@ -280,6 +276,15 @@ export class DrawingApp extends LitElement {
     }, 500);
   }
 
+  private _updateBrush(partial: Partial<BrushDescriptor>) {
+    this._state = {
+      ...this._state,
+      brush: { ...this._state.brush, ...partial },
+      isPresetModified: true,
+    };
+    this._markDirty();
+  }
+
   private async _save(flushing = false) {
     if (this._savePromise) {
       if (flushing) this._forceFlushNextSave = true;
@@ -311,14 +316,14 @@ export class DrawingApp extends LitElement {
             strokeColor: this._state.strokeColor,
             fillColor: this._state.fillColor,
             useFill: this._state.useFill,
-            brushSize: this._state.brushSize,
-            opacity: this._state.opacity,
-            flow: this._state.flow,
-            hardness: this._state.hardness,
-            spacing: this._state.spacing,
-            pressureSize: this._state.pressureSize,
-            pressureOpacity: this._state.pressureOpacity,
-            pressureCurve: this._state.pressureCurve,
+            brushSize: this._state.brush.size,
+            opacity: this._state.brush.opacity,
+            flow: this._state.brush.flow,
+            hardness: this._state.brush.hardness,
+            spacing: this._state.brush.spacing,
+            pressureSize: this._state.brush.pressureSize,
+            pressureOpacity: this._state.brush.pressureOpacity,
+            pressureCurve: this._state.brush.pressureCurve,
             eyedropperSampleAll: this._state.eyedropperSampleAll,
           };
           const snapshotWidth = this._state.documentWidth;
@@ -648,26 +653,24 @@ export class DrawingApp extends LitElement {
       this.canvas?.zoomOut();
     } else if (!ctrl && !e.altKey && (key === '[' || key === ']')) {
       e.preventDefault();
-      const current = this._state.brushSize;
+      const current = this._state.brush.size;
       const maxSize = 200;
       const minSize = 1;
       if (key === ']') {
         const newSize = Math.min(maxSize, Math.max(current + 1, Math.round(current * 1.1)));
-        this._state = { ...this._state, brushSize: newSize };
+        this._updateBrush({ size: newSize });
       } else {
         const newSize = Math.max(minSize, Math.min(current - 1, Math.round(current / 1.1)));
-        this._state = { ...this._state, brushSize: newSize };
+        this._updateBrush({ size: newSize });
       }
-      this._markDirty();
     } else if (!ctrl && !e.altKey && (e.key === '{' || e.key === '}')) {
       e.preventDefault();
-      const current = this._state.hardness;
+      const current = this._state.brush.hardness;
       if (e.key === '}') {
-        this._state = { ...this._state, hardness: Math.round(Math.min(1, current + 0.1) * 10) / 10 };
+        this._updateBrush({ hardness: Math.round(Math.min(1, current + 0.1) * 10) / 10 });
       } else {
-        this._state = { ...this._state, hardness: Math.round(Math.max(0, current - 0.1) * 10) / 10 };
+        this._updateBrush({ hardness: Math.round(Math.max(0, current - 0.1) * 10) / 10 });
       }
-      this._markDirty();
     } else if (!ctrl && !e.altKey && !e.shiftKey && key.length === 1) {
       const tool = toolForShortcut(key);
       if (tool && tool !== this._state.activeTool) {
@@ -691,7 +694,9 @@ export class DrawingApp extends LitElement {
       strokeColor: '#000000',
       fillColor: '#ff0000',
       useFill: false,
-      brushSize: 4,
+      brush: getDefaultDescriptor(),
+      activePreset: 'round',
+      isPresetModified: false,
       stampImage: null,
       layers: [layer],
       activeLayerId: layer.id,
@@ -703,13 +708,6 @@ export class DrawingApp extends LitElement {
       fontSize: 24,
       fontBold: false,
       fontItalic: false,
-      opacity: 1,
-      flow: 1,
-      hardness: 1,
-      spacing: 0.15,
-      pressureSize: true,
-      pressureOpacity: false,
-      pressureCurve: 'linear' as const,
       eyedropperSampleAll: true,
     };
     await this.updateComplete;
@@ -765,12 +763,29 @@ export class DrawingApp extends LitElement {
       const validActiveId = layers.some(l => l.id === record.activeLayerId)
         ? record.activeLayerId
         : layers[0].id;
+      // Restore brush descriptor from flat saved fields (backward compat)
+      const ts = record.toolSettings;
+      const defaultDesc = getDefaultDescriptor();
+      const restoredBrush: BrushDescriptor = {
+        size: ts.brushSize ?? defaultDesc.size,
+        opacity: ts.opacity ?? defaultDesc.opacity,
+        flow: ts.flow ?? defaultDesc.flow,
+        hardness: ts.hardness ?? defaultDesc.hardness,
+        spacing: ts.spacing ?? defaultDesc.spacing,
+        pressureSize: ts.pressureSize ?? defaultDesc.pressureSize,
+        pressureOpacity: ts.pressureOpacity ?? defaultDesc.pressureOpacity,
+        pressureCurve: ts.pressureCurve ?? defaultDesc.pressureCurve,
+        tip: { ...defaultDesc.tip },
+        ink: { ...defaultDesc.ink },
+      };
       this._state = {
-        activeTool: record.toolSettings.activeTool,
-        strokeColor: record.toolSettings.strokeColor,
-        fillColor: record.toolSettings.fillColor,
-        useFill: record.toolSettings.useFill,
-        brushSize: record.toolSettings.brushSize,
+        activeTool: ts.activeTool,
+        strokeColor: ts.strokeColor,
+        fillColor: ts.fillColor,
+        useFill: ts.useFill,
+        brush: restoredBrush,
+        activePreset: 'round',
+        isPresetModified: false,
         stampImage: null,
         layers,
         activeLayerId: validActiveId,
@@ -782,14 +797,7 @@ export class DrawingApp extends LitElement {
         fontSize: 24,
         fontBold: false,
         fontItalic: false,
-        opacity: record.toolSettings.opacity ?? 1,
-        flow: record.toolSettings.flow ?? 1,
-        hardness: record.toolSettings.hardness ?? 1,
-        spacing: record.toolSettings.spacing ?? 0.15,
-        pressureSize: record.toolSettings.pressureSize ?? true,
-        pressureOpacity: record.toolSettings.pressureOpacity ?? false,
-        pressureCurve: record.toolSettings.pressureCurve ?? 'linear',
-        eyedropperSampleAll: record.toolSettings.eyedropperSampleAll ?? true,
+        eyedropperSampleAll: ts.eyedropperSampleAll ?? true,
       };
       await this.updateComplete;
       this.canvas?.setHistory(history, record.historyIndex ?? (history.length - 1));
@@ -840,8 +848,7 @@ export class DrawingApp extends LitElement {
       },
       setBrushSize: (size: number) => {
         const safe = Number.isFinite(size) ? size : 1;
-        this._state = { ...this._state, brushSize: Math.max(1, Math.min(200, safe)) };
-        this._markDirty();
+        this._updateBrush({ size: Math.max(1, Math.min(200, safe)) });
       },
       setStampImage: (img: HTMLImageElement | null) => {
         this._state = { ...this._state, stampImage: img };
@@ -1071,13 +1078,25 @@ export class DrawingApp extends LitElement {
         this._state = { ...this._state, fontItalic: italic };
         this._markDirty();
       },
-      setOpacity: (v: number) => { this._state = { ...this._state, opacity: Math.max(0, Math.min(1, v)) }; this._markDirty(); },
-      setFlow: (v: number) => { this._state = { ...this._state, flow: Math.max(0, Math.min(1, v)) }; this._markDirty(); },
-      setHardness: (v: number) => { this._state = { ...this._state, hardness: Math.round(Math.max(0, Math.min(1, v)) * 10) / 10 }; this._markDirty(); },
-      setSpacing: (v: number) => { this._state = { ...this._state, spacing: Math.max(0.05, Math.min(1, v)) }; this._markDirty(); },
-      setPressureSize: (v: boolean) => { this._state = { ...this._state, pressureSize: v }; this._markDirty(); },
-      setPressureOpacity: (v: boolean) => { this._state = { ...this._state, pressureOpacity: v }; this._markDirty(); },
-      setPressureCurve: (v: PressureCurveName) => { this._state = { ...this._state, pressureCurve: v }; this._markDirty(); },
+      setBrush: (partial: Partial<BrushDescriptor>) => { this._updateBrush(partial); },
+      setBrushTip: (tip: Partial<TipDescriptor>) => {
+        this._updateBrush({ tip: { ...this._state.brush.tip, ...tip } });
+      },
+      setBrushInk: (ink: Partial<InkDescriptor>) => {
+        this._updateBrush({ ink: { ...this._state.brush.ink, ...ink } });
+      },
+      selectPreset: (presetId: string) => {
+        const preset = getPresetById(presetId);
+        if (!preset) return;
+        const desc = preset.descriptor;
+        this._state = {
+          ...this._state,
+          brush: { ...desc, tip: { ...desc.tip }, ink: { ...desc.ink } },
+          activePreset: presetId,
+          isPresetModified: false,
+        };
+        this._markDirty();
+      },
       setEyedropperSampleAll: (v: boolean) => { this._state = { ...this._state, eyedropperSampleAll: v }; this._markDirty(); },
       canUndo: this._canUndo,
       canRedo: this._canRedo,
