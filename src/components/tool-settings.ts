@@ -634,6 +634,7 @@ export class ToolSettings extends LitElement {
       height: 36px;
       border-radius: 0.25rem;
       object-fit: cover;
+      overflow: hidden;
     }
 
     /* Pill-button shape selector */
@@ -1005,20 +1006,25 @@ export class ToolSettings extends LitElement {
     ctx.fillRect(0, 0, W, H);
 
     const d = preset.descriptor;
-    const previewSize = Math.min(d.size, 20);
+    const previewSize = Math.min(d.size, 14);
     const spacing = Math.max(2, d.spacing * previewSize);
 
-    // Generate S-curve points
-    const padX = 12;
-    const amplitude = H * 0.3;
+    // Generate S-curve points — keep amplitude small enough that
+    // the largest stamp (previewSize) stays fully within the canvas
+    const padX = 8;
+    const maxTipR = previewSize / 2 + 2; // half the largest stamp + margin
+    const amplitude = Math.max(2, (H / 2 - maxTipR) * 0.8);
     const cy = H / 2;
     const totalLen = W - padX * 2;
 
-    // Accumulate stamps in alpha-mask mode
+    // Accumulate stamps in alpha-mask mode, clipped to canvas bounds
     const stampCanvas = document.createElement('canvas');
     stampCanvas.width = W;
     stampCanvas.height = H;
     const stampCtx = stampCanvas.getContext('2d')!;
+    stampCtx.beginPath();
+    stampCtx.rect(0, 0, W, H);
+    stampCtx.clip();
 
     let dist = 0;
     let prevX = padX;
