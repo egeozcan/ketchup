@@ -124,6 +124,13 @@ export async function serializeHistoryEntry(
     case 'rename':
     case 'blend-mode':
       return entry;
+    case 'transform': {
+      const [before, after] = await Promise.all([
+        serializeImageData(entry.before, blobs),
+        serializeImageData(entry.after, blobs),
+      ]);
+      return { type: 'transform', layerId: entry.layerId, before, after };
+    }
   }
 }
 
@@ -172,5 +179,12 @@ export async function deserializeHistoryEntry(
       return entry;
     case 'blend-mode':
       return { type: 'blend-mode', layerId: entry.layerId, before: entry.before as BlendMode, after: entry.after as BlendMode };
+    case 'transform': {
+      const [before, after] = await Promise.all([
+        deserializeImageData(entry.before, blobs),
+        deserializeImageData(entry.after, blobs),
+      ]);
+      return { type: 'transform', layerId: entry.layerId, before, after };
+    }
   }
 }

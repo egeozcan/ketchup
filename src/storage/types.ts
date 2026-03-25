@@ -75,7 +75,8 @@ export type SerializedHistoryEntry =
       previousActiveLayerId: string;
       afterActiveLayerId: string;
     }
-  | { type: 'blend-mode'; layerId: string; before: string; after: string };
+  | { type: 'blend-mode'; layerId: string; before: string; after: string }
+  | { type: 'transform'; layerId: string; before: SerializedImageData; after: SerializedImageData };
 
 export interface SerializedLayer {
   id: string;

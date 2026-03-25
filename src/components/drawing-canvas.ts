@@ -533,6 +533,7 @@ export class DrawingCanvas extends LitElement {
       case 'opacity':
       case 'rename':
       case 'blend-mode':
+      case 'transform':
         return entry.layerId;
       case 'add-layer':
       case 'delete-layer':

@@ -96,4 +96,5 @@ export type HistoryEntry =
       previousActiveLayerId: string;
       afterActiveLayerId: string;
     }
-  | { type: 'blend-mode'; layerId: string; before: BlendMode; after: BlendMode };
+  | { type: 'blend-mode'; layerId: string; before: BlendMode; after: BlendMode }
+  | { type: 'transform'; layerId: string; before: ImageData; after: ImageData };
