@@ -844,6 +844,9 @@ export class DrawingApp extends LitElement {
       state: this._state,
       setTool: (tool: ToolType) => {
         if (this._state.activeTool !== tool) {
+          if (this.canvas?.isTransformActive()) {
+            this.canvas.commitTransform();
+          }
           this.canvas?.cancelCrop();
           this.canvas?.clearSelection();
         }
