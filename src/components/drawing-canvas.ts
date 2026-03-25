@@ -2,22 +2,20 @@ import { LitElement, html, css } from 'lit';
 import { customElement, query } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import type { Point, HistoryEntry, Layer, FloatingSelection, LayerSnapshot } from '../types.js';
+import type { Point, HistoryEntry, Layer, LayerSnapshot } from '../types.js';
 import { drawShapePreview } from '../tools/shapes.js';
 import { StampStrokeEngine } from '../engine/stamp-stroke.js';
 import { blendModeToCompositeOp } from '../engine/types.js';
 import type { BrushDescriptor } from '../engine/types.js';
 import { tintAlphaMask } from '../engine/canvas-pool.js';
 import { floodFill } from '../tools/fill.js';
-import { drawSelectionRect, drawRotationHandle, ROTATION_HANDLE_OFFSET, ROTATION_HANDLE_RADIUS } from '../tools/select.js';
+import { drawSelectionRect } from '../tools/select.js';
 import { drawCropOverlay, hitTestCropHandle, parseAspectRatio, constrainCropToRatio, type CropRect, type CropHandle } from '../tools/crop.js';
 import { drawText, measureTextBlock, buildFontString, LINE_HEIGHT } from '../tools/text.js';
 import { TransformManager } from '../transform/transform-manager.js';
 import { detectContentBounds } from '../transform/transform-math.js';
 import './resize-dialog.js';
 import type { ResizeDialog } from './resize-dialog.js';
-
-type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
 @customElement('drawing-canvas')
 export class DrawingCanvas extends LitElement {
@@ -93,15 +91,12 @@ export class DrawingCanvas extends LitElement {
   private _lastPinchMidX = 0;
   private _lastPinchMidY = 0;
 
-  // --- Floating selection state ---
-  private _float: FloatingSelection | null = null;
+  // --- Floating selection / transform state ---
   private _transformManager: TransformManager | null = null;
   private _clipboard: ImageData | null = null;
   private _clipboardOrigin: Point | null = null;
   private _clipboardRotation = 0;
   private _clipboardBlobSize: number | null = null;
-  private _selectionDashOffset = 0;
-  private _selectionAnimFrame: number | null = null;
 
   private _engine = new StampStrokeEngine();
   private _tintPreviewCanvas: HTMLCanvasElement | null = null;
@@ -114,24 +109,11 @@ export class DrawingCanvas extends LitElement {
   private _lastPointerScreenY = 0;
   private _pointerOnCanvas = false;
 
-  /** Cached canvas of originalImageData at original size — avoids re-creating per resize tick */
-  private _floatSrcCanvas: HTMLCanvasElement | null = null;
-
   /** True when the current float was created via paste/drop — Escape discards + deletes layer */
   private _floatIsExternalImage = false;
 
   // Interaction state
   private _selectionDrawing = false;
-  private _floatMoving = false;
-  private _floatResizing = false;
-  private _floatResizeHandle: ResizeHandle | null = null;
-  private _floatDragOffset: Point | null = null;
-  private _floatResizeOrigin: { rect: { x: number; y: number; w: number; h: number }; point: Point } | null = null;
-
-  // Rotation interaction state
-  private _floatRotating = false;
-  private _floatRotateStartAngle = 0;
-  private _floatRotateStartRotation = 0;
 
   // --- Crop tool state ---
   private _cropRect: CropRect | null = null;
@@ -177,36 +159,20 @@ export class DrawingCanvas extends LitElement {
     if (!layer) return;
     const ctx = layer.canvas.getContext('2d')!;
 
-    if (this._float) {
-      // Already have a floating selection — wrap in TransformManager
-      if (!this._beforeDrawData) this._captureBeforeDraw();
-      this._transformManager = new TransformManager(
-        this._float.originalImageData,
-        this._float.currentRect,
-        this.previewCanvas,
-        this._zoom,
-        { x: this._panX, y: this._panY },
-      );
-      if (this._float.rotation) {
-        this._transformManager.rotation = (this._float.rotation * 180) / Math.PI;
-      }
-      this._clearFloatState();
-    } else {
-      // No selection — transform entire layer
-      const imageData = ctx.getImageData(0, 0, layer.canvas.width, layer.canvas.height);
-      const bounds = detectContentBounds(imageData);
-      if (!bounds) return;
-      this._captureBeforeDraw();
-      const regionData = ctx.getImageData(bounds.x, bounds.y, bounds.w, bounds.h);
-      ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
-      this._transformManager = new TransformManager(
-        regionData,
-        bounds,
-        this.previewCanvas,
-        this._zoom,
-        { x: this._panX, y: this._panY },
-      );
-    }
+    // No selection — transform entire layer content bounds
+    const imageData = ctx.getImageData(0, 0, layer.canvas.width, layer.canvas.height);
+    const bounds = detectContentBounds(imageData);
+    if (!bounds) return;
+    this._captureBeforeDraw();
+    const regionData = ctx.getImageData(bounds.x, bounds.y, bounds.w, bounds.h);
+    ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+    this._transformManager = new TransformManager(
+      regionData,
+      bounds,
+      this.previewCanvas,
+      this._zoom,
+      { x: this._panX, y: this._panY },
+    );
     this.composite();
     this.requestUpdate();
   }
@@ -411,25 +377,6 @@ export class DrawingCanvas extends LitElement {
         displayCtx.drawImage(layer.canvas, 0, 0);
       }
 
-      // Draw the float right after its owning layer so it composites
-      // at the correct z-position instead of on top of everything.
-      if (this._float && layer.id === activeLayerId) {
-        const { currentRect, tempCanvas } = this._float;
-        const rotation = this._float.rotation ?? 0;
-        if (rotation !== 0) {
-          const cx = currentRect.x + currentRect.w / 2;
-          const cy = currentRect.y + currentRect.h / 2;
-          displayCtx.save();
-          displayCtx.translate(cx, cy);
-          displayCtx.rotate(rotation);
-          displayCtx.drawImage(tempCanvas, -Math.round(currentRect.w) / 2, -Math.round(currentRect.h) / 2,
-            Math.max(1, Math.round(currentRect.w)), Math.max(1, Math.round(currentRect.h)));
-          displayCtx.restore();
-        } else {
-          displayCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y),
-            Math.round(currentRect.w), Math.round(currentRect.h));
-        }
-      }
       // Draw transform manager content after its owning layer
       if (this._transformManager && layer.id === activeLayerId) {
         this._transformManager.renderTransformed(displayCtx);
@@ -447,12 +394,9 @@ export class DrawingCanvas extends LitElement {
 
     displayCtx.restore();
 
-    const floatDetail = this._float && activeLayerId
-      ? { tempCanvas: this._float.tempCanvas, rect: this._float.currentRect, layerId: activeLayerId, rotation: this._float.rotation ?? 0 }
-      : null;
     this.dispatchEvent(new CustomEvent('composited', {
       bubbles: true, composed: true,
-      detail: floatDetail,
+      detail: null,
     }));
     this.invalidateSamplingBuffer();
   }
@@ -490,8 +434,6 @@ export class DrawingCanvas extends LitElement {
         this.mainCanvas.style.cursor = this._panning ? 'grabbing' : 'grab';
       } else if (tool === 'move') {
         this.mainCanvas.style.cursor = 'move';
-      } else if ((tool === 'select' || tool === 'stamp') && this._float && !this._floatMoving && !this._floatResizing) {
-        // Dynamic cursor set by pointer move handler
       } else if (tool === 'text') {
         this.mainCanvas.style.cursor = 'text';
       } else {
@@ -551,7 +493,6 @@ export class DrawingCanvas extends LitElement {
     this._panY = Math.round((this._vh - this._docHeight * this._zoom) / 2);
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
-    if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
     this._dispatchViewportChange();
   }
@@ -583,7 +524,6 @@ export class DrawingCanvas extends LitElement {
 
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
-    if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
     this._dispatchViewportChange();
   }
@@ -695,7 +635,7 @@ export class DrawingCanvas extends LitElement {
         bubbles: true,
         composed: true,
         detail: {
-          canUndo: this._historyIndex >= 0 || this._float !== null,
+          canUndo: this._historyIndex >= 0 || this._transformManager !== null,
           canRedo: this._historyIndex < this._history.length - 1,
         },
       }),
@@ -730,10 +670,9 @@ export class DrawingCanvas extends LitElement {
       this._pushDrawHistory();
       this.composite();
     }
-    // Discard the active float first — this counts as its own undo step
-    // (the float lift is a user action even though it has no history entry).
-    if (this._float) {
-      this._discardFloat();
+    // Discard the active transform first — this counts as its own undo step.
+    if (this._transformManager) {
+      this.cancelTransform();
       return;
     }
     if (this._historyIndex < 0) return;
@@ -769,7 +708,9 @@ export class DrawingCanvas extends LitElement {
       this.composite();
     }
     if (this._historyIndex >= this._history.length - 1) return;
-    this._discardFloat();
+    if (this._transformManager) {
+      this.cancelTransform();
+    }
     this._historyIndex++;
     const entry = this._history[this._historyIndex];
     this._applyRedo(entry);
@@ -1013,22 +954,9 @@ export class DrawingCanvas extends LitElement {
       exportCtx.globalAlpha = layer.opacity;
       exportCtx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
       exportCtx.drawImage(layer.canvas, 0, 0);
-      // Draw the float right after its owning layer so it composites
-      // at the correct z-position instead of on top of everything.
-      if (this._float && layer.id === activeLayerId) {
-        const { currentRect, tempCanvas } = this._float;
-        const rotation = this._float.rotation ?? 0;
-        if (rotation !== 0) {
-          const cx = currentRect.x + currentRect.w / 2;
-          const cy = currentRect.y + currentRect.h / 2;
-          exportCtx.save();
-          exportCtx.translate(cx, cy);
-          exportCtx.rotate(rotation);
-          exportCtx.drawImage(tempCanvas, -currentRect.w / 2, -currentRect.h / 2);
-          exportCtx.restore();
-        } else {
-          exportCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y));
-        }
+      // Include active transform content at its z-position
+      if (this._transformManager && layer.id === activeLayerId) {
+        this._transformManager.renderTransformed(exportCtx);
       }
       exportCtx.globalCompositeOperation = 'source-over';
       exportCtx.globalAlpha = 1.0;
@@ -1077,7 +1005,6 @@ export class DrawingCanvas extends LitElement {
     this._panY = this._panStartOffsetY + (e.clientY - this._panStartY);
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
-    if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
   }
 
@@ -1134,8 +1061,7 @@ export class DrawingCanvas extends LitElement {
 
       this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
       this.composite();
-      if (this._float) this._redrawFloatPreview();
-    if (this._textEditing) this._renderTextPreview();
+      if (this._textEditing) this._renderTextPreview();
       this._dispatchZoomChange();
       return;
     }
@@ -1146,7 +1072,6 @@ export class DrawingCanvas extends LitElement {
     this._panY -= e.deltaY;
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
-    if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
     this._dispatchViewportChange();
   };
@@ -1185,7 +1110,6 @@ export class DrawingCanvas extends LitElement {
     this._panY = Math.round((this._vh - this._docHeight * this._zoom) / 2);
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
-    if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
     this._dispatchZoomChange();
   }
@@ -1202,7 +1126,6 @@ export class DrawingCanvas extends LitElement {
     this._panY = panY;
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
-    if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
     this._dispatchViewportChange();
   }
@@ -1222,7 +1145,6 @@ export class DrawingCanvas extends LitElement {
 
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
-    if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
     this._dispatchZoomChange();
   }
@@ -1249,23 +1171,9 @@ export class DrawingCanvas extends LitElement {
         ctx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
         ctx.drawImage(layer.canvas, 0, 0);
         ctx.globalCompositeOperation = 'source-over';
-        // Include floating selection at its z-position
-        if (this._float && layer.id === activeLayerId) {
-          const { currentRect, tempCanvas } = this._float;
-          const rotation = this._float.rotation ?? 0;
-          if (rotation !== 0) {
-            const cx = currentRect.x + currentRect.w / 2;
-            const cy = currentRect.y + currentRect.h / 2;
-            ctx.save();
-            ctx.translate(cx, cy);
-            ctx.rotate(rotation);
-            ctx.drawImage(tempCanvas, -currentRect.w / 2, -currentRect.h / 2,
-              Math.max(1, Math.round(currentRect.w)), Math.max(1, Math.round(currentRect.h)));
-            ctx.restore();
-          } else {
-            ctx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y),
-              Math.round(currentRect.w), Math.round(currentRect.h));
-          }
+        // Include active transform content at its z-position
+        if (this._transformManager && layer.id === activeLayerId) {
+          this._transformManager.renderTransformed(ctx);
         }
       }
       ctx.globalAlpha = 1;
@@ -1522,7 +1430,7 @@ export class DrawingCanvas extends LitElement {
     // Move tool → translate active layer
     if (activeTool === 'move') {
       this.mainCanvas.setPointerCapture(e.pointerId);
-      this._commitFloat();
+      if (this._transformManager) this.commitTransform();
       const p = this._getDocPoint(e);
       this._captureBeforeDraw();
       const layerCtx = this._getActiveLayerCtx();
@@ -1567,15 +1475,12 @@ export class DrawingCanvas extends LitElement {
     }
 
     if (activeTool === 'stamp') {
-      // If a float exists and click is on handle or inside, move/resize it
-      if (this._float && (this._hitTestHandle(p) || this._isInsideFloat(p))) {
-        this._handleSelectPointerDown(p);
-        return;
-      }
-      this._commitFloat();
+      // TransformManager intercept above handles active transforms.
+      // Commit any active transform, then place a new stamp.
+      if (this._transformManager) this.commitTransform();
       if (this.ctx.state.stampImage) {
         this._captureBeforeDraw();
-        this._createFloatFromImage(this.ctx.state.stampImage, p.x, p.y, this.ctx.state.brush.size * 10);
+        this._createStampAsTransform(this.ctx.state.stampImage, p.x, p.y, this.ctx.state.brush.size * 10);
       }
       return;
     }
@@ -1733,10 +1638,7 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
-    if (activeTool === 'stamp' && this._float) {
-      this._handleSelectPointerMove(e);
-      return;
-    }
+    // Stamp transforms are handled by the TransformManager intercept above.
 
     // Render brush cursor when hovering (not drawing)
     if (!this._drawing && (activeTool === 'pencil' || activeTool === 'eraser')) {
@@ -1871,10 +1773,7 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
-    if (activeTool === 'stamp' && this._float) {
-      this._handleSelectPointerUp(e);
-      return;
-    }
+    // Stamp transforms are handled by the TransformManager intercept above.
 
     if (!this._drawing) return;
     const p = this._getDocPoint(e);
@@ -2011,13 +1910,6 @@ export class DrawingCanvas extends LitElement {
       this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
     }
 
-    // Cancel float move/resize (keep float at current position)
-    this._floatMoving = false;
-    this._floatResizing = false;
-    this._floatDragOffset = null;
-    this._floatResizeOrigin = null;
-    this._floatResizeHandle = null;
-
     // Cancel crop drag (keep existing rect)
     this._cropDragging = false;
     this._cropHandle = null;
@@ -2088,133 +1980,18 @@ export class DrawingCanvas extends LitElement {
 
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
-    if (this._float) this._redrawFloatPreview();
     if (this._textEditing) this._renderTextPreview();
     this._dispatchZoomChange();
   }
 
-  // --- Selection / floating selection helpers ---
-
-  private static readonly HANDLE_SIZE = 8;
-
-  private _handleSizeDoc(): number {
-    return DrawingCanvas.HANDLE_SIZE / this._zoom;
-  }
-
-  /** Transform a document-space point into the float's local (unrotated) coordinate space */
-  private _toFloatLocal(p: Point): Point {
-    if (!this._float) return p;
-    const { x, y, w, h } = this._float.currentRect;
-    const cx = x + w / 2;
-    const cy = y + h / 2;
-    const angle = -(this._float.rotation ?? 0);
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    const dx = p.x - cx;
-    const dy = p.y - cy;
-    return { x: cos * dx - sin * dy + cx, y: sin * dx + cos * dy + cy };
-  }
-
-  private _hitTestHandle(p: Point): ResizeHandle | null {
-    if (!this._float) return null;
-    const lp = this._toFloatLocal(p);
-    const { x, y, w, h } = this._float.currentRect;
-    const hs = this._handleSizeDoc();
-    const half = hs / 2;
-
-    const handles: { handle: ResizeHandle; cx: number; cy: number }[] = [
-      { handle: 'nw', cx: x, cy: y },
-      { handle: 'n',  cx: x + w / 2, cy: y },
-      { handle: 'ne', cx: x + w, cy: y },
-      { handle: 'e',  cx: x + w, cy: y + h / 2 },
-      { handle: 'se', cx: x + w, cy: y + h },
-      { handle: 's',  cx: x + w / 2, cy: y + h },
-      { handle: 'sw', cx: x, cy: y + h },
-      { handle: 'w',  cx: x, cy: y + h / 2 },
-    ];
-
-    for (const { handle, cx, cy } of handles) {
-      if (lp.x >= cx - half && lp.x <= cx + half && lp.y >= cy - half && lp.y <= cy + half) {
-        return handle;
-      }
-    }
-    return null;
-  }
-
-  /** Hit-test the rotation handle. Works in document-space. */
-  private _hitTestRotationHandle(p: Point): boolean {
-    if (!this._float) return false;
-    const { x, y, w, h } = this._float.currentRect;
-    const rotation = this._float.rotation ?? 0;
-    const tcx = x + w / 2;
-    const tcy = y;
-    const offsetDoc = ROTATION_HANDLE_OFFSET / this._zoom;
-    const centerX = x + w / 2;
-    const centerY = y + h / 2;
-    const localHx = tcx - centerX;
-    const localHy = (tcy - offsetDoc) - centerY;
-    const cos = Math.cos(rotation);
-    const sin = Math.sin(rotation);
-    const hx = cos * localHx - sin * localHy + centerX;
-    const hy = sin * localHx + cos * localHy + centerY;
-
-    const radiusDoc = ROTATION_HANDLE_RADIUS / this._zoom;
-    const dx = p.x - hx;
-    const dy = p.y - hy;
-    return dx * dx + dy * dy <= (radiusDoc + 2 / this._zoom) * (radiusDoc + 2 / this._zoom);
-  }
-
-  private _isInsideFloat(p: Point): boolean {
-    if (!this._float) return false;
-    const lp = this._toFloatLocal(p);
-    const { x, y, w, h } = this._float.currentRect;
-    return lp.x >= x && lp.x <= x + w && lp.y >= y && lp.y <= y + h;
-  }
-
-  private _handleCursor(handle: ResizeHandle): string {
-    const cursors: Record<ResizeHandle, string> = {
-      nw: 'nwse-resize', n: 'ns-resize', ne: 'nesw-resize', e: 'ew-resize',
-      se: 'nwse-resize', s: 'ns-resize', sw: 'nesw-resize', w: 'ew-resize',
-    };
-    return cursors[handle];
-  }
+  // --- Selection helpers ---
 
   private _handleSelectPointerDown(p: Point) {
-    // Check rotation handle first (it's furthest from selection body)
-    if (this._float && this._hitTestRotationHandle(p)) {
-      this._floatRotating = true;
-      const { x, y, w, h } = this._float.currentRect;
-      const centerX = x + w / 2;
-      const centerY = y + h / 2;
-      this._floatRotateStartAngle = Math.atan2(p.y - centerY, p.x - centerX);
-      this._floatRotateStartRotation = this._float.rotation ?? 0;
-      this._stopSelectionAnimation();
-      return;
+    // If a transform is active, the TransformManager intercept in _onPointerDown
+    // handles it. As a safety net, commit any lingering transform.
+    if (this._transformManager) {
+      this.commitTransform();
     }
-
-    const handle = this._hitTestHandle(p);
-    if (handle) {
-      this._floatResizing = true;
-      this._floatResizeHandle = handle;
-      this._floatResizeOrigin = {
-        rect: { ...this._float!.currentRect },
-        point: { x: p.x, y: p.y },
-      };
-      this._stopSelectionAnimation();
-      return;
-    }
-
-    if (this._float && this._isInsideFloat(p)) {
-      this._floatMoving = true;
-      this._floatDragOffset = {
-        x: p.x - this._float.currentRect.x,
-        y: p.y - this._float.currentRect.y,
-      };
-      this._stopSelectionAnimation();
-      return;
-    }
-
-    this._commitFloat();
     this._selectionDrawing = true;
     this._startPoint = p;
   }
@@ -2241,62 +2018,10 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _handleSelectPointerMove(e: PointerEvent) {
-    const p = this._getDocPoint(e);
-
-    if (this._floatRotating) {
-      this.mainCanvas.style.cursor = 'grabbing';
-    } else if (this._floatResizing) {
-      this.mainCanvas.style.cursor = this._handleCursor(this._floatResizeHandle!);
-    } else if (this._floatMoving) {
-      this.mainCanvas.style.cursor = 'move';
-    } else {
-      if (this._float && this._hitTestRotationHandle(p)) {
-        this.mainCanvas.style.cursor = 'grab';
-      } else {
-        const handle = this._hitTestHandle(p);
-        if (handle) {
-          this.mainCanvas.style.cursor = this._handleCursor(handle);
-        } else if (this._isInsideFloat(p)) {
-          this.mainCanvas.style.cursor = 'move';
-        } else {
-          this.mainCanvas.style.cursor = 'crosshair';
-        }
-      }
-    }
-
-    if (this._floatRotating && this._float) {
-      const { x, y, w, h } = this._float.currentRect;
-      const centerX = x + w / 2;
-      const centerY = y + h / 2;
-      const currentAngle = Math.atan2(p.y - centerY, p.x - centerX);
-      let newRotation = this._floatRotateStartRotation + (currentAngle - this._floatRotateStartAngle);
-      // Snap to 45-degree increments when Shift is held
-      if (e.shiftKey) {
-        const snap = Math.PI / 4;
-        newRotation = Math.round(newRotation / snap) * snap;
-      }
-      this._float.rotation = newRotation;
-      this.composite();
-      this._redrawFloatPreview();
-      return;
-    }
-
-    if (this._floatResizing && this._float && this._floatResizeOrigin) {
-      this._applyResize(p);
-      this.composite();
-      this._redrawFloatPreview();
-      return;
-    }
-
-    if (this._floatMoving && this._float && this._floatDragOffset) {
-      this._float.currentRect.x = p.x - this._floatDragOffset.x;
-      this._float.currentRect.y = p.y - this._floatDragOffset.y;
-      this.composite();
-      this._redrawFloatPreview();
-      return;
-    }
-
+    // Active transforms are handled by the TransformManager intercept in _onPointerMove.
+    // This method only handles drawing a new selection rectangle.
     if (this._selectionDrawing && this._startPoint) {
+      const p = this._getDocPoint(e);
       const previewCtx = this.previewCanvas.getContext('2d')!;
       previewCtx.clearRect(0, 0, this._vw, this._vh);
       const x = Math.min(this._startPoint.x, p.x);
@@ -2312,27 +2037,6 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _handleSelectPointerUp(e: PointerEvent) {
-    if (this._floatRotating) {
-      this._floatRotating = false;
-      this._startSelectionAnimation();
-      return;
-    }
-
-    if (this._floatResizing) {
-      this._floatResizing = false;
-      this._floatResizeHandle = null;
-      this._floatResizeOrigin = null;
-      this._startSelectionAnimation();
-      return;
-    }
-
-    if (this._floatMoving) {
-      this._floatMoving = false;
-      this._floatDragOffset = null;
-      this._startSelectionAnimation();
-      return;
-    }
-
     if (this._selectionDrawing && this._startPoint) {
       this._selectionDrawing = false;
       const p = this._getDocPoint(e);
@@ -2344,14 +2048,14 @@ export class DrawingCanvas extends LitElement {
 
       // Clamp selection bounds to document so getImageData never receives
       // out-of-range coordinates.
-      const x = Math.max(0, Math.min(this._docWidth, rawLeft));
-      const y = Math.max(0, Math.min(this._docHeight, rawTop));
-      const right = Math.max(0, Math.min(this._docWidth, rawRight));
-      const bottom = Math.max(0, Math.min(this._docHeight, rawBottom));
-      const w = right - x;
-      const h = bottom - y;
+      const selX = Math.max(0, Math.min(this._docWidth, rawLeft));
+      const selY = Math.max(0, Math.min(this._docHeight, rawTop));
+      const selRight = Math.max(0, Math.min(this._docWidth, rawRight));
+      const selBottom = Math.max(0, Math.min(this._docHeight, rawBottom));
+      const selW = selRight - selX;
+      const selH = selBottom - selY;
 
-      if (w < 2 || h < 2) {
+      if (selW < 2 || selH < 2) {
         const previewCtx = this.previewCanvas.getContext('2d')!;
         previewCtx.clearRect(0, 0, this._vw, this._vh);
         return;
@@ -2359,16 +2063,35 @@ export class DrawingCanvas extends LitElement {
 
       // Round endpoints first, then derive dimensions so the lifted region
       // exactly covers the rounded pixel boundaries.
-      const rx = Math.round(x);
-      const ry = Math.round(y);
-      const rw = Math.round(right) - rx;
-      const rh = Math.round(bottom) - ry;
+      const rx = Math.round(selX);
+      const ry = Math.round(selY);
+      const rw = Math.round(selRight) - rx;
+      const rh = Math.round(selBottom) - ry;
       if (rw < 1 || rh < 1) {
         const previewCtx = this.previewCanvas.getContext('2d')!;
         previewCtx.clearRect(0, 0, this._vw, this._vh);
         return;
       }
-      this._liftToFloat(rx, ry, rw, rh);
+
+      // Lift selection to TransformManager
+      const state = this._ctx.value?.state;
+      if (!state) return;
+      const layer = state.layers.find(l => l.id === state.activeLayerId);
+      if (layer && rw > 0 && rh > 0) {
+        const ctx = layer.canvas.getContext('2d')!;
+        this._captureBeforeDraw();
+        const regionData = ctx.getImageData(rx, ry, rw, rh);
+        ctx.clearRect(rx, ry, rw, rh);
+        this._transformManager = new TransformManager(
+          regionData,
+          { x: rx, y: ry, w: rw, h: rh },
+          this.previewCanvas,
+          this._zoom,
+          { x: this._panX, y: this._panY },
+        );
+        this.composite();
+        this.requestUpdate();
+      }
     }
   }
 
@@ -2618,112 +2341,39 @@ export class DrawingCanvas extends LitElement {
     }
   }
 
-  // --- Float lifecycle methods ---
+  // --- Stamp as TransformManager ---
 
-  private _liftToFloat(x: number, y: number, w: number, h: number) {
-    const layerCtx = this._getActiveLayerCtx();
-    if (!layerCtx) return;
-    const clampedX = Math.max(0, Math.min(this._docWidth, x));
-    const clampedY = Math.max(0, Math.min(this._docHeight, y));
-    const clampedW = Math.max(0, Math.min(w, this._docWidth - clampedX));
-    const clampedH = Math.max(0, Math.min(h, this._docHeight - clampedY));
-    if (clampedW < 1 || clampedH < 1) return;
-
-    this._captureBeforeDraw();
-    const imageData = layerCtx.getImageData(clampedX, clampedY, clampedW, clampedH);
-    layerCtx.clearRect(clampedX, clampedY, clampedW, clampedH);
-
-    const src = document.createElement('canvas');
-    src.width = clampedW;
-    src.height = clampedH;
-    src.getContext('2d')!.putImageData(imageData, 0, 0);
-    this._floatSrcCanvas = src;
-
-    const tmp = document.createElement('canvas');
-    tmp.width = clampedW;
-    tmp.height = clampedH;
-    tmp.getContext('2d')!.drawImage(src, 0, 0);
-
-    this._float = {
-      originalImageData: imageData,
-      currentRect: { x: clampedX, y: clampedY, w: clampedW, h: clampedH },
-      tempCanvas: tmp,
-      rotation: 0,
-    };
-    this.composite();
-    this._startSelectionAnimation();
-  }
-
-  private _createFloatFromImage(img: HTMLImageElement, centerX: number, centerY: number, size: number) {
+  private _createStampAsTransform(img: HTMLImageElement, centerX: number, centerY: number, size: number) {
     const scale = size / Math.max(img.naturalWidth, img.naturalHeight);
     const w = Math.max(1, Math.round(img.naturalWidth * scale));
     const h = Math.max(1, Math.round(img.naturalHeight * scale));
     const x = Math.round(centerX - w / 2);
     const y = Math.round(centerY - h / 2);
 
-    // Store full-resolution source for quality resampling during resize
-    const src = document.createElement('canvas');
-    src.width = img.naturalWidth;
-    src.height = img.naturalHeight;
-    src.getContext('2d')!.drawImage(img, 0, 0);
-    const imageData = src.getContext('2d')!.getImageData(0, 0, img.naturalWidth, img.naturalHeight);
-    this._floatSrcCanvas = src;
-
-    const tmp = document.createElement('canvas');
-    tmp.width = w;
-    tmp.height = h;
-    tmp.getContext('2d')!.drawImage(src, 0, 0, w, h);
-
-    this._float = {
-      originalImageData: imageData,
-      currentRect: { x, y, w, h },
-      tempCanvas: tmp,
-      rotation: 0,
-    };
-    this._startSelectionAnimation();
-  }
-
-  /**
-   * Create a float from an image with explicit dimensions (no size-based scaling).
-   * Used by external image paste/drop where dimensions are already resolved.
-   */
-  private _createFloatFromImageDirect(img: HTMLImageElement, w: number, h: number) {
-    const cx = this._docWidth / 2;
-    const cy = this._docHeight / 2;
-    const x = Math.round(cx - w / 2);
-    const y = Math.round(cy - h / 2);
-
     const src = document.createElement('canvas');
     src.width = w;
     src.height = h;
     src.getContext('2d')!.drawImage(img, 0, 0, w, h);
     const imageData = src.getContext('2d')!.getImageData(0, 0, w, h);
-    this._floatSrcCanvas = src;
 
-    const tmp = document.createElement('canvas');
-    tmp.width = w;
-    tmp.height = h;
-    tmp.getContext('2d')!.drawImage(src, 0, 0);
-
-    this._float = {
-      originalImageData: imageData,
-      currentRect: { x, y, w, h },
-      tempCanvas: tmp,
-      rotation: 0,
-    };
-    this._startSelectionAnimation();
+    this._transformManager = new TransformManager(
+      imageData,
+      { x, y, w, h },
+      this.previewCanvas,
+      this._zoom,
+      { x: this._panX, y: this._panY },
+    );
+    this.composite();
+    this.requestUpdate();
   }
 
   /**
    * Shared handler for external images from paste or drag-and-drop.
-   * Creates a new layer, optionally shows resize dialog, places a float.
-   * Note: calls _commitFloat() directly (not clearSelection) to commit any
-   * prior float — clearSelection is the general-purpose public API that
-   * many callers use and must always commit.
+   * Creates a new layer, optionally shows resize dialog, places a TransformManager.
    */
   private async _handleExternalImage(img: HTMLImageElement, name: string) {
-    // Commit any active float first
-    this._commitFloat();
+    // Commit any active transform first
+    if (this._transformManager) this.commitTransform();
 
     let w = img.naturalWidth;
     let h = img.naturalHeight;
@@ -2747,284 +2397,78 @@ export class DrawingCanvas extends LitElement {
     // Capture before-draw state on the new empty layer (blank ImageData for undo)
     this._captureBeforeDraw();
 
-    // Create the float
+    // Create the TransformManager for the external image
     this._floatIsExternalImage = true;
-    this._createFloatFromImageDirect(img, w, h);
-  }
+    const cx = this._docWidth / 2;
+    const cy = this._docHeight / 2;
+    const x = Math.round(cx - w / 2);
+    const y = Math.round(cy - h / 2);
 
-  private _commitFloat() {
-    if (!this._float) return;
-    const layerCtx = this._getActiveLayerCtx();
-    if (!layerCtx) return;
+    const src = document.createElement('canvas');
+    src.width = w;
+    src.height = h;
+    src.getContext('2d')!.drawImage(img, 0, 0, w, h);
+    const imageData = src.getContext('2d')!.getImageData(0, 0, w, h);
 
-    if (!this._beforeDrawData) {
-      this._captureBeforeDraw();
-    }
-
-    const { currentRect, tempCanvas } = this._float;
-    const rotation = this._float.rotation ?? 0;
-
-    if (rotation !== 0) {
-      const cx = currentRect.x + currentRect.w / 2;
-      const cy = currentRect.y + currentRect.h / 2;
-      layerCtx.save();
-      layerCtx.translate(cx, cy);
-      layerCtx.rotate(rotation);
-      layerCtx.drawImage(tempCanvas, -Math.max(1, Math.round(currentRect.w)) / 2, -Math.max(1, Math.round(currentRect.h)) / 2,
-        Math.max(1, Math.round(currentRect.w)), Math.max(1, Math.round(currentRect.h)));
-      layerCtx.restore();
-    } else {
-      layerCtx.drawImage(tempCanvas, Math.round(currentRect.x), Math.round(currentRect.y), Math.max(1, Math.round(currentRect.w)), Math.max(1, Math.round(currentRect.h)));
-    }
-
-    this._pushDrawHistory(true);
+    this._transformManager = new TransformManager(
+      imageData,
+      { x, y, w, h },
+      this.previewCanvas,
+      this._zoom,
+      { x: this._panX, y: this._panY },
+    );
     this.composite();
-    this._clearFloatState();
-  }
-
-  /** Discard the active float by restoring the layer from _beforeDrawData
-   *  without pushing a history entry. Used by undo/redo to avoid truncating
-   *  the redo stack. */
-  private _discardFloat() {
-    if (!this._float) return;
-    if (this._beforeDrawData) {
-      const ctx = this._getActiveLayerCtx();
-      if (ctx) {
-        ctx.putImageData(this._beforeDrawData, 0, 0);
-      }
-      this._beforeDrawData = null;
-    }
-    this._clearFloatState();
-    this.composite();
-    this._notifyHistory();
-  }
-
-  private _clearFloatState() {
-    this._float = null;
-    this._floatSrcCanvas = null;
-    this._floatIsExternalImage = false;
-    this._floatMoving = false;
-    this._floatResizing = false;
-    this._floatResizeHandle = null;
-    this._floatDragOffset = null;
-    this._floatResizeOrigin = null;
-    this._floatRotating = false;
-    this._selectionDrawing = false;
-    this._stopSelectionAnimation();
-    if (this.previewCanvas) {
-      const previewCtx = this.previewCanvas.getContext('2d')!;
-      previewCtx.clearRect(0, 0, this._vw, this._vh);
-    }
-  }
-
-  private _rebuildTempCanvas() {
-    if (!this._float || !this._floatSrcCanvas) return;
-    const { currentRect } = this._float;
-    const tmp = this._float.tempCanvas;
-    const newW = Math.max(1, Math.round(currentRect.w));
-    const newH = Math.max(1, Math.round(currentRect.h));
-    // Setting width/height clears the canvas and reuses the element
-    tmp.width = newW;
-    tmp.height = newH;
-    tmp.getContext('2d')!.drawImage(this._floatSrcCanvas, 0, 0, newW, newH);
-  }
-
-  private _applyResize(p: Point) {
-    if (!this._float || !this._floatResizeOrigin) return;
-    const { rect: orig, point: start } = this._floatResizeOrigin;
-    const dx = p.x - start.x;
-    const dy = p.y - start.y;
-    const handle = this._floatResizeHandle!;
-    const cur = this._float.currentRect;
-
-    const minSize = 4 / this._zoom;
-
-    let newX = orig.x, newY = orig.y, newW = orig.w, newH = orig.h;
-
-    if (handle === 'nw' || handle === 'w' || handle === 'sw') {
-      newX = orig.x + dx;
-      newW = orig.w - dx;
-    } else if (handle === 'ne' || handle === 'e' || handle === 'se') {
-      newW = orig.w + dx;
-    }
-
-    if (handle === 'nw' || handle === 'n' || handle === 'ne') {
-      newY = orig.y + dy;
-      newH = orig.h - dy;
-    } else if (handle === 'sw' || handle === 's' || handle === 'se') {
-      newH = orig.h + dy;
-    }
-
-    // Enforce aspect ratio for corner handles BEFORE flip correction
-    if (handle === 'nw' || handle === 'ne' || handle === 'se' || handle === 'sw') {
-      const aspect = orig.w / orig.h;
-      if (Math.abs(newW - orig.w) / orig.w > Math.abs(newH - orig.h) / orig.h) {
-        newH = newW / aspect;
-      } else {
-        newW = newH * aspect;
-      }
-      // Re-anchor after aspect ratio enforcement
-      if (handle === 'nw') {
-        newX = orig.x + orig.w - newW;
-        newY = orig.y + orig.h - newH;
-      } else if (handle === 'ne') {
-        newY = orig.y + orig.h - newH;
-      } else if (handle === 'sw') {
-        newX = orig.x + orig.w - newW;
-      }
-    }
-
-    // Flip if dragged past opposite edge (after aspect ratio so flipped dimensions are correct)
-    const wFlipped = newW < 0;
-    const hFlipped = newH < 0;
-    if (newW < 0) { newX += newW; newW = -newW; }
-    if (newH < 0) { newY += newH; newH = -newH; }
-
-    // For corner handles, clamp to minSize while preserving aspect ratio
-    if (handle === 'nw' || handle === 'ne' || handle === 'se' || handle === 'sw') {
-      const aspect = orig.w / orig.h;
-      if (newW < minSize) {
-        newW = minSize;
-        newH = newW / aspect;
-      }
-      if (newH < minSize) {
-        newH = minSize;
-        newW = newH * aspect;
-      }
-    } else {
-      if (newW < minSize) { newW = minSize; }
-      if (newH < minSize) { newH = minSize; }
-    }
-
-    // Re-anchor after minSize clamp: handles that move the left/top edge
-    // must keep the opposite (right/bottom) edge fixed. Flipped handles
-    // already have their anchor set correctly by the flip logic above.
-    if (!wFlipped && (handle === 'nw' || handle === 'w' || handle === 'sw')) {
-      newX = orig.x + orig.w - newW;
-    }
-    if (!hFlipped && (handle === 'nw' || handle === 'n' || handle === 'ne')) {
-      newY = orig.y + orig.h - newH;
-    }
-
-    cur.x = newX;
-    cur.y = newY;
-    cur.w = newW;
-    cur.h = newH;
-
-    this._rebuildTempCanvas();
-  }
-
-  private _redrawFloatPreview() {
-    const previewCtx = this.previewCanvas.getContext('2d')!;
-    previewCtx.clearRect(0, 0, this._vw, this._vh);
-
-    if (!this._float) return;
-    const { currentRect } = this._float;
-    const rotation = this._float.rotation ?? 0;
-
-    // Center of the selection in document space
-    const cx = currentRect.x + currentRect.w / 2;
-    const cy = currentRect.y + currentRect.h / 2;
-
-    previewCtx.save();
-    previewCtx.translate(this._panX, this._panY);
-    previewCtx.scale(this._zoom, this._zoom);
-
-    // Apply rotation around selection center
-    previewCtx.translate(cx, cy);
-    previewCtx.rotate(rotation);
-    previewCtx.translate(-cx, -cy);
-
-    // Float image is drawn in composite() at the correct z-position within the layer stack.
-    // Only draw marching ants + handles here so the user can interact with the float bounds.
-    drawSelectionRect(previewCtx, currentRect.x, currentRect.y, currentRect.w, currentRect.h, this._selectionDashOffset);
-    previewCtx.restore();
-
-    this._drawResizeHandles(previewCtx);
-    this._drawRotationHandle(previewCtx);
-  }
-
-  /** Convert a document-space point to viewport-space, applying float rotation around selection center */
-  private _docToViewportRotated(dx: number, dy: number): [number, number] {
-    if (!this._float) return [dx * this._zoom + this._panX, dy * this._zoom + this._panY];
-    const { x, y, w, h } = this._float.currentRect;
-    const rotation = this._float.rotation ?? 0;
-    const cx = x + w / 2;
-    const cy = y + h / 2;
-    // Rotate around center
-    const rx = dx - cx;
-    const ry = dy - cy;
-    const cos = Math.cos(rotation);
-    const sin = Math.sin(rotation);
-    const rotX = cos * rx - sin * ry + cx;
-    const rotY = sin * rx + cos * ry + cy;
-    return [rotX * this._zoom + this._panX, rotY * this._zoom + this._panY];
-  }
-
-  private _drawResizeHandles(ctx: CanvasRenderingContext2D) {
-    if (!this._float) return;
-    const { x, y, w, h } = this._float.currentRect;
-    const hs = DrawingCanvas.HANDLE_SIZE;
-    const half = hs / 2;
-
-    const positions: [number, number][] = [
-      [x, y], [x + w / 2, y], [x + w, y],
-      [x + w, y + h / 2],
-      [x + w, y + h], [x + w / 2, y + h], [x, y + h],
-      [x, y + h / 2],
-    ];
-
-    ctx.save();
-    for (const [px, py] of positions) {
-      const [sx, sy] = this._docToViewportRotated(px, py);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(sx - half, sy - half, hs, hs);
-      ctx.strokeStyle = '#3b82f6';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([]);
-      ctx.strokeRect(sx - half, sy - half, hs, hs);
-    }
-    ctx.restore();
-  }
-
-  private _drawRotationHandle(ctx: CanvasRenderingContext2D) {
-    if (!this._float) return;
-    const { x, y, w } = this._float.currentRect;
-    const rotation = this._float.rotation ?? 0;
-    // Top-center in viewport space, rotated
-    const [tcx, tcy] = this._docToViewportRotated(x + w / 2, y);
-    drawRotationHandle(ctx, tcx, tcy, rotation);
-  }
-
-  private _startSelectionAnimation() {
-    this._stopSelectionAnimation();
-    // Float was just created — undo button should reflect this
-    this._notifyHistory();
-    const animate = () => {
-      this._selectionDashOffset = (this._selectionDashOffset + 0.5) % 12;
-      this._redrawFloatPreview();
-      this._selectionAnimFrame = requestAnimationFrame(animate);
-    };
-    this._selectionAnimFrame = requestAnimationFrame(animate);
-  }
-
-  private _stopSelectionAnimation() {
-    if (this._selectionAnimFrame !== null) {
-      cancelAnimationFrame(this._selectionAnimFrame);
-      this._selectionAnimFrame = null;
-    }
+    this.requestUpdate();
   }
 
   // --- Public selection API (for keyboard shortcuts) ---
 
   public copySelection() {
-    if (!this._float) return;
-    const { tempCanvas, currentRect } = this._float;
-    const ctx = tempCanvas.getContext('2d')!;
-    this._clipboard = ctx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
-    this._clipboardOrigin = { x: currentRect.x, y: currentRect.y };
-    this._clipboardRotation = this._float.rotation ?? 0;
-    this._writeToSystemClipboard(tempCanvas);
+    if (!this._transformManager) return;
+    // Commit the transform, then copy from the layer.
+    // This matches Photoshop behavior (copy applies the transform).
+    const srcRect = this._transformManager.getSourceRect();
+    const srcData = this._transformManager.cancel();
+    // Restore source to layer before committing
+    this._transformManager.dispose();
+    this._transformManager = null;
+
+    // Put the original data back, then commit via the normal path won't work
+    // since we already disposed. Instead, just store the source data in clipboard.
+    const state = this._ctx.value?.state;
+    if (!state) return;
+    const layer = state.layers.find(l => l.id === state.activeLayerId);
+    if (!layer) return;
+
+    // Restore layer from before-draw data, re-create transform, then commit
+    if (this._beforeDrawData) {
+      layer.canvas.getContext('2d')!.putImageData(this._beforeDrawData, 0, 0);
+    }
+    // Re-lift and commit (put image data back)
+    const ctx = layer.canvas.getContext('2d')!;
+    ctx.putImageData(srcData, srcRect.x, srcRect.y);
+    // No transform was applied, so before == after, discard the history capture
+    this._beforeDrawData = null;
+
+    this._clipboard = new ImageData(
+      new Uint8ClampedArray(srcData.data),
+      srcData.width, srcData.height,
+    );
+    this._clipboardOrigin = { x: srcRect.x, y: srcRect.y };
+    this._clipboardRotation = 0;
+
+    // Write to system clipboard
+    const tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width = srcData.width;
+    tmpCanvas.height = srcData.height;
+    tmpCanvas.getContext('2d')!.putImageData(srcData, 0, 0);
+    this._writeToSystemClipboard(tmpCanvas);
+
+    // Clear preview
+    this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
+    this.composite();
+    this.requestUpdate();
+    this._notifyHistory();
   }
 
   private _writeToSystemClipboard(canvas: HTMLCanvasElement) {
@@ -3040,14 +2484,30 @@ export class DrawingCanvas extends LitElement {
   }
 
   public cutSelection() {
-    if (!this._float) return;
+    if (!this._transformManager) return;
+    // Copy stores the source data and cancels the transform (restoring the region).
+    // After copy, the region is restored, so we need to re-capture and delete it.
     this.copySelection();
-    this.deleteSelection();
+    // copySelection() restored the layer — now capture and clear the region
+    // that was just restored so "cut" actually removes it.
+    const origin = this._clipboardOrigin;
+    const data = this._clipboard;
+    if (origin && data) {
+      this._captureBeforeDraw();
+      const layerCtx = this._getActiveLayerCtx();
+      if (layerCtx) {
+        layerCtx.clearRect(origin.x, origin.y, data.width, data.height);
+        this._pushDrawHistory(true);
+        this.composite();
+      } else {
+        this._beforeDrawData = null;
+      }
+    }
   }
 
   public pasteSelection() {
     if (!this._clipboard || !this._clipboardOrigin) return;
-    this._commitFloat();
+    if (this._transformManager) this.commitTransform();
     // Only capture if _beforeDrawData isn't already owned by an in-progress
     // brush stroke — overwriting it would corrupt that stroke's undo entry.
     if (!this._beforeDrawData) {
@@ -3056,33 +2516,29 @@ export class DrawingCanvas extends LitElement {
 
     const w = this._clipboard.width;
     const h = this._clipboard.height;
-    const src = document.createElement('canvas');
-    src.width = w;
-    src.height = h;
-    src.getContext('2d')!.putImageData(this._clipboard, 0, 0);
-    this._floatSrcCanvas = src;
-
-    const tmp = document.createElement('canvas');
-    tmp.width = w;
-    tmp.height = h;
-    tmp.getContext('2d')!.drawImage(src, 0, 0);
 
     // Clamp origin so the pasted content is at least partially inside the
     // document (the clipboard may have been copied before a document resize).
     const x = Math.max(0, Math.min(this._clipboardOrigin.x, this._docWidth - 1));
     const y = Math.max(0, Math.min(this._clipboardOrigin.y, this._docHeight - 1));
 
-    this._float = {
-      originalImageData: new ImageData(
-        new Uint8ClampedArray(this._clipboard.data),
-        w, h,
-      ),
-      currentRect: { x, y, w, h },
-      tempCanvas: tmp,
-      rotation: this._clipboardRotation,
-    };
+    const imageData = new ImageData(
+      new Uint8ClampedArray(this._clipboard.data),
+      w, h,
+    );
+
+    this._transformManager = new TransformManager(
+      imageData,
+      { x, y, w, h },
+      this.previewCanvas,
+      this._zoom,
+      { x: this._panX, y: this._panY },
+    );
+    if (this._clipboardRotation) {
+      this._transformManager.rotation = (this._clipboardRotation * 180) / Math.PI;
+    }
     this.composite();
-    this._startSelectionAnimation();
+    this.requestUpdate();
   }
 
   public async paste() {
@@ -3132,107 +2588,129 @@ export class DrawingCanvas extends LitElement {
   }
 
   public selectAll() {
-    const layerCtx = this._getActiveLayerCtx();
-    if (!layerCtx) return;
+    if (this._transformManager) this.commitTransform();
 
-    this._commitFloat();
+    const state = this._ctx.value?.state;
+    if (!state) return;
+    const layer = state.layers.find(l => l.id === state.activeLayerId);
+    if (!layer) return;
+    const ctx = layer.canvas.getContext('2d')!;
 
     const w = this._docWidth;
     const h = this._docHeight;
-    const imageData = layerCtx.getImageData(0, 0, w, h);
-    const data = imageData.data;
+    const imageData = ctx.getImageData(0, 0, w, h);
+    const bounds = detectContentBounds(imageData);
+    if (!bounds) return;
 
-    // Find bounding box of non-transparent pixels
-    let minX = w, minY = h, maxX = -1, maxY = -1;
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        if (data[(y * w + x) * 4 + 3] > 0) {
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
-        }
-      }
-    }
-
-    // Layer is empty — no-op
-    if (maxX < 0) return;
-
-    this._liftToFloat(minX, minY, maxX - minX + 1, maxY - minY + 1);
+    this._captureBeforeDraw();
+    const regionData = ctx.getImageData(bounds.x, bounds.y, bounds.w, bounds.h);
+    ctx.clearRect(bounds.x, bounds.y, bounds.w, bounds.h);
+    this._transformManager = new TransformManager(
+      regionData,
+      bounds,
+      this.previewCanvas,
+      this._zoom,
+      { x: this._panX, y: this._panY },
+    );
+    this.composite();
+    this.requestUpdate();
   }
 
   public selectAllCanvas() {
-    const layerCtx = this._getActiveLayerCtx();
-    if (!layerCtx) return;
+    if (this._transformManager) this.commitTransform();
 
-    this._commitFloat();
-    this._liftToFloat(0, 0, this._docWidth, this._docHeight);
+    const state = this._ctx.value?.state;
+    if (!state) return;
+    const layer = state.layers.find(l => l.id === state.activeLayerId);
+    if (!layer) return;
+    const ctx = layer.canvas.getContext('2d')!;
+
+    const w = this._docWidth;
+    const h = this._docHeight;
+    this._captureBeforeDraw();
+    const regionData = ctx.getImageData(0, 0, w, h);
+    ctx.clearRect(0, 0, w, h);
+    this._transformManager = new TransformManager(
+      regionData,
+      { x: 0, y: 0, w, h },
+      this.previewCanvas,
+      this._zoom,
+      { x: this._panX, y: this._panY },
+    );
+    this.composite();
+    this.requestUpdate();
   }
 
   public duplicateInPlace() {
-    if (this._float) {
-      // Copy the current float's data before committing
-      const { tempCanvas, currentRect } = this._float;
-      const ctx = tempCanvas.getContext('2d')!;
-      const imageData = ctx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
-      const origin = { x: currentRect.x, y: currentRect.y };
-      const w = tempCanvas.width;
-      const h = tempCanvas.height;
+    if (this._transformManager) {
+      // Get the source data before committing
+      const srcRect = this._transformManager.getSourceRect();
+      const srcData = this._transformManager.cancel();
+      const w = srcData.width;
+      const h = srcData.height;
 
-      // Store in clipboard (same as copy)
-      const floatRotation = this._float.rotation ?? 0;
-      this._clipboard = imageData;
-      this._clipboardOrigin = origin;
-      this._clipboardRotation = floatRotation;
-      this._writeToSystemClipboard(tempCanvas);
+      // Store in clipboard
+      this._clipboard = new ImageData(new Uint8ClampedArray(srcData.data), w, h);
+      this._clipboardOrigin = { x: srcRect.x, y: srcRect.y };
+      this._clipboardRotation = 0;
 
-      // Commit the current float to the layer
-      this._commitFloat();
+      const tmpCanvas = document.createElement('canvas');
+      tmpCanvas.width = w;
+      tmpCanvas.height = h;
+      tmpCanvas.getContext('2d')!.putImageData(srcData, 0, 0);
+      this._writeToSystemClipboard(tmpCanvas);
 
-      // Create new float from the copied data at the same position
-      if (!this._beforeDrawData) {
-        this._captureBeforeDraw();
+      // Restore the original data to the layer (cancel undoes the lift)
+      this._transformManager.dispose();
+      this._transformManager = null;
+      const state = this._ctx.value?.state;
+      if (state) {
+        const layer = state.layers.find(l => l.id === state.activeLayerId);
+        if (layer) {
+          const ctx = layer.canvas.getContext('2d')!;
+          if (this._beforeDrawData) {
+            ctx.putImageData(this._beforeDrawData, 0, 0);
+          }
+          // Commit the original data back (the "first copy")
+          ctx.putImageData(srcData, srcRect.x, srcRect.y);
+          this._pushDrawHistory(true);
+
+          // Now create a new transform with a duplicate
+          this._captureBeforeDraw();
+          const dupData = new ImageData(new Uint8ClampedArray(srcData.data), w, h);
+          this._transformManager = new TransformManager(
+            dupData,
+            { x: srcRect.x, y: srcRect.y, w, h },
+            this.previewCanvas,
+            this._zoom,
+            { x: this._panX, y: this._panY },
+          );
+          this.composite();
+          this.requestUpdate();
+        }
       }
-
-      const src = document.createElement('canvas');
-      src.width = w;
-      src.height = h;
-      src.getContext('2d')!.putImageData(imageData, 0, 0);
-      this._floatSrcCanvas = src;
-
-      const tmp = document.createElement('canvas');
-      tmp.width = w;
-      tmp.height = h;
-      tmp.getContext('2d')!.drawImage(src, 0, 0);
-
-      this._float = {
-        originalImageData: new ImageData(new Uint8ClampedArray(imageData.data), w, h),
-        currentRect: { x: origin.x, y: origin.y, w, h },
-        tempCanvas: tmp,
-        rotation: floatRotation,
-      };
-      this.composite();
-      this._startSelectionAnimation();
     } else {
-      // No active float — paste from internal clipboard if available
+      // No active transform — paste from internal clipboard if available
       this.pasteSelection();
     }
   }
 
   public deleteSelection() {
-    if (!this._float) return;
-    // For stamp floats, _beforeDrawData may already be consumed or the layer
-    // wasn't modified — capture now so _pushDrawHistory has valid state.
+    if (!this._transformManager) return;
+    // Cancel the transform (discards the lifted content, restoring before-draw state
+    // if available). Then push a history entry for the deletion.
     if (!this._beforeDrawData) {
       this._captureBeforeDraw();
     }
-    // Force: a pasted float never modifies the layer canvas, so before/after
-    // are identical. Without force the no-op check silently drops the entry,
-    // making the delete irreversible and causing the next undo to affect an
-    // unrelated operation.
+    // Discard the transform content by NOT putting it back on the layer.
+    this._transformManager.dispose();
+    this._transformManager = null;
+    // Push history so the deletion is undoable.
     this._pushDrawHistory(true);
-    this._clearFloatState();
+    this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
     this.composite();
+    this.requestUpdate();
+    this._notifyHistory();
   }
 
   public clearSelection() {
@@ -3273,7 +2751,7 @@ export class DrawingCanvas extends LitElement {
         this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
       }
     }
-    this._commitFloat();
+    if (this._transformManager) this.commitTransform();
   }
 
   /**
@@ -3283,10 +2761,16 @@ export class DrawingCanvas extends LitElement {
    * tool switches, layer switches, project switches, etc.
    */
   public cancelExternalFloat() {
-    if (!this._floatIsExternalImage || !this._float) return;
+    if (!this._floatIsExternalImage || !this._transformManager) return;
     const layerId = this.ctx.state.activeLayerId;
-    this._clearFloatState();
+    this._transformManager.dispose();
+    this._transformManager = null;
+    this._floatIsExternalImage = false;
+    this._selectionDrawing = false;
     this._beforeDrawData = null;
+    if (this.previewCanvas) {
+      this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
+    }
 
     // Roll back the add-layer entry and any subsequent entries that target
     // this layer (rename, visibility, opacity, etc.), so canceling leaves
@@ -3324,16 +2808,20 @@ export class DrawingCanvas extends LitElement {
 
   /** Whether an external image float is active (used by drawing-app for Escape handling) */
   public get hasExternalFloat(): boolean {
-    return this._floatIsExternalImage && this._float !== null;
+    return this._floatIsExternalImage && this._transformManager !== null;
   }
 
-  /** Returns active float info for persistence, or null if no float. */
+  /** Returns active transform info for persistence, or null if no transform. */
   public getFloatSnapshot(): { layerId: string; tempCanvas: HTMLCanvasElement; x: number; y: number } | null {
-    if (!this._float) return null;
+    if (!this._transformManager) return null;
     const layerId = this._ctx.value?.state.activeLayerId;
     if (!layerId) return null;
-    const { currentRect, tempCanvas } = this._float;
-    return { layerId, tempCanvas, x: Math.round(currentRect.x), y: Math.round(currentRect.y) };
+    // Render the transformed content to a temp canvas for persistence
+    const tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width = this._docWidth;
+    tmpCanvas.height = this._docHeight;
+    this._transformManager.renderTransformed(tmpCanvas.getContext('2d')!);
+    return { layerId, tempCanvas: tmpCanvas, x: 0, y: 0 };
   }
 
   private _onDragOver = (e: DragEvent) => {
@@ -3423,7 +2911,10 @@ export class DrawingCanvas extends LitElement {
     }
     this._resizeObserver?.disconnect();
     this._resizeObserver = null;
-    this._stopSelectionAnimation();
+    if (this._transformManager) {
+      this._transformManager.dispose();
+      this._transformManager = null;
+    }
     this._pointers.clear();
     this._pinching = false;
     this._panning = false;
