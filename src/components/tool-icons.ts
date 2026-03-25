@@ -116,6 +116,16 @@ export const toolIcons: Record<ToolType, ReturnType<typeof svg>> = {
     </svg>`,
 };
 
+// Transform — dashed bounding box with corner handles
+export const transformIcon = svg`
+  <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="5" y="7" width="14" height="10" stroke-dasharray="3 2"/>
+    <rect x="3.5" y="5.5" width="3" height="3" rx="0.5" fill="currentColor" stroke="none"/>
+    <rect x="17.5" y="5.5" width="3" height="3" rx="0.5" fill="currentColor" stroke="none"/>
+    <rect x="3.5" y="15.5" width="3" height="3" rx="0.5" fill="currentColor" stroke="none"/>
+    <rect x="17.5" y="15.5" width="3" height="3" rx="0.5" fill="currentColor" stroke="none"/>
+  </svg>`;
+
 export const actionIcons = {
   undo: svg`
     <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

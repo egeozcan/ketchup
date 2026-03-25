@@ -3,7 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { ToolType } from '../types.js';
-import { toolIcons, toolLabels, toolShortcuts, actionIcons } from './tool-icons.js';
+import { toolIcons, toolLabels, toolShortcuts, actionIcons, transformIcon } from './tool-icons.js';
 import './tool-settings.js';
 
 const toolGroups: ToolType[][] = [
@@ -265,6 +265,8 @@ export class AppToolbar extends LitElement {
       return this._renderMobile(activeTool);
     }
 
+    const transformTitle = `Free Transform (${navigator.platform.startsWith('Mac') ? '⌘T' : 'Ctrl+T'})`;
+
     return html`
       ${toolGroups.map(
         (group, i) => html`
@@ -281,6 +283,14 @@ export class AppToolbar extends LitElement {
                 </button>
               `,
             )}
+            ${i === 0 ? html`
+              <button
+                title=${transformTitle}
+                @click=${() => this._ctx.value?.enterTransform()}
+              >
+                ${transformIcon}
+              </button>
+            ` : ''}
           </div>
         `,
       )}
