@@ -74,6 +74,8 @@ interface BrushDescriptor {
 
 Color and eraser are **not** part of BrushDescriptor — they are tool-level state, passed separately to the engine at stroke begin. This makes presets color-independent.
 
+`BrushDescriptor` fully replaces the existing `BrushParams` interface. `BrushParams` is removed — it does not coexist with `BrushDescriptor`.
+
 ### BrushPreset
 
 ```typescript
@@ -108,7 +110,7 @@ type TipGeneratorFn = (
   diameter: number,
   hardness: number,
   tip: TipDescriptor
-) => PoolCanvas;
+) => AnyCanvas;  // AnyCanvas = HTMLCanvasElement | OffscreenCanvas (from canvas-pool.ts)
 
 const tipGenerators: Record<TipShape, TipGeneratorFn> = {
   round: generateRoundTip,
@@ -225,6 +227,13 @@ Ink model functions live in a new file `src/engine/ink-model.ts` as stateless pu
   6. Draws with `ctx.save(); ctx.translate(); ctx.rotate(); ctx.drawImage(); ctx.restore()`
   7. Updates `InkState.distanceTraveled` and `stampCount`
 
+**`getStrokePreview()`**
+- Returns `{ canvas, eraser, opacity, color }` as today
+- Callers must branch on buffer mode:
+  - Alpha-mask mode (wetness = 0): caller tints preview with `color` before compositing (current behavior)
+  - Color mode (wetness > 0): caller composites preview buffer directly (already RGBA), ignores `color` field
+- The `color` field is set to `null` when in color mode, signaling the caller to skip tinting
+
 **`commit(targetCtx)`**
 - Branches on buffer mode:
   - Alpha-mask mode (wetness = 0): tint entire buffer → composite (unchanged path)
@@ -314,7 +323,7 @@ Three zones, top to bottom:
 
 Controls are hidden or dimmed when not applicable:
 - Aspect ratio: dimmed for round tips
-- Angle: shown only in fixed orientation mode
+- Angle: always shown when shape is not round. Labeled "Angle" in fixed mode, "Offset" in direction mode (since `tip.angle` serves as direction offset per the rotation computation)
 - Bristles and spread: shown only for fan and splatter shapes
 - Depletion length: hidden when depletion = 0
 - Pressure curve: hidden when neither pressure toggle is on (existing behavior)
@@ -326,7 +335,7 @@ Controls are hidden or dimmed when not applicable:
 | File | Purpose |
 |------|---------|
 | `src/engine/tip-generators.ts` | 6 tip generator functions + `tipGenerators` dispatch map |
-| `src/engine/ink-model.ts` | `InkState` interface, `applyDepletion()`, `applyBuildup()`, `applyPickup()` |
+| `src/engine/ink-model.ts` | `InkState` interface, `initInkState()`, `applyDepletion()`, `applyBuildup()`, `applyPickup()`, `sampleCanvasAt()`, `lerpColor()` |
 | `src/engine/brush-presets.ts` | `BrushPreset[]` with ~9 built-in presets |
 
 ### Modified files
