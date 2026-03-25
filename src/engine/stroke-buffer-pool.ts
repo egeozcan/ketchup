@@ -1,6 +1,6 @@
-import { createOffscreenCanvas, get2dContext } from './canvas-pool.js';
+import { createOffscreenCanvas, get2dContext, drawImageSafe, tintAlphaMask, type AnyCanvas } from './canvas-pool.js';
 
-type BufferCanvas = HTMLCanvasElement | OffscreenCanvas;
+type BufferCanvas = AnyCanvas;
 
 /**
  * Singleton pool managing one reusable stroke buffer canvas.
@@ -24,7 +24,7 @@ export class StrokeBufferPool {
     return this._canvas;
   }
 
-  /** Tint the accumulated alpha mask with the given color, then composite onto the target layer. */
+  /** Tint and composite the buffer onto the target layer. */
   commit(
     target: CanvasRenderingContext2D,
     color: string,
@@ -32,29 +32,31 @@ export class StrokeBufferPool {
     eraser: boolean,
     docWidth: number,
     docHeight: number,
+    colorMode = false,
   ) {
     if (!this._canvas) return;
-    const ctx = get2dContext(this._canvas);
 
-    if (!eraser) {
-      // Tint: fill with color using source-in to multiply color × accumulated alpha
-      ctx.globalCompositeOperation = 'source-in';
-      ctx.fillStyle = color;
-      ctx.fillRect(0, 0, docWidth, docHeight);
-      ctx.globalCompositeOperation = 'source-over';
-
-      // Composite onto layer
-      target.save();
-      target.globalAlpha = strokeOpacity;
-      target.globalCompositeOperation = 'source-over';
-      target.drawImage(this._canvas as any, 0, 0);
-      target.restore();
-    } else {
-      // Eraser: composite the alpha mask with destination-out
+    if (eraser) {
       target.save();
       target.globalAlpha = strokeOpacity;
       target.globalCompositeOperation = 'destination-out';
-      target.drawImage(this._canvas as any, 0, 0);
+      drawImageSafe(target, this._canvas, 0, 0);
+      target.restore();
+    } else if (colorMode) {
+      // Color mode: buffer already contains tinted RGBA — composite directly
+      target.save();
+      target.globalAlpha = strokeOpacity;
+      target.globalCompositeOperation = 'source-over';
+      drawImageSafe(target, this._canvas, 0, 0);
+      target.restore();
+    } else {
+      // Alpha-mask mode: tint then composite
+      const ctx = get2dContext(this._canvas);
+      tintAlphaMask(ctx, color, docWidth, docHeight);
+      target.save();
+      target.globalAlpha = strokeOpacity;
+      target.globalCompositeOperation = 'source-over';
+      drawImageSafe(target, this._canvas, 0, 0);
       target.restore();
     }
   }
