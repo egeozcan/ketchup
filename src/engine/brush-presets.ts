@@ -98,9 +98,9 @@ export const BRUSH_PRESETS: BrushPreset[] = [
     category: 'artistic',
     descriptor: {
       size: 20, opacity: 0.8, flow: 0.7, hardness: 0.5, spacing: 0.1,
-      pressureSize: true, pressureOpacity: false, pressureCurve: 'linear',
+      pressureSize: false, pressureOpacity: false, pressureCurve: 'linear',
       tip: { ...DEFAULT_TIP },
-      ink: { depletion: 0, depletionLength: 500, buildup: 0.2, wetness: 0.4 },
+      ink: { depletion: 0, depletionLength: 500, buildup: 0.2, wetness: 0.91 },
     },
   },
 ];
