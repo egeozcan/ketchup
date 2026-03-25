@@ -673,6 +673,104 @@ export class ToolSettings extends LitElement {
       pointer-events: none;
     }
 
+    /* Transform numeric panel */
+    .transform-section {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+
+    .transform-section > label {
+      font-size: 0.6875rem;
+      color: #888;
+      white-space: nowrap;
+    }
+
+    .transform-row {
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+
+    .transform-input {
+      width: 4rem;
+      background: #2a2a2a;
+      border: 1px solid #555;
+      border-radius: 0.25rem;
+      color: #ddd;
+      padding: 0.2rem 0.3rem;
+      font-size: 0.75rem;
+      text-align: center;
+      outline: none;
+      -moz-appearance: textfield;
+    }
+
+    .transform-input::-webkit-inner-spin-button,
+    .transform-input::-webkit-outer-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    .transform-input:focus {
+      border-color: #5b8cf7;
+    }
+
+    .transform-suffix {
+      color: #888;
+      font-size: 0.75rem;
+    }
+
+    .flip-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.75rem;
+      height: 1.75rem;
+      background: #444;
+      color: #ddd;
+      border: 1px solid #555;
+      border-radius: 0.25rem;
+      cursor: pointer;
+      font-size: 0.75rem;
+      padding: 0;
+    }
+
+    .flip-btn:hover {
+      background: #555;
+    }
+
+    .flip-btn.active {
+      background: #5b8cf7;
+      color: #fff;
+      border-color: #5b8cf7;
+    }
+
+    .aspect-lock-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.25rem;
+      height: 1.25rem;
+      background: none;
+      border: 1px solid #555;
+      border-radius: 0.25rem;
+      color: #888;
+      cursor: pointer;
+      padding: 0;
+      font-size: 0.6875rem;
+      flex-shrink: 0;
+    }
+
+    .aspect-lock-btn:hover {
+      border-color: #888;
+      color: #ddd;
+    }
+
+    .aspect-lock-btn.active {
+      border-color: #5b8cf7;
+      color: #5b8cf7;
+    }
+
     /* ── Inside mobile popover ─────────────────── */
     :host([mobile]) {
       flex-direction: column;
@@ -696,6 +794,7 @@ export class ToolSettings extends LitElement {
     }
   `;
 
+  @state() private _aspectLock = false;
   @state() private _recentStamps: StampEntry[] = [];
   @state() private _activeStampId: string | null = null;
   @state() private _projectDropdownOpen = false;
@@ -1138,8 +1237,131 @@ export class ToolSettings extends LitElement {
     this._closeBrushDropdown();
   }
 
+  private _renderTransformSettings() {
+    const vals = this._ctx.value?.getTransformValues();
+    if (!vals) {
+      return html`<div class="section"><label>No transform active</label></div>`;
+    }
+    const { x, y, width, height, rotation, skewX, skewY, flipH, flipV } = vals;
+    const set = (key: string, value: number | boolean) => this._ctx.value?.setTransformValue(key, value);
+
+    const onNumericInput = (key: string, suffix?: string) => (e: Event) => {
+      const raw = (e.target as HTMLInputElement).value;
+      const num = suffix === '°' ? parseFloat(raw) : parseFloat(raw);
+      if (!isNaN(num)) {
+        if (key === 'width' && this._aspectLock && width !== 0) {
+          const ratio = height / width;
+          set('width', num);
+          set('height', Math.round(num * ratio * 10) / 10);
+        } else if (key === 'height' && this._aspectLock && height !== 0) {
+          const ratio = width / height;
+          set('height', num);
+          set('width', Math.round(num * ratio * 10) / 10);
+        } else {
+          set(key, num);
+        }
+      }
+    };
+
+    return html`
+      <div class="transform-section">
+        <label>Position</label>
+        <div class="transform-row">
+          <span class="transform-suffix">X</span>
+          <input class="transform-input" type="number" step="0.1"
+            .value=${String(Math.round(x * 10) / 10)}
+            @change=${onNumericInput('x')} />
+          <span class="transform-suffix">Y</span>
+          <input class="transform-input" type="number" step="0.1"
+            .value=${String(Math.round(y * 10) / 10)}
+            @change=${onNumericInput('y')} />
+        </div>
+      </div>
+      <div class="separator"></div>
+      <div class="transform-section">
+        <label>Size</label>
+        <div class="transform-row">
+          <span class="transform-suffix">W</span>
+          <input class="transform-input" type="number" step="0.1" min="1"
+            .value=${String(Math.round(width * 10) / 10)}
+            @change=${onNumericInput('width')} />
+          <button
+            class="aspect-lock-btn ${this._aspectLock ? 'active' : ''}"
+            title="Lock aspect ratio"
+            @click=${() => { this._aspectLock = !this._aspectLock; }}
+          >
+            <svg viewBox="0 0 10 14" width="10" height="14" fill="none" stroke="currentColor" stroke-width="1.5">
+              ${this._aspectLock
+                ? html`<rect x="1" y="5" width="8" height="8" rx="1"/><path d="M3 5V3.5a2 2 0 1 1 4 0V5"/>`
+                : html`<rect x="1" y="5" width="8" height="8" rx="1"/><path d="M3 5V3.5a2 2 0 1 1 4 0V4" stroke-dasharray="2 1"/>`}
+            </svg>
+          </button>
+          <span class="transform-suffix">H</span>
+          <input class="transform-input" type="number" step="0.1" min="1"
+            .value=${String(Math.round(height * 10) / 10)}
+            @change=${onNumericInput('height')} />
+        </div>
+      </div>
+      <div class="separator"></div>
+      <div class="transform-section">
+        <label>Rotation</label>
+        <div class="transform-row">
+          <input class="transform-input" type="number" step="0.1"
+            .value=${String(Math.round(rotation * 10) / 10)}
+            @change=${onNumericInput('rotation', '°')} />
+          <span class="transform-suffix">°</span>
+        </div>
+      </div>
+      <div class="separator"></div>
+      <div class="transform-section">
+        <label>Skew</label>
+        <div class="transform-row">
+          <span class="transform-suffix">X</span>
+          <input class="transform-input" type="number" step="0.1"
+            .value=${String(Math.round(skewX * 10) / 10)}
+            @change=${onNumericInput('skewX', '°')} />
+          <span class="transform-suffix">°</span>
+          <span class="transform-suffix" style="margin-left:0.25rem;">Y</span>
+          <input class="transform-input" type="number" step="0.1"
+            .value=${String(Math.round(skewY * 10) / 10)}
+            @change=${onNumericInput('skewY', '°')} />
+          <span class="transform-suffix">°</span>
+        </div>
+      </div>
+      <div class="separator"></div>
+      <div class="transform-section">
+        <label>Flip</label>
+        <div class="transform-row">
+          <button
+            class="flip-btn ${flipH ? 'active' : ''}"
+            title="Flip Horizontal"
+            @click=${() => set('flipH', !flipH)}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M8 2v12M2 5l4 3-4 3M14 5l-4 3 4 3"/>
+            </svg>
+          </button>
+          <button
+            class="flip-btn ${flipV ? 'active' : ''}"
+            title="Flip Vertical"
+            @click=${() => set('flipV', !flipV)}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M2 8h12M5 2l3 4 3-4M5 14l3-4 3 4"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
   override render() {
     if (!this._ctx.value) return html``;
+
+    if (this._ctx.value.transformActive) {
+      return this._renderTransformSettings();
+    }
+
     const state = this.ctx.state;
     const { strokeColor, fillColor, useFill, activeTool, stampImage, brush } = state;
     const brushSize = brush.size;
