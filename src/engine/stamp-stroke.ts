@@ -42,9 +42,13 @@ export class StampStrokeEngine {
   private _prevStamp: StampPoint | null = null;
   private _variantCounter = 0;
   private _snapshotCaptured = false;
+  // Reusable tinting canvas for color mode — avoids per-stamp allocation
+  private _tintCanvas: AnyCanvas | null = null;
+  private _tintW = 0;
+  private _tintH = 0;
 
   begin(descriptor: BrushDescriptor, color: string, eraser: boolean, docWidth: number, docHeight: number) {
-    this._descriptor = descriptor;
+    this._descriptor = { ...descriptor, tip: { ...descriptor.tip }, ink: { ...descriptor.ink } };
     this._color = eraser ? '' : (color.length === 9 ? color.slice(0, 7) : color);
     this._eraser = eraser;
     this._colorMode = !eraser && descriptor.ink.wetness > 0;
@@ -127,12 +131,19 @@ export class StampStrokeEngine {
 
       const stampAlpha = Math.min(1, effectiveFlow * depletionMult);
 
-      const tipW = (tip as HTMLCanvasElement).width ?? diam;
-      const tipH = (tip as HTMLCanvasElement).height ?? diam;
+      const tipW = tip.width;
+      const tipH = tip.height;
 
       if (this._colorMode) {
-        const tinted = createOffscreenCanvas(tipW, tipH);
-        const tCtx = get2dContext(tinted);
+        // Reuse a single tinting canvas — grow only, never shrink
+        if (tipW > this._tintW || tipH > this._tintH) {
+          this._tintW = Math.max(this._tintW, tipW);
+          this._tintH = Math.max(this._tintH, tipH);
+          this._tintCanvas = createOffscreenCanvas(this._tintW, this._tintH);
+        }
+        const tCtx = get2dContext(this._tintCanvas!);
+        tCtx.globalCompositeOperation = 'source-over';
+        tCtx.clearRect(0, 0, this._tintW, this._tintH);
         drawImageSafe(tCtx, tip, 0, 0);
         tintAlphaMask(tCtx, state.currentColor, tipW, tipH);
 
@@ -142,10 +153,10 @@ export class StampStrokeEngine {
           ctx.save();
           ctx.translate(Math.round(stamp.x), Math.round(stamp.y));
           ctx.rotate(rotation);
-          drawImageSafe(ctx, tinted, -tipW / 2, -tipH / 2, tipW, tipH);
+          drawImageSafe(ctx, this._tintCanvas!, -tipW / 2, -tipH / 2, tipW, tipH);
           ctx.restore();
         } else {
-          drawImageSafe(ctx, tinted, Math.round(stamp.x - tipW / 2), Math.round(stamp.y - tipH / 2), tipW, tipH);
+          drawImageSafe(ctx, this._tintCanvas!, Math.round(stamp.x - tipW / 2), Math.round(stamp.y - tipH / 2), tipW, tipH);
         }
       } else {
         ctx.globalAlpha = stampAlpha;

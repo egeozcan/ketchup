@@ -100,7 +100,10 @@ export function applyDepletion(ink: InkDescriptor, state: InkState): number {
 /** Apply buildup: returns adjusted flow value. */
 export function applyBuildup(ink: InkDescriptor, baseFlow: number, spacingPx: number, stampDeltaDist: number): number {
   if (ink.buildup <= 0) return baseFlow;
-  const overlapDensity = stampDeltaDist > 0.01 ? Math.min(3, spacingPx / stampDeltaDist) : 3;
+  // overlapDensity is 0 at normal spacing, positive only when stamps cluster
+  // tighter than the configured spacing (slow movement)
+  const ratio = stampDeltaDist > 0.01 ? spacingPx / stampDeltaDist : 4;
+  const overlapDensity = Math.min(3, Math.max(0, ratio - 1));
   return Math.min(1, baseFlow * (1 + ink.buildup * overlapDensity));
 }
 

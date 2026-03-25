@@ -17,7 +17,7 @@ export class BrushTipCache {
   private _buildKey(diameter: number, hardness: number, tip: TipDescriptor, variantIndex?: number): string {
     let key = `${tip.shape}-${diameter}-${hardness.toFixed(2)}-${tip.aspect.toFixed(1)}`;
     if (tip.bristles != null) key += `-b${tip.bristles}`;
-    if (tip.spread != null) key += `-s${tip.spread}`;
+    if (tip.spread != null) key += `-s${tip.spread.toFixed(2)}`;
     if (variantIndex != null) key += `-v${variantIndex}`;
     return key;
   }

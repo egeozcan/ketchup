@@ -779,7 +779,7 @@ export class DrawingApp extends LitElement {
         ink: { ...defaultDesc.ink },
       };
       this._state = {
-        activeTool: ts.activeTool,
+        activeTool: ts.activeTool === 'marker' as string ? 'pencil' : ts.activeTool,
         strokeColor: ts.strokeColor,
         fillColor: ts.fillColor,
         useFill: ts.useFill,

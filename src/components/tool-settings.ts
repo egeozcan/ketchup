@@ -7,7 +7,7 @@ import type { StampEntry } from '../storage/types.js';
 import type { PressureCurveName, TipShape, OrientationMode, BrushPreset } from '../engine/types.js';
 import { quantizeDiameter } from '../engine/types.js';
 import { BRUSH_PRESETS } from '../engine/brush-presets.js';
-import { tipGenerators, TIP_VARIANT_COUNTS } from '../engine/tip-generators.js';
+import { tipGenerators } from '../engine/tip-generators.js';
 
 const documentPresets = [
   { label: '800 \u00d7 600', width: 800, height: 600 },
@@ -1320,12 +1320,14 @@ export class ToolSettings extends LitElement {
                 @input=${(e: Event) => this.ctx.setBrushTip({ aspect: Number((e.target as HTMLInputElement).value) })} />
               <span class="size-value">${brush.tip.aspect}</span>
             </div>
+            ${brush.tip.shape !== 'round' ? html`
             <div class="section">
               <label>${brush.tip.orientation === 'direction' ? 'Offset' : 'Angle'}</label>
               <input type="range" min="0" max="360" .value=${String(brush.tip.angle)}
                 @input=${(e: Event) => this.ctx.setBrushTip({ angle: Number((e.target as HTMLInputElement).value) })} />
               <span class="size-value">${brush.tip.angle}&deg;</span>
             </div>
+            ` : nothing}
             <div class="section">
               <label>Orient</label>
               <select class="font-select" .value=${brush.tip.orientation}
