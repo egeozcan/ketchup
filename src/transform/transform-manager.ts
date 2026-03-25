@@ -6,11 +6,11 @@ import {
 } from './transform-types.js';
 import {
   composeMatrix, docToLocal, localToDoc, getTransformCenter,
-  snapAngle, constrainToAxis, drawPerspectiveMesh, getPerspectiveDestCorners,
+  snapAngle, drawPerspectiveMesh, getPerspectiveDestCorners,
 } from './transform-math.js';
 import {
   hitTestHandle, hitTestRotationHandle, isInsideTransform,
-  getDocHandlePositions, getRotationHandlePos, getCommitCancelPositions,
+  getCommitCancelPositions,
   drawHandles, drawRotationHandle as drawRotationHandleUI, drawCommitCancelButtons, getCursorForPoint,
 } from './transform-handles.js';
 
@@ -19,7 +19,6 @@ export class TransformManager {
   private _sourceImageData: ImageData;
   private _sourceRect: TransformRect;
   private _sourceCanvas: HTMLCanvasElement;
-  private _tempCanvas: HTMLCanvasElement;
 
   // --- Transform state ---
   private _state: TransformState;
@@ -60,11 +59,6 @@ export class TransformManager {
     this._sourceCanvas.height = source.height;
     this._sourceCanvas.getContext('2d')!.putImageData(source, 0, 0);
 
-    this._tempCanvas = document.createElement('canvas');
-    this._tempCanvas.width = source.width;
-    this._tempCanvas.height = source.height;
-    this._tempCanvas.getContext('2d')!.drawImage(this._sourceCanvas, 0, 0);
-
     this._state = {
       x: sourceRect.x,
       y: sourceRect.y,
@@ -93,7 +87,6 @@ export class TransformManager {
   set width(v: number) {
     if (v <= 0) return;
     this._state.scaleX = (this._state.scaleX < 0 ? -1 : 1) * v / this._state.width;
-    this._rebuildTempCanvas();
     this._onChange();
   }
 
@@ -101,7 +94,6 @@ export class TransformManager {
   set height(v: number) {
     if (v <= 0) return;
     this._state.scaleY = (this._state.scaleY < 0 ? -1 : 1) * v / this._state.height;
-    this._rebuildTempCanvas();
     this._onChange();
   }
 
@@ -123,7 +115,6 @@ export class TransformManager {
     const isNeg = this._state.scaleX < 0;
     if (shouldBeNeg !== isNeg) {
       this._state.scaleX = -this._state.scaleX;
-      this._rebuildTempCanvas();
       this._onChange();
     }
   }
@@ -134,7 +125,6 @@ export class TransformManager {
     const isNeg = this._state.scaleY < 0;
     if (shouldBeNeg !== isNeg) {
       this._state.scaleY = -this._state.scaleY;
-      this._rebuildTempCanvas();
       this._onChange();
     }
   }
@@ -277,7 +267,6 @@ export class TransformManager {
     this._state.height = Math.abs(newH);
     if (newW < 0) this._state.scaleX = -Math.abs(this._state.scaleX);
     if (newH < 0) this._state.scaleY = -Math.abs(this._state.scaleY);
-    this._rebuildTempCanvas();
     this._onChange();
   }
 
@@ -450,14 +439,6 @@ export class TransformManager {
   }
 
   // --- Private helpers ---
-
-  private _rebuildTempCanvas(): void {
-    const w = Math.max(1, Math.round(Math.abs(this._state.width * this._state.scaleX)));
-    const h = Math.max(1, Math.round(Math.abs(this._state.height * this._state.scaleY)));
-    this._tempCanvas.width = w;
-    this._tempCanvas.height = h;
-    this._tempCanvas.getContext('2d')!.drawImage(this._sourceCanvas, 0, 0, w, h);
-  }
 
   private _onChange(): void {
     this.renderPreview();

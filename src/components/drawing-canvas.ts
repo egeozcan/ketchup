@@ -211,21 +211,22 @@ export class DrawingCanvas extends LitElement {
     const layer = state.layers.find(l => l.id === state.activeLayerId);
     if (!layer) return;
 
-    if (this._transformManager.hasChanged()) {
-      this._transformManager.commit(layer.canvas);
+    // Always commit the image back to the layer (the layer was cleared on lift)
+    this._transformManager.commit(layer.canvas);
+
+    // Only push history if something actually changed
+    if (this._transformManager.hasChanged() && this._beforeDrawData) {
       const after = layer.canvas.getContext('2d')!.getImageData(
         0, 0, layer.canvas.width, layer.canvas.height,
       );
-      if (this._beforeDrawData) {
-        this._pushHistoryEntry({
-          type: 'transform',
-          layerId: layer.id,
-          before: this._beforeDrawData,
-          after,
-        });
-      }
-      this._beforeDrawData = null;
+      this._pushHistoryEntry({
+        type: 'transform',
+        layerId: layer.id,
+        before: this._beforeDrawData,
+        after,
+      });
     }
+    this._beforeDrawData = null;
 
     this._transformManager.dispose();
     this._transformManager = null;
