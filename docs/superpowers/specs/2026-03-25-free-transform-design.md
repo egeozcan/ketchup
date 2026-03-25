@@ -55,7 +55,7 @@ TransformManager {
 - Float rendering logic within `composite()`
 
 **What stays in drawing-canvas.ts:**
-- Deciding when to enter transform mode (Cmd/Ctrl+T, tool switch, right-click)
+- Deciding when to enter transform mode (Cmd/Ctrl+T, toolbar button)
 - Forwarding pointer events to the manager
 - Integrating `renderTransformed()` into the composite pipeline
 - History capture (beforeImageData on enter, afterImageData on commit)
@@ -116,8 +116,7 @@ Canvas 2D does not support projective (perspective) transforms natively. Impleme
 | Cmd/Ctrl+T with active selection | Selected region is lifted to float |
 | Cmd/Ctrl+T with no selection | Entire active layer (auto-detected content bounding box) |
 | Select tool → make selection → Cmd/Ctrl+T | The selection region |
-| Toolbar "Transform" button | Same as Cmd/Ctrl+T based on current selection state |
-| Right-click context menu → "Free Transform" | Same |
+| Toolbar "Transform" action button | Same as Cmd/Ctrl+T based on current selection state |
 
 ### Handle Behavior with Modifier Keys
 
@@ -128,11 +127,21 @@ Canvas 2D does not support projective (perspective) transforms natively. Impleme
 | Outside bounding box drag | Rotate | Snap rotate 15 degrees | — |
 | Inside bounding box drag | Move | Constrain to axis | — |
 
+### Click Outside vs. Drag Outside (Rotate)
+
+Both "click outside to commit" and "drag outside to rotate" start with a pointerdown outside the bounding box. Disambiguation:
+
+- On pointerdown outside the bounding box, do nothing yet — just record the start position.
+- If the pointer moves more than 3px from the start position before pointerup, it's a **rotate gesture**.
+- If pointerup fires within 3px of the start position, it's a **click outside** → commit the transform.
+
+This matches standard drag-detection thresholds used elsewhere in the app.
+
 ### Commit and Cancel
 
 - **Enter** or **checkmark button**: commits the transform
 - **Escape** or **X button**: cancels, restores original
-- **Click outside bounding box**: commits
+- **Click outside bounding box**: commits (see disambiguation above)
 - **Switching to another tool**: commits
 - If no change was made (`hasChanged() === false`), commit is a no-op — no history entry
 
@@ -207,15 +216,18 @@ When Cmd/Ctrl+T is pressed with no active selection:
 
 ### Toolbar
 
-- Add a "Transform" tool entry to the first toolbar group (alongside select, move, crop, hand)
-- New `ToolType` value: `'transform'`
+- Add a "Transform" button to the first toolbar group (alongside select, move, crop, hand)
+- This is **not** a selectable tool in the `ToolType` union — it's an action button. Clicking it fires the same logic as Cmd/Ctrl+T: enters transform mode on the current selection or active layer. The `activeTool` does not change.
+- No new `ToolType` value is needed. Transform mode is a modal overlay managed by `drawing-canvas` via the presence/absence of an active `TransformManager` instance.
+- When transform mode is active, `drawing-canvas` routes pointer events to the manager regardless of `activeTool`. When transform mode ends (commit/cancel), pointer dispatch returns to normal tool handling.
 - Icon: a bounding box with corner handles and a rotation arc (standard transform icon)
-- Keyboard shortcut: activating transform mode is Cmd/Ctrl+T (global shortcut, not a tool-select shortcut)
+- Keyboard shortcut: Cmd/Ctrl+T (global shortcut)
 
-### Right-Click Context Menu
+### Right-Click Context Menu (Deferred)
 
-- Add "Free Transform" option to the canvas right-click context menu
-- Only enabled when there is a selection or the active layer has content
+A canvas-level right-click context menu does not exist in the app today. Building one is a separate UI feature (positioning, dismiss behavior, styling, other menu items). The "Free Transform" entry will be added to it once the canvas context menu is built. For now, transform is accessible via Cmd/Ctrl+T and the toolbar button.
+
+This is explicitly **out of scope** for this spec — noted in the Out of Scope section.
 
 ### Floating Commit/Cancel Toolbar
 
@@ -241,3 +253,4 @@ This means the refactor and the feature are coupled — the TransformManager rep
 - Transform presets or saved transforms
 - Multi-layer simultaneous transform
 - Per-step undo within an active transform session
+- Canvas-level right-click context menu (separate UI feature; "Free Transform" entry will be added once it exists)
