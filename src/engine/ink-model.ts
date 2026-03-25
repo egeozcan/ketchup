@@ -103,21 +103,27 @@ export function applyBuildup(ink: InkDescriptor, baseFlow: number, spacingPx: nu
   return Math.min(1, baseFlow * (1 + ink.buildup * overlapDensity));
 }
 
-/** Sample canvas color from snapshot at given document coordinates. Returns "#RRGGBB". */
-export function sampleSnapshot(snapshot: ImageData, x: number, y: number): string {
+/** Sample canvas color from snapshot at given document coordinates. Returns "#RRGGBB" and alpha (0-255). */
+export function sampleSnapshot(snapshot: ImageData, x: number, y: number): { color: string; alpha: number } {
   const px = Math.round(x);
   const py = Math.round(y);
-  if (px < 0 || py < 0 || px >= snapshot.width || py >= snapshot.height) return '#000000';
+  if (px < 0 || py < 0 || px >= snapshot.width || py >= snapshot.height) return { color: '#000000', alpha: 0 };
   const i = (py * snapshot.width + px) * 4;
   const r = snapshot.data[i];
   const g = snapshot.data[i + 1];
   const b = snapshot.data[i + 2];
-  return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
+  const a = snapshot.data[i + 3];
+  return { color: `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`, alpha: a };
 }
 
-/** Apply color pickup: mutates state.currentColor toward the canvas color at (x, y). */
+/** Apply color pickup: mutates state.currentColor toward the canvas color at (x, y).
+ *  Skips blend when sampling transparent pixels — there's nothing to pick up. */
 export function applyPickup(ink: InkDescriptor, state: InkState, x: number, y: number): void {
   if (ink.wetness <= 0 || !state.layerSnapshot) return;
   const sampled = sampleSnapshot(state.layerSnapshot, x, y);
-  state.currentColor = lerpOklab(state.currentColor, sampled, ink.wetness);
+  // Only pick up color from pixels with meaningful alpha — transparent = nothing to absorb
+  if (sampled.alpha < 10) return;
+  // Scale the blend by the pixel's opacity so semi-transparent areas have less pull
+  const alphaWeight = sampled.alpha / 255;
+  state.currentColor = lerpOklab(state.currentColor, sampled.color, ink.wetness * alphaWeight);
 }
