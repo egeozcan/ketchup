@@ -198,8 +198,8 @@ export class DrawingCanvas extends LitElement {
       case 'rotation': tm.rotation = value as number; break;
       case 'skewX': tm.skewX = value as number; break;
       case 'skewY': tm.skewY = value as number; break;
-      case 'flipH': tm.flipH = value as boolean; break;
-      case 'flipV': tm.flipV = value as boolean; break;
+      case 'flipH': tm.flipH = !tm.flipH; break;
+      case 'flipV': tm.flipV = !tm.flipV; break;
     }
     this.composite();
     this.requestUpdate();

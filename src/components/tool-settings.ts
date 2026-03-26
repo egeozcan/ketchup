@@ -1335,7 +1335,7 @@ export class ToolSettings extends LitElement {
           <button
             class="flip-btn ${flipH ? 'active' : ''}"
             title="Flip Horizontal"
-            @click=${() => set('flipH', !flipH)}
+            @click=${() => set('flipH', true)}
           >
             <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5">
               <path d="M8 2v12M2 5l4 3-4 3M14 5l-4 3 4 3"/>
@@ -1344,7 +1344,7 @@ export class ToolSettings extends LitElement {
           <button
             class="flip-btn ${flipV ? 'active' : ''}"
             title="Flip Vertical"
-            @click=${() => set('flipV', !flipV)}
+            @click=${() => set('flipV', true)}
           >
             <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5">
               <path d="M2 8h12M5 2l3 4 3-4M5 14l3-4 3 4"/>
