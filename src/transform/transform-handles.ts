@@ -169,9 +169,9 @@ export function getCommitCancelPositions(
   const dx = tr.x - center.x;
   const dy = tr.y - center.y;
   const len = Math.sqrt(dx * dx + dy * dy);
-  const offsetPx = 30 / zoom;
-  const buttonRadius = 12 / zoom;
-  const gap = 28 / zoom;
+  const offsetPx = 20 / zoom;
+  const buttonRadius = 7 / zoom;
+  const gap = 18 / zoom;
 
   const baseX = len > 1 ? tr.x + (dx / len) * offsetPx : tr.x + offsetPx;
   const baseY = len > 1 ? tr.y + (dy / len) * offsetPx : tr.y - offsetPx;
@@ -194,30 +194,40 @@ export function drawCommitCancelButtons(
   const { commitCenter, cancelCenter, buttonRadius } = getCommitCancelPositions(state, zoom);
 
   ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
 
-  ctx.fillStyle = 'rgba(34, 197, 94, 0.9)';
+  // Commit button — white fill with green border and checkmark
+  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = '#22c55e';
+  ctx.lineWidth = 1.5 / zoom;
   ctx.beginPath();
   ctx.arc(commitCenter.x, commitCenter.y, buttonRadius, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 2 / zoom;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
+  ctx.stroke();
+  // Checkmark
+  ctx.strokeStyle = '#16a34a';
+  ctx.lineWidth = 1.5 / zoom;
   ctx.beginPath();
-  const cs = buttonRadius * 0.45;
-  ctx.moveTo(commitCenter.x - cs, commitCenter.y);
-  ctx.lineTo(commitCenter.x - cs * 0.2, commitCenter.y + cs * 0.7);
-  ctx.lineTo(commitCenter.x + cs, commitCenter.y - cs * 0.5);
+  const cs = buttonRadius * 0.4;
+  ctx.moveTo(commitCenter.x - cs, commitCenter.y + cs * 0.1);
+  ctx.lineTo(commitCenter.x - cs * 0.15, commitCenter.y + cs * 0.65);
+  ctx.lineTo(commitCenter.x + cs, commitCenter.y - cs * 0.55);
   ctx.stroke();
 
-  ctx.fillStyle = 'rgba(239, 68, 68, 0.9)';
+  // Cancel button — white fill with red border and X
+  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = '#ef4444';
+  ctx.lineWidth = 1.5 / zoom;
   ctx.beginPath();
   ctx.arc(cancelCenter.x, cancelCenter.y, buttonRadius, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 2 / zoom;
+  ctx.stroke();
+  // X mark
+  ctx.strokeStyle = '#dc2626';
+  ctx.lineWidth = 1.5 / zoom;
   ctx.beginPath();
-  const xs = buttonRadius * 0.35;
+  const xs = buttonRadius * 0.32;
   ctx.moveTo(cancelCenter.x - xs, cancelCenter.y - xs);
   ctx.lineTo(cancelCenter.x + xs, cancelCenter.y + xs);
   ctx.moveTo(cancelCenter.x + xs, cancelCenter.y - xs);
