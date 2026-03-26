@@ -202,6 +202,7 @@ export class DrawingCanvas extends LitElement {
       case 'flipV': tm.flipV = value as boolean; break;
     }
     this.composite();
+    this.requestUpdate();
   }
 
   commitTransform(): void {
