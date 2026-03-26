@@ -169,9 +169,9 @@ export function getCommitCancelPositions(
   const dx = tr.x - center.x;
   const dy = tr.y - center.y;
   const len = Math.sqrt(dx * dx + dy * dy);
-  const offsetPx = 20 / zoom;
-  const buttonRadius = 7 / zoom;
-  const gap = 18 / zoom;
+  const offsetPx = 30 / zoom;
+  const buttonRadius = 12 / zoom;
+  const gap = 28 / zoom;
 
   const baseX = len > 1 ? tr.x + (dx / len) * offsetPx : tr.x + offsetPx;
   const baseY = len > 1 ? tr.y + (dy / len) * offsetPx : tr.y - offsetPx;
