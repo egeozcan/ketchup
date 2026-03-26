@@ -1193,7 +1193,6 @@ export class DrawingApp extends LitElement {
         doRename().catch(err => console.error('Rename project failed:', err));
       },
       transformActive: this.canvas?.isTransformActive() ?? false,
-      enterTransform: () => this.canvas?.enterTransformMode(),
       getTransformValues: () => this.canvas?.getTransformValues() ?? null,
       setTransformValue: (key: string, value: number | boolean) => this.canvas?.setTransformValue(key, value),
     };

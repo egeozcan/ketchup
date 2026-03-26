@@ -57,8 +57,6 @@ export interface DrawingContextValue {
   renameProject: (id: string, name: string) => void;
   /** True when the TransformManager is active */
   transformActive: boolean;
-  /** Enter free transform mode on current selection or active layer */
-  enterTransform: () => void;
   /** Get current transform values for numeric panel, or null if not in transform mode */
   getTransformValues: () => { x: number; y: number; width: number; height: number; rotation: number; skewX: number; skewY: number; flipH: boolean; flipV: boolean } | null;
   /** Set a transform value from the numeric panel */

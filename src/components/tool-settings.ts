@@ -1358,12 +1358,22 @@ export class ToolSettings extends LitElement {
   override render() {
     if (!this._ctx.value) return html``;
 
-    if (this._ctx.value.transformActive) {
-      return this._renderTransformSettings();
-    }
-
     const state = this.ctx.state;
     const { strokeColor, fillColor, useFill, activeTool, stampImage, brush } = state;
+
+    // Select tool: show transform controls or a hint
+    if (activeTool === 'select') {
+      if (this._ctx.value.transformActive) {
+        return this._renderTransformSettings();
+      }
+      return html`
+        <div class="section" style="padding:16px;color:#888;font-size:12px;text-align:center;line-height:1.5;">
+          Draw a selection to transform, or press
+          <kbd style="background:#333;padding:1px 5px;border-radius:3px;font-size:11px;">${navigator.platform?.startsWith('Mac') ? '⌘' : 'Ctrl'}+T</kbd>
+          to transform the entire layer.
+        </div>
+      `;
+    }
     const brushSize = brush.size;
 
     const isMobile = this.ctx.isMobile;
