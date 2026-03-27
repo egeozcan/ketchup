@@ -24,6 +24,46 @@ describe('DrawingCanvas selection bounds', () => {
     expect(liftSpy).toHaveBeenCalledWith(0, 0, 800, 600);
   });
 
+  it('dispatches transform-change after lifting a selection into transform mode', () => {
+    const canvas = new DrawingCanvas();
+    const previewCanvas = document.createElement('canvas');
+    previewCanvas.width = 100;
+    previewCanvas.height = 100;
+    const layerCanvas = document.createElement('canvas');
+    layerCanvas.width = 100;
+    layerCanvas.height = 100;
+
+    Object.defineProperty(canvas, 'previewCanvas', {
+      configurable: true,
+      value: previewCanvas,
+    });
+    (canvas as any)._ctx = {
+      value: {
+        state: {
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
+          activeLayerId: 'l1',
+          documentWidth: 100,
+          documentHeight: 100,
+        },
+      },
+    };
+    (canvas as any)._captureBeforeDraw = vi.fn();
+    (canvas as any).composite = vi.fn();
+    (canvas as any).requestUpdate = vi.fn();
+    (canvas as any)._selectionDrawing = true;
+    (canvas as any)._startPoint = { x: 10, y: 10 };
+    (canvas as any)._getDocPoint = vi.fn(() => ({ x: 40, y: 50 }));
+
+    const handler = vi.fn();
+    canvas.addEventListener('transform-change', handler);
+
+    (canvas as any)._handleSelectPointerUp({} as PointerEvent);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect((handler.mock.calls[0][0] as CustomEvent).detail.active).toBe(true);
+    expect((canvas as any)._transformManager).not.toBeNull();
+  });
+
   it('defensively clamps _liftToFloat() reads/writes to document bounds', () => {
     const canvas = new DrawingCanvas();
     const fakeImageData = {

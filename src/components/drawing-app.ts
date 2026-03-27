@@ -1221,6 +1221,10 @@ export class DrawingApp extends LitElement {
     this._markDirty();
   }
 
+  private _onTransformChange() {
+    this.requestUpdate();
+  }
+
   private _onNavigatorPan(e: CustomEvent<{ panX: number; panY: number }>) {
     if (!this.canvas) return;
     const { panX, panY } = e.detail;
@@ -1448,6 +1452,7 @@ export class DrawingApp extends LitElement {
           @history-change=${this._onHistoryChange}
           @layer-undo=${this._onLayerUndo}
           @crop-commit=${this._onCropCommit}
+          @transform-change=${this._onTransformChange}
           @viewport-change=${this._onViewportChange}
         ></drawing-canvas>
         ${!this._isMobile ? html`

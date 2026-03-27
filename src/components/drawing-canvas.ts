@@ -175,6 +175,7 @@ export class DrawingCanvas extends LitElement {
     );
     this.composite();
     this.requestUpdate();
+    this._dispatchTransformChange();
   }
 
   getTransformValues(): { x: number; y: number; width: number; height: number; rotation: number; skewX: number; skewY: number; flipH: boolean; flipV: boolean } | null {
@@ -203,6 +204,7 @@ export class DrawingCanvas extends LitElement {
     }
     this.composite();
     this.requestUpdate();
+    this._dispatchTransformChange();
   }
 
   commitTransform(): void {
@@ -236,6 +238,7 @@ export class DrawingCanvas extends LitElement {
     );
     this.composite();
     this.requestUpdate();
+    this._dispatchTransformChange();
   }
 
   cancelTransform(): void {
@@ -263,6 +266,7 @@ export class DrawingCanvas extends LitElement {
     );
     this.composite();
     this.requestUpdate();
+    this._dispatchTransformChange();
   }
 
   // --- Viewport helpers ---
@@ -642,6 +646,34 @@ export class DrawingCanvas extends LitElement {
         },
       }),
     );
+  }
+
+  private _dispatchTransformChange() {
+    this.dispatchEvent(new CustomEvent('transform-change', {
+      bubbles: true,
+      composed: true,
+      detail: {
+        active: this._transformManager !== null,
+        values: this.getTransformValues(),
+      },
+    }));
+  }
+
+  private _transformValuesEqual(
+    a: ReturnType<DrawingCanvas['getTransformValues']>,
+    b: ReturnType<DrawingCanvas['getTransformValues']>,
+  ): boolean {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    return a.x === b.x &&
+      a.y === b.y &&
+      a.width === b.width &&
+      a.height === b.height &&
+      a.rotation === b.rotation &&
+      a.skewX === b.skewX &&
+      a.skewY === b.skewY &&
+      a.flipH === b.flipH &&
+      a.flipV === b.flipV;
   }
 
   public undo() {
@@ -1564,9 +1596,14 @@ export class DrawingCanvas extends LitElement {
     if (this._transformManager) {
       const p = this._getDocPoint(e);
       const modifiers = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey };
+      const before = this.getTransformValues();
       this._transformManager.onPointerMove(p, modifiers);
       this.style.cursor = this._transformManager.getCursor(p);
       this.composite();
+      const after = this.getTransformValues();
+      if (!this._transformValuesEqual(before, after)) {
+        this._dispatchTransformChange();
+      }
       return;
     }
 
@@ -2093,6 +2130,7 @@ export class DrawingCanvas extends LitElement {
         );
         this.composite();
         this.requestUpdate();
+        this._dispatchTransformChange();
       }
     }
   }
@@ -2367,6 +2405,7 @@ export class DrawingCanvas extends LitElement {
     );
     this.composite();
     this.requestUpdate();
+    this._dispatchTransformChange();
   }
 
   /**
@@ -2421,6 +2460,7 @@ export class DrawingCanvas extends LitElement {
     );
     this.composite();
     this.requestUpdate();
+    this._dispatchTransformChange();
   }
 
   // --- Public selection API (for keyboard shortcuts) ---
@@ -2470,6 +2510,7 @@ export class DrawingCanvas extends LitElement {
     this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
     this.composite();
     this.requestUpdate();
+    this._dispatchTransformChange();
     this._notifyHistory();
   }
 
@@ -2541,6 +2582,7 @@ export class DrawingCanvas extends LitElement {
     }
     this.composite();
     this.requestUpdate();
+    this._dispatchTransformChange();
   }
 
   public async paste() {
@@ -2616,6 +2658,7 @@ export class DrawingCanvas extends LitElement {
     );
     this.composite();
     this.requestUpdate();
+    this._dispatchTransformChange();
   }
 
   public selectAllCanvas() {
@@ -2641,6 +2684,7 @@ export class DrawingCanvas extends LitElement {
     );
     this.composite();
     this.requestUpdate();
+    this._dispatchTransformChange();
   }
 
   public duplicateInPlace() {
@@ -2689,6 +2733,7 @@ export class DrawingCanvas extends LitElement {
           );
           this.composite();
           this.requestUpdate();
+          this._dispatchTransformChange();
         }
       }
     } else {
@@ -2712,6 +2757,7 @@ export class DrawingCanvas extends LitElement {
     this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
     this.composite();
     this.requestUpdate();
+    this._dispatchTransformChange();
     this._notifyHistory();
   }
 
@@ -2773,6 +2819,7 @@ export class DrawingCanvas extends LitElement {
     if (this.previewCanvas) {
       this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
     }
+    this._dispatchTransformChange();
 
     // Roll back the add-layer entry and any subsequent entries that target
     // this layer (rename, visibility, opacity, etc.), so canceling leaves

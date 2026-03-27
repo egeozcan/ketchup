@@ -38,6 +38,9 @@ function createAppWithCanvasSpies() {
     centerDocument: vi.fn(),
     composite: vi.fn(),
     pushLayerOperation: vi.fn(),
+    isTransformActive: vi.fn(() => false),
+    getTransformValues: vi.fn(() => null),
+    setTransformValue: vi.fn(),
     hasClipboardData: false,
     hasCropRect: false,
     hasExternalFloat: false,
@@ -123,6 +126,15 @@ describe('DrawingApp', () => {
 
     expect((app as any)._state.activeLayerId).toBe(layer2.id);
     expect((app as any)._dirty).toBe(true);
+  });
+
+  it('refreshes when the canvas reports transform state changes', () => {
+    const app = createAppWithCanvasSpies();
+    const requestUpdateSpy = vi.spyOn(app, 'requestUpdate');
+
+    (app as any)._onTransformChange();
+
+    expect(requestUpdateSpy).toHaveBeenCalledTimes(1);
   });
 
   it('commits the floating selection before adding a new layer', () => {
