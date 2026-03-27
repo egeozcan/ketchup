@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DrawingCanvas } from '../src/components/drawing-canvas.ts';
 import type { HistoryEntry, LayerSnapshot } from '../src/types.ts';
+import { attachCanvasElements, makeState, makeTransformManagerStub } from './helpers.ts';
 
 /**
  * Bug: cancelExternalFloat drops reorder (and crop) history entries.
@@ -33,24 +34,21 @@ describe('cancelExternalFloat preserves global history entries', () => {
     // Set up context with the pasted layer as active
     (canvas as any)._ctx = {
       value: {
-        state: {
+        state: makeState({
           layers: [
-            { id: existingLayerId, name: 'Layer 1', visible: true, opacity: 1, canvas: document.createElement('canvas') },
-            { id: pastedLayerId, name: 'Pasted Image', visible: true, opacity: 1, canvas: document.createElement('canvas') },
+            { id: existingLayerId, name: 'Layer 1', visible: true, opacity: 1, blendMode: 'normal', canvas: document.createElement('canvas') },
+            { id: pastedLayerId, name: 'Pasted Image', visible: true, opacity: 1, blendMode: 'normal', canvas: document.createElement('canvas') },
           ],
           activeLayerId: pastedLayerId,
           documentWidth: 800,
           documentHeight: 600,
-        },
+        }),
       },
     };
+    attachCanvasElements(canvas, 800, 600);
 
     // Set up the float as an external image
-    (canvas as any)._float = {
-      originalImageData: new ImageData(10, 10),
-      currentRect: { x: 0, y: 0, w: 10, h: 10 },
-      tempCanvas: document.createElement('canvas'),
-    };
+    (canvas as any)._transformManager = makeTransformManagerStub();
     (canvas as any)._floatIsExternalImage = true;
 
     // Build a history that contains:
@@ -85,8 +83,6 @@ describe('cancelExternalFloat preserves global history entries', () => {
     (canvas as any)._history = [drawEntry, addLayerEntry, reorderEntry];
     (canvas as any)._historyIndex = 2;
 
-    // Stub _clearFloatState to prevent side effects
-    (canvas as any)._clearFloatState = vi.fn();
     // Stub composite and _notifyHistory
     (canvas as any).composite = vi.fn();
     (canvas as any)._notifyHistory = vi.fn();
@@ -125,23 +121,20 @@ describe('cancelExternalFloat preserves global history entries', () => {
 
     (canvas as any)._ctx = {
       value: {
-        state: {
+        state: makeState({
           layers: [
-            { id: existingLayerId, name: 'Layer 1', visible: true, opacity: 1, canvas: document.createElement('canvas') },
-            { id: pastedLayerId, name: 'Pasted Image', visible: true, opacity: 1, canvas: document.createElement('canvas') },
+            { id: existingLayerId, name: 'Layer 1', visible: true, opacity: 1, blendMode: 'normal', canvas: document.createElement('canvas') },
+            { id: pastedLayerId, name: 'Pasted Image', visible: true, opacity: 1, blendMode: 'normal', canvas: document.createElement('canvas') },
           ],
           activeLayerId: pastedLayerId,
           documentWidth: 400,
           documentHeight: 300,
-        },
+        }),
       },
     };
+    attachCanvasElements(canvas, 400, 300);
 
-    (canvas as any)._float = {
-      originalImageData: new ImageData(10, 10),
-      currentRect: { x: 0, y: 0, w: 10, h: 10 },
-      tempCanvas: document.createElement('canvas'),
-    };
+    (canvas as any)._transformManager = makeTransformManagerStub();
     (canvas as any)._floatIsExternalImage = true;
 
     const addLayerEntry: HistoryEntry = {
@@ -169,7 +162,6 @@ describe('cancelExternalFloat preserves global history entries', () => {
     (canvas as any)._history = [addLayerEntry, cropEntry];
     (canvas as any)._historyIndex = 1;
 
-    (canvas as any)._clearFloatState = vi.fn();
     (canvas as any).composite = vi.fn();
     (canvas as any)._notifyHistory = vi.fn();
     (canvas as any).dispatchEvent = vi.fn();

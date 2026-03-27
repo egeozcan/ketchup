@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DrawingCanvas } from '../src/components/drawing-canvas.ts';
+import { attachCanvasElements, makeState } from './helpers.ts';
 
 /**
  * Bug: Deleting a pasted (or externally-placed) floating selection does not push
@@ -46,41 +47,17 @@ describe('deleteSelection on a pasted float should push a history entry', () => 
 
     (canvas as any)._ctx = {
       value: {
-        state: {
-          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
-          activeLayerId: 'l1',
+        state: makeState({
           activeTool: 'select',
-          strokeColor: '#000000',
-          fillColor: '#ff0000',
-          useFill: false,
-          brushSize: 4,
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, blendMode: 'normal', canvas: layerCanvas }],
+          activeLayerId: 'l1',
           documentWidth: 800,
           documentHeight: 600,
-          stampImage: null,
-          cropAspectRatio: 'free',
-          fontFamily: 'sans-serif',
-          fontSize: 24,
-          fontBold: false,
-          fontItalic: false,
-        },
+        }),
       },
     };
 
-    const previewCanvas = document.createElement('canvas');
-    previewCanvas.width = 800;
-    previewCanvas.height = 600;
-    Object.defineProperty(canvas, 'previewCanvas', {
-      configurable: true,
-      value: previewCanvas,
-    });
-
-    const mainCanvas = document.createElement('canvas');
-    mainCanvas.width = 800;
-    mainCanvas.height = 600;
-    Object.defineProperty(canvas, 'mainCanvas', {
-      configurable: true,
-      value: mainCanvas,
-    });
+    attachCanvasElements(canvas, 800, 600);
 
     (canvas as any).composite = vi.fn();
     (canvas as any).dispatchEvent = vi.fn();
@@ -113,9 +90,9 @@ describe('deleteSelection on a pasted float should push a history entry', () => 
     // Paste the selection — this creates a float WITHOUT modifying the layer
     canvas.pasteSelection();
 
-    // Verify the float was created
-    expect((canvas as any)._float).not.toBeNull();
-    expect((canvas as any)._float.currentRect).toEqual({ x: 100, y: 100, w: 50, h: 50 });
+    // Verify the transform was created at the pasted origin
+    expect((canvas as any)._transformManager).not.toBeNull();
+    expect((canvas as any).getTransformValues()).toMatchObject({ x: 100, y: 100, width: 50, height: 50 });
 
     // Verify _beforeDrawData was captured
     expect((canvas as any)._beforeDrawData).not.toBeNull();
@@ -128,8 +105,8 @@ describe('deleteSelection on a pasted float should push a history entry', () => 
     // can undo and get the pasted content back
     canvas.deleteSelection();
 
-    // The float should be gone
-    expect((canvas as any)._float).toBeNull();
+    // The transform should be gone
+    expect((canvas as any)._transformManager).toBeNull();
 
     // BUG: No history entry is pushed because _pushDrawHistory's no-op
     // detection sees that before == after (the layer wasn't modified by

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { DrawingApp } from '../src/components/drawing-app.ts';
-import type { HistoryEntry, LayerSnapshot } from '../src/types.ts';
+import type { HistoryEntry } from '../src/types.ts';
+import { makeAppCanvasStub } from './helpers.ts';
 
 /**
  * Bug: Undoing an "add layer" operation selects the WRONG layer.
@@ -43,12 +44,11 @@ describe('Undo add-layer restores previous active layer', () => {
     const historyEntries: HistoryEntry[] = [];
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        clearSelection: vi.fn(),
+      value: makeAppCanvasStub({
         pushLayerOperation: vi.fn((entry: HistoryEntry) => {
           historyEntries.push(entry);
         }),
-      },
+      }),
     });
 
     // Add two more layers so we have [Layer1, Layer2, Layer3].

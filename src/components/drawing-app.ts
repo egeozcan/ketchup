@@ -324,6 +324,15 @@ export class DrawingApp extends LitElement {
             pressureSize: this._state.brush.pressureSize,
             pressureOpacity: this._state.brush.pressureOpacity,
             pressureCurve: this._state.brush.pressureCurve,
+            tip: { ...this._state.brush.tip },
+            ink: { ...this._state.brush.ink },
+            activePreset: this._state.activePreset,
+            isPresetModified: this._state.isPresetModified,
+            cropAspectRatio: this._state.cropAspectRatio,
+            fontFamily: this._state.fontFamily,
+            fontSize: this._state.fontSize,
+            fontBold: this._state.fontBold,
+            fontItalic: this._state.fontItalic,
             eyedropperSampleAll: this._state.eyedropperSampleAll,
           };
           const snapshotWidth = this._state.documentWidth;
@@ -581,6 +590,11 @@ export class DrawingApp extends LitElement {
     if (this._isTextEntryTarget(e)) {
       return;
     }
+    if (e.key === 'Escape' && this.canvas?.hasExternalFloat) {
+      e.preventDefault();
+      this.canvas.cancelExternalFloat();
+      return;
+    }
     // Transform mode shortcuts
     if (e.key === 'Escape' && this.canvas?.isTransformActive()) {
       e.preventDefault();
@@ -670,7 +684,7 @@ export class DrawingApp extends LitElement {
     } else if (!ctrl && !e.altKey && (key === '[' || key === ']')) {
       e.preventDefault();
       const current = this._state.brush.size;
-      const maxSize = 200;
+      const maxSize = 150;
       const minSize = 1;
       if (key === ']') {
         const newSize = Math.min(maxSize, Math.max(current + 1, Math.round(current * 1.1)));
@@ -791,8 +805,8 @@ export class DrawingApp extends LitElement {
         pressureSize: ts.pressureSize ?? defaultDesc.pressureSize,
         pressureOpacity: ts.pressureOpacity ?? defaultDesc.pressureOpacity,
         pressureCurve: ts.pressureCurve ?? defaultDesc.pressureCurve,
-        tip: { ...defaultDesc.tip },
-        ink: { ...defaultDesc.ink },
+        tip: { ...defaultDesc.tip, ...(ts.tip ?? {}) },
+        ink: { ...defaultDesc.ink, ...(ts.ink ?? {}) },
       };
       this._state = {
         activeTool: ts.activeTool === 'marker' as string ? 'pencil' : ts.activeTool,
@@ -800,19 +814,19 @@ export class DrawingApp extends LitElement {
         fillColor: ts.fillColor,
         useFill: ts.useFill,
         brush: restoredBrush,
-        activePreset: 'round',
-        isPresetModified: false,
+        activePreset: ts.activePreset ?? 'round',
+        isPresetModified: ts.isPresetModified ?? false,
         stampImage: null,
         layers,
         activeLayerId: validActiveId,
         layersPanelOpen: record.layersPanelOpen,
         documentWidth: record.canvasWidth,
         documentHeight: record.canvasHeight,
-        cropAspectRatio: 'free',
-        fontFamily: 'sans-serif',
-        fontSize: 24,
-        fontBold: false,
-        fontItalic: false,
+        cropAspectRatio: ts.cropAspectRatio ?? 'free',
+        fontFamily: ts.fontFamily ?? 'sans-serif',
+        fontSize: ts.fontSize ?? 24,
+        fontBold: ts.fontBold ?? false,
+        fontItalic: ts.fontItalic ?? false,
         eyedropperSampleAll: ts.eyedropperSampleAll ?? true,
       };
       await this.updateComplete;
@@ -866,8 +880,8 @@ export class DrawingApp extends LitElement {
         this._markDirty();
       },
       setBrushSize: (size: number) => {
-        const safe = Number.isFinite(size) ? size : 1;
-        this._updateBrush({ size: Math.max(1, Math.min(200, safe)) });
+        const safe = Number.isNaN(size) ? this._state.brush.size : size;
+        this._updateBrush({ size: Math.max(1, Math.min(150, safe)) });
       },
       setStampImage: (img: HTMLImageElement | null) => {
         this._state = { ...this._state, stampImage: img };
@@ -945,9 +959,12 @@ export class DrawingApp extends LitElement {
         if (oldIndex === -1 || oldIndex === newIndex) return;
         const newLayers = [...this._state.layers];
         const [layer] = newLayers.splice(oldIndex, 1);
-        newLayers.splice(newIndex, 0, layer);
+        const normalizedIndex = newIndex < 0
+          ? Math.max(newLayers.length + newIndex, 0)
+          : Math.min(newIndex, newLayers.length);
+        newLayers.splice(normalizedIndex, 0, layer);
         this._state = { ...this._state, layers: newLayers };
-        this.canvas?.pushLayerOperation({ type: 'reorder', fromIndex: oldIndex, toIndex: newIndex });
+        this.canvas?.pushLayerOperation({ type: 'reorder', fromIndex: oldIndex, toIndex: normalizedIndex });
         this._markDirty();
       },
       renameLayer: (id: string, name: string) => {

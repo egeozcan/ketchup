@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { DrawingApp } from '../src/components/drawing-app.ts';
+import { makeAppCanvasStub } from './helpers.ts';
 
 /**
  * Bug: setLayerOpacity does not validate its input — NaN, Infinity, and
@@ -53,11 +54,7 @@ describe('setLayerOpacity missing validation', () => {
 
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        clearSelection: vi.fn(),
-        pushLayerOperation: vi.fn(),
-        cancelCrop: vi.fn(),
-      },
+      value: makeAppCanvasStub(),
     });
 
     const ctx = (app as any)._buildContextValue();
@@ -83,11 +80,7 @@ describe('setLayerOpacity missing validation', () => {
 
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        clearSelection: vi.fn(),
-        pushLayerOperation: vi.fn(),
-        cancelCrop: vi.fn(),
-      },
+      value: makeAppCanvasStub(),
     });
 
     const ctx = (app as any)._buildContextValue();
@@ -105,11 +98,7 @@ describe('setLayerOpacity missing validation', () => {
 
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        clearSelection: vi.fn(),
-        pushLayerOperation: vi.fn(),
-        cancelCrop: vi.fn(),
-      },
+      value: makeAppCanvasStub(),
     });
 
     const ctx = (app as any)._buildContextValue();
@@ -126,11 +115,7 @@ describe('setLayerOpacity missing validation', () => {
 
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        clearSelection: vi.fn(),
-        pushLayerOperation: vi.fn(),
-        cancelCrop: vi.fn(),
-      },
+      value: makeAppCanvasStub(),
     });
 
     const ctx = (app as any)._buildContextValue();
@@ -147,11 +132,7 @@ describe('setLayerOpacity missing validation', () => {
 
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        clearSelection: vi.fn(),
-        pushLayerOperation: vi.fn(),
-        cancelCrop: vi.fn(),
-      },
+      value: makeAppCanvasStub(),
     });
 
     const ctx = (app as any)._buildContextValue();

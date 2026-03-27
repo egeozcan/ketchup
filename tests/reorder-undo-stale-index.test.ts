@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { DrawingApp } from '../src/components/drawing-app.ts';
 import type { HistoryEntry } from '../src/types.ts';
+import { makeAppCanvasStub } from './helpers.ts';
 
 /**
  * Bug: _onLayerUndo 'reorder' handler uses splice indices without bounds
@@ -52,12 +53,11 @@ describe('Reorder undo with stale indices after cancelExternalFloat', () => {
     const historyEntries: HistoryEntry[] = [];
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        clearSelection: vi.fn(),
+      value: makeAppCanvasStub({
         pushLayerOperation: vi.fn((entry: HistoryEntry) => {
           historyEntries.push(entry);
         }),
-      },
+      }),
     });
 
     // Add a second layer so we have [Layer 1, Layer 2].
@@ -101,5 +101,30 @@ describe('Reorder undo with stale indices after cancelExternalFloat', () => {
     // remain in their original order [A, B].
     expect(layersAfter[0].id).toBe(layerA.id);
     expect(layersAfter[1].id).toBe(layerB.id);
+  });
+
+  it('records the normalized destination index when reordering past the array end', () => {
+    const app = new DrawingApp();
+
+    const historyEntries: HistoryEntry[] = [];
+    Object.defineProperty(app, 'canvas', {
+      configurable: true,
+      value: makeAppCanvasStub({
+        pushLayerOperation: vi.fn((entry: HistoryEntry) => {
+          historyEntries.push(entry);
+        }),
+      }),
+    });
+
+    const ctx = (app as any)._buildContextValue();
+    ctx.addLayer();
+    ctx.addLayer();
+
+    const [layerA] = (app as any)._state.layers;
+    ctx.reorderLayer(layerA.id, 999);
+
+    const reorderEntry = historyEntries[historyEntries.length - 1] as Extract<HistoryEntry, { type: 'reorder' }>;
+    expect(reorderEntry.type).toBe('reorder');
+    expect(reorderEntry.toIndex).toBe(2);
   });
 });

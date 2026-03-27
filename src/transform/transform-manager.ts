@@ -383,6 +383,19 @@ export class TransformManager {
     }
   }
 
+  snapshot(): { canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number } {
+    const bounds = this._getSnapshotBounds();
+    const canvas = document.createElement('canvas');
+    canvas.width = bounds.w;
+    canvas.height = bounds.h;
+    const ctx = canvas.getContext('2d')!;
+    ctx.save();
+    ctx.translate(-bounds.x, -bounds.y);
+    this.renderTransformed(ctx);
+    ctx.restore();
+    return { canvas, ...bounds };
+  }
+
   // --- Lifecycle ---
 
   commit(layerCanvas: HTMLCanvasElement): void {
@@ -442,6 +455,33 @@ export class TransformManager {
 
   private _onChange(): void {
     this.renderPreview();
+  }
+
+  private _getSnapshotBounds(): { x: number; y: number; w: number; h: number } {
+    if (!this._perspectiveActive && this._state.rotation === 0 && this._state.skewX === 0 && this._state.skewY === 0) {
+      return {
+        x: Math.floor(this._state.x),
+        y: Math.floor(this._state.y),
+        w: Math.max(1, Math.ceil(this.width)),
+        h: Math.max(1, Math.ceil(this.height)),
+      };
+    }
+
+    const corners = this._perspectiveActive
+      ? getPerspectiveDestCorners(this._state, this._perspectiveCorners)
+      : [
+          localToDoc({ x: 0, y: 0 }, this._state),
+          localToDoc({ x: this._state.width, y: 0 }, this._state),
+          localToDoc({ x: this._state.width, y: this._state.height }, this._state),
+          localToDoc({ x: 0, y: this._state.height }, this._state),
+        ];
+    const xs = corners.map(c => c.x);
+    const ys = corners.map(c => c.y);
+    const x = Math.floor(Math.min(...xs));
+    const y = Math.floor(Math.min(...ys));
+    const w = Math.max(1, Math.ceil(Math.max(...xs)) - x);
+    const h = Math.max(1, Math.ceil(Math.max(...ys)) - y);
+    return { x, y, w, h };
   }
 
   private _startAnimation(): void {

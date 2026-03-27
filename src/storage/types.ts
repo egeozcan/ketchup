@@ -1,6 +1,6 @@
 // src/storage/types.ts
 import type { ToolType } from '../types.js';
-import type { PressureCurveName } from '../engine/types.js';
+import type { PressureCurveName, TipDescriptor, InkDescriptor } from '../engine/types.js';
 
 // ---------------------------------------------------------------------------
 // BlobRef — branded string, opaque to consumers
@@ -29,6 +29,15 @@ export interface ToolSettings {
   pressureSize?: boolean;
   pressureOpacity?: boolean;
   pressureCurve?: PressureCurveName;
+  tip?: TipDescriptor;
+  ink?: InkDescriptor;
+  activePreset?: string;
+  isPresetModified?: boolean;
+  cropAspectRatio?: string;
+  fontFamily?: string;
+  fontSize?: number;
+  fontBold?: boolean;
+  fontItalic?: boolean;
   eyedropperSampleAll?: boolean;
 }
 

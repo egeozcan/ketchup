@@ -8,16 +8,38 @@ import type { TransformState, TransformRect, PerspectiveCorners } from './transf
 export function composeMatrix(state: TransformState): DOMMatrix {
   const cx = state.width / 2;
   const cy = state.height / 2;
+  const radX = (state.skewX * Math.PI) / 180;
+  const radY = (state.skewY * Math.PI) / 180;
+  const cos = Math.cos(state.rotation);
+  const sin = Math.sin(state.rotation);
 
-  const m = new DOMMatrix();
-  m.translateSelf(state.x + cx, state.y + cy);
-  m.rotateSelf((state.rotation * 180) / Math.PI);
-  m.skewXSelf(state.skewX);
-  m.skewYSelf(state.skewY);
-  m.scaleSelf(state.scaleX, state.scaleY);
-  m.translateSelf(-cx, -cy);
+  type Matrix2D = { a: number; b: number; c: number; d: number; e: number; f: number };
 
-  return m;
+  const multiply = (left: Matrix2D, right: Matrix2D): Matrix2D => ({
+    a: left.a * right.a + left.c * right.b,
+    b: left.b * right.a + left.d * right.b,
+    c: left.a * right.c + left.c * right.d,
+    d: left.b * right.c + left.d * right.d,
+    e: left.a * right.e + left.c * right.f + left.e,
+    f: left.b * right.e + left.d * right.f + left.f,
+  });
+
+  const translate = (x: number, y: number): Matrix2D => ({ a: 1, b: 0, c: 0, d: 1, e: x, f: y });
+  const rotate = (): Matrix2D => ({ a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 });
+  const skewX = (): Matrix2D => ({ a: 1, b: 0, c: Math.tan(radX), d: 1, e: 0, f: 0 });
+  const skewY = (): Matrix2D => ({ a: 1, b: Math.tan(radY), c: 0, d: 1, e: 0, f: 0 });
+  const scale = (): Matrix2D => ({ a: state.scaleX, b: 0, c: 0, d: state.scaleY, e: 0, f: 0 });
+
+  const matrix = [
+    translate(state.x + cx, state.y + cy),
+    rotate(),
+    skewX(),
+    skewY(),
+    scale(),
+    translate(-cx, -cy),
+  ].reduce(multiply, { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 });
+
+  return new DOMMatrix([matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f]);
 }
 
 /**
@@ -26,10 +48,15 @@ export function composeMatrix(state: TransformState): DOMMatrix {
  */
 export function docToLocal(p: Point, state: TransformState): Point {
   const matrix = composeMatrix(state);
-  const inv = matrix.inverse();
-  const dp = new DOMPoint(p.x, p.y);
-  const lp = inv.transformPoint(dp);
-  return { x: lp.x, y: lp.y };
+  const det = matrix.a * matrix.d - matrix.b * matrix.c;
+  if (Math.abs(det) < 1e-10) {
+    return { x: p.x, y: p.y };
+  }
+
+  return {
+    x: (matrix.d * p.x - matrix.c * p.y + matrix.c * matrix.f - matrix.d * matrix.e) / det,
+    y: (-matrix.b * p.x + matrix.a * p.y + matrix.b * matrix.e - matrix.a * matrix.f) / det,
+  };
 }
 
 /**
@@ -38,9 +65,10 @@ export function docToLocal(p: Point, state: TransformState): Point {
  */
 export function localToDoc(p: Point, state: TransformState): Point {
   const matrix = composeMatrix(state);
-  const dp = new DOMPoint(p.x, p.y);
-  const tp = matrix.transformPoint(dp);
-  return { x: tp.x, y: tp.y };
+  return {
+    x: matrix.a * p.x + matrix.c * p.y + matrix.e,
+    y: matrix.b * p.x + matrix.d * p.y + matrix.f,
+  };
 }
 
 /**

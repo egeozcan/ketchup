@@ -8,6 +8,7 @@ import { StampStrokeEngine } from '../engine/stamp-stroke.js';
 import { blendModeToCompositeOp } from '../engine/types.js';
 import type { BrushDescriptor } from '../engine/types.js';
 import { tintAlphaMask } from '../engine/canvas-pool.js';
+import { getDefaultDescriptor } from '../engine/brush-presets.js';
 import { floodFill } from '../tools/fill.js';
 import { drawSelectionRect } from '../tools/select.js';
 import { drawCropOverlay, hitTestCropHandle, parseAspectRatio, constrainCropToRatio, type CropRect, type CropHandle } from '../tools/crop.js';
@@ -276,7 +277,17 @@ export class DrawingCanvas extends LitElement {
   // --- Layer-aware helpers ---
 
   private get _brushDescriptor(): BrushDescriptor {
-    return this.ctx.state.brush;
+    const state = this.ctx.state as DrawingContextValue['state'] & { brushSize?: number };
+    if (state.brush) {
+      return state.brush;
+    }
+    const fallback = getDefaultDescriptor();
+    return {
+      ...fallback,
+      size: state.brushSize ?? fallback.size,
+      tip: { ...fallback.tip },
+      ink: { ...fallback.ink },
+    };
   }
 
   private _getActiveLayerCtx(): CanvasRenderingContext2D | null {
@@ -1335,8 +1346,9 @@ export class DrawingCanvas extends LitElement {
     if (!this._pointerOnCanvas) return;
     if (this._altSampling) return;
     const { activeTool } = this.ctx.state;
-    const brushSize = this.ctx.state.brush.size;
-    const hardness = this.ctx.state.brush.hardness;
+    const brush = this._brushDescriptor;
+    const brushSize = brush.size;
+    const hardness = brush.hardness;
     if (activeTool !== 'pencil' && activeTool !== 'eraser') return;
 
     const previewCtx = this.previewCanvas.getContext('2d')!;
@@ -1514,7 +1526,7 @@ export class DrawingCanvas extends LitElement {
       if (this._transformManager) this.commitTransform();
       if (this.ctx.state.stampImage) {
         this._captureBeforeDraw();
-        this._createStampAsTransform(this.ctx.state.stampImage, p.x, p.y, this.ctx.state.brush.size * 10);
+        this._createStampAsTransform(this.ctx.state.stampImage, p.x, p.y, this._brushDescriptor.size * 10);
       }
       return;
     }
@@ -1713,7 +1725,7 @@ export class DrawingCanvas extends LitElement {
         this.ctx.state.strokeColor,
         this.ctx.state.fillColor,
         this.ctx.state.useFill,
-        this.ctx.state.brush.size,
+        this._brushDescriptor.size,
       );
       previewCtx.restore();
     }
@@ -1836,7 +1848,7 @@ export class DrawingCanvas extends LitElement {
           this.ctx.state.strokeColor,
           this.ctx.state.fillColor,
           this.ctx.state.useFill,
-          this.ctx.state.brush.size,
+          this._brushDescriptor.size,
         );
       }
       // Clear preview
@@ -2467,50 +2479,17 @@ export class DrawingCanvas extends LitElement {
 
   public copySelection() {
     if (!this._transformManager) return;
-    // Commit the transform, then copy from the layer.
-    // This matches Photoshop behavior (copy applies the transform).
-    const srcRect = this._transformManager.getSourceRect();
-    const srcData = this._transformManager.cancel();
-    // Restore source to layer before committing
-    this._transformManager.dispose();
-    this._transformManager = null;
+    const snapshot = this._transformManager.snapshot();
+    const snapCtx = snapshot.canvas.getContext('2d')!;
 
-    // Put the original data back, then commit via the normal path won't work
-    // since we already disposed. Instead, just store the source data in clipboard.
-    const state = this._ctx.value?.state;
-    if (!state) return;
-    const layer = state.layers.find(l => l.id === state.activeLayerId);
-    if (!layer) return;
+    // Commit first so the document matches what the user copied and the
+    // transform remains undoable through the normal history entry.
+    this.commitTransform();
 
-    // Restore layer from before-draw data, re-create transform, then commit
-    if (this._beforeDrawData) {
-      layer.canvas.getContext('2d')!.putImageData(this._beforeDrawData, 0, 0);
-    }
-    // Re-lift and commit (put image data back)
-    const ctx = layer.canvas.getContext('2d')!;
-    ctx.putImageData(srcData, srcRect.x, srcRect.y);
-    // No transform was applied, so before == after, discard the history capture
-    this._beforeDrawData = null;
-
-    this._clipboard = new ImageData(
-      new Uint8ClampedArray(srcData.data),
-      srcData.width, srcData.height,
-    );
-    this._clipboardOrigin = { x: srcRect.x, y: srcRect.y };
+    this._clipboard = snapCtx.getImageData(0, 0, snapshot.w, snapshot.h);
+    this._clipboardOrigin = { x: snapshot.x, y: snapshot.y };
     this._clipboardRotation = 0;
-
-    // Write to system clipboard
-    const tmpCanvas = document.createElement('canvas');
-    tmpCanvas.width = srcData.width;
-    tmpCanvas.height = srcData.height;
-    tmpCanvas.getContext('2d')!.putImageData(srcData, 0, 0);
-    this._writeToSystemClipboard(tmpCanvas);
-
-    // Clear preview
-    this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
-    this.composite();
-    this.requestUpdate();
-    this._dispatchTransformChange();
+    this._writeToSystemClipboard(snapshot.canvas);
     this._notifyHistory();
   }
 
@@ -2689,53 +2668,30 @@ export class DrawingCanvas extends LitElement {
 
   public duplicateInPlace() {
     if (this._transformManager) {
-      // Get the source data before committing
-      const srcRect = this._transformManager.getSourceRect();
-      const srcData = this._transformManager.cancel();
-      const w = srcData.width;
-      const h = srcData.height;
+      const snapshot = this._transformManager.snapshot();
+      const imageData = snapshot.canvas.getContext('2d')!.getImageData(0, 0, snapshot.w, snapshot.h);
 
-      // Store in clipboard
-      this._clipboard = new ImageData(new Uint8ClampedArray(srcData.data), w, h);
-      this._clipboardOrigin = { x: srcRect.x, y: srcRect.y };
+      // Store the transformed result in the clipboard
+      this._clipboard = new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+      this._clipboardOrigin = { x: snapshot.x, y: snapshot.y };
       this._clipboardRotation = 0;
+      this._writeToSystemClipboard(snapshot.canvas);
 
-      const tmpCanvas = document.createElement('canvas');
-      tmpCanvas.width = w;
-      tmpCanvas.height = h;
-      tmpCanvas.getContext('2d')!.putImageData(srcData, 0, 0);
-      this._writeToSystemClipboard(tmpCanvas);
-
-      // Restore the original data to the layer (cancel undoes the lift)
-      this._transformManager.dispose();
-      this._transformManager = null;
-      const state = this._ctx.value?.state;
-      if (state) {
-        const layer = state.layers.find(l => l.id === state.activeLayerId);
-        if (layer) {
-          const ctx = layer.canvas.getContext('2d')!;
-          if (this._beforeDrawData) {
-            ctx.putImageData(this._beforeDrawData, 0, 0);
-          }
-          // Commit the original data back (the "first copy")
-          ctx.putImageData(srcData, srcRect.x, srcRect.y);
-          this._pushDrawHistory(true);
-
-          // Now create a new transform with a duplicate
-          this._captureBeforeDraw();
-          const dupData = new ImageData(new Uint8ClampedArray(srcData.data), w, h);
-          this._transformManager = new TransformManager(
-            dupData,
-            { x: srcRect.x, y: srcRect.y, w, h },
-            this.previewCanvas,
-            this._zoom,
-            { x: this._panX, y: this._panY },
-          );
-          this.composite();
-          this.requestUpdate();
-          this._dispatchTransformChange();
-        }
-      }
+      // Commit the first copy back to the layer, then create a new active
+      // transform for the duplicate using the rasterized transformed content.
+      this.commitTransform();
+      this._captureBeforeDraw();
+      const dupData = new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+      this._transformManager = new TransformManager(
+        dupData,
+        { x: snapshot.x, y: snapshot.y, w: snapshot.w, h: snapshot.h },
+        this.previewCanvas,
+        this._zoom,
+        { x: this._panX, y: this._panY },
+      );
+      this.composite();
+      this.requestUpdate();
+      this._dispatchTransformChange();
     } else {
       // No active transform — paste from internal clipboard if available
       this.pasteSelection();

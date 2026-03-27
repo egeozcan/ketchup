@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { DrawingApp } from '../src/components/drawing-app.ts';
+import { makeAppCanvasStub } from './helpers.ts';
 
 /**
  * Bug: setBrushSize does not guard against NaN / non-finite / out-of-range input.
@@ -57,24 +58,20 @@ describe('setBrushSize NaN passthrough', () => {
     // Stub canvas to prevent errors from missing DOM element
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        clearSelection: vi.fn(),
-        pushLayerOperation: vi.fn(),
-        cancelCrop: vi.fn(),
-      },
+      value: makeAppCanvasStub(),
     });
 
     const ctx = (app as any)._buildContextValue();
 
     // Verify the initial brush size is valid
-    expect((app as any)._state.brushSize).toBe(4);
+    expect((app as any)._state.brush.size).toBe(4);
 
     // Call setBrushSize with NaN
     ctx.setBrushSize(NaN);
 
     // The brush size should be clamped to a valid value, not NaN.
     // BUG: setBrushSize stores NaN directly without validation.
-    const brushSize = (app as any)._state.brushSize;
+    const brushSize = (app as any)._state.brush.size;
     expect(brushSize).not.toBeNaN();
     expect(brushSize).toBeGreaterThanOrEqual(1);
     expect(brushSize).toBeLessThanOrEqual(150);
@@ -85,22 +82,18 @@ describe('setBrushSize NaN passthrough', () => {
 
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        clearSelection: vi.fn(),
-        pushLayerOperation: vi.fn(),
-        cancelCrop: vi.fn(),
-      },
+      value: makeAppCanvasStub(),
     });
 
     const ctx = (app as any)._buildContextValue();
 
     // Zero should clamp to 1 (minimum valid brush size)
     ctx.setBrushSize(0);
-    expect((app as any)._state.brushSize).toBeGreaterThanOrEqual(1);
+    expect((app as any)._state.brush.size).toBeGreaterThanOrEqual(1);
 
     // Negative should clamp to 1
     ctx.setBrushSize(-5);
-    expect((app as any)._state.brushSize).toBeGreaterThanOrEqual(1);
+    expect((app as any)._state.brush.size).toBeGreaterThanOrEqual(1);
   });
 
   it('should clamp Infinity to the maximum brush size', () => {
@@ -108,19 +101,14 @@ describe('setBrushSize NaN passthrough', () => {
 
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        clearSelection: vi.fn(),
-        pushLayerOperation: vi.fn(),
-        cancelCrop: vi.fn(),
-      },
+      value: makeAppCanvasStub(),
     });
 
     const ctx = (app as any)._buildContextValue();
 
     ctx.setBrushSize(Infinity);
-    const brushSize = (app as any)._state.brushSize;
-    expect(brushSize).not.toBe(Infinity);
-    expect(brushSize).toBeLessThanOrEqual(150);
+    const brushSize = (app as any)._state.brush.size;
+    expect(brushSize).toBe(150);
   });
 
   it('should still accept valid values within range', () => {
@@ -128,24 +116,20 @@ describe('setBrushSize NaN passthrough', () => {
 
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        clearSelection: vi.fn(),
-        pushLayerOperation: vi.fn(),
-        cancelCrop: vi.fn(),
-      },
+      value: makeAppCanvasStub(),
     });
 
     const ctx = (app as any)._buildContextValue();
 
     // Normal value should pass through
     ctx.setBrushSize(10);
-    expect((app as any)._state.brushSize).toBe(10);
+    expect((app as any)._state.brush.size).toBe(10);
 
     // Boundary values
     ctx.setBrushSize(1);
-    expect((app as any)._state.brushSize).toBe(1);
+    expect((app as any)._state.brush.size).toBe(1);
 
     ctx.setBrushSize(150);
-    expect((app as any)._state.brushSize).toBe(150);
+    expect((app as any)._state.brush.size).toBe(150);
   });
 });

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DrawingApp } from '../src/components/drawing-app.ts';
+import { makeAppCanvasStub, makeLayer, makeState } from './helpers.ts';
 
 function makeKeyEvent(
   key: string,
@@ -19,32 +20,7 @@ function makeKeyEvent(
 
 function createAppWithCanvasSpies() {
   const app = new DrawingApp();
-  const canvasMock = {
-    undo: vi.fn(),
-    redo: vi.fn(),
-    copySelection: vi.fn(),
-    cutSelection: vi.fn(),
-    pasteSelection: vi.fn(),
-    pasteExternalImage: vi.fn(),
-    deleteSelection: vi.fn(),
-    clearSelection: vi.fn(),
-    cancelCrop: vi.fn(),
-    commitCrop: vi.fn(),
-    cancelExternalFloat: vi.fn(),
-    zoomToFit: vi.fn(),
-    zoomIn: vi.fn(),
-    zoomOut: vi.fn(),
-    setHistory: vi.fn(),
-    centerDocument: vi.fn(),
-    composite: vi.fn(),
-    pushLayerOperation: vi.fn(),
-    isTransformActive: vi.fn(() => false),
-    getTransformValues: vi.fn(() => null),
-    setTransformValue: vi.fn(),
-    hasClipboardData: false,
-    hasCropRect: false,
-    hasExternalFloat: false,
-  };
+  const canvasMock = makeAppCanvasStub();
   Object.defineProperty(app, 'canvas', {
     configurable: true,
     value: canvasMock,
@@ -135,6 +111,20 @@ describe('DrawingApp', () => {
     (app as any)._onTransformChange();
 
     expect(requestUpdateSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels an external float on Escape before generic transform cancel handling', () => {
+    const app = createAppWithCanvasSpies();
+    (app as any).canvas.hasExternalFloat = true;
+    (app as any).canvas.isTransformActive = vi.fn(() => true);
+
+    const event = makeKeyEvent('Escape', []);
+
+    (app as any)._onKeyDown(event);
+
+    expect((app as any).canvas.cancelExternalFloat).toHaveBeenCalledTimes(1);
+    expect((app as any).canvas.cancelTransform).not.toHaveBeenCalled();
+    expect((event.preventDefault as any)).toHaveBeenCalledTimes(1);
   });
 
   it('commits the floating selection before adding a new layer', () => {
@@ -438,41 +428,106 @@ describe('DrawingApp', () => {
     errorSpy.mockRestore();
   });
 
+  it('restores advanced brush, crop, and text settings from saved project state', async () => {
+    const app = createAppWithCanvasSpies();
+
+    Object.defineProperty(app, 'updateComplete', {
+      configurable: true,
+      get: () => Promise.resolve(true),
+    });
+
+    const fakeRecord = {
+      toolSettings: {
+        activeTool: 'pencil' as const,
+        strokeColor: '#102030',
+        fillColor: '#405060',
+        useFill: true,
+        brushSize: 18,
+        opacity: 0.4,
+        flow: 0.6,
+        hardness: 0.3,
+        spacing: 0.2,
+        pressureSize: false,
+        pressureOpacity: true,
+        pressureCurve: 'heavy' as const,
+        tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' as const },
+        ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
+        activePreset: 'flat',
+        isPresetModified: true,
+        cropAspectRatio: '16:9',
+        fontFamily: 'serif',
+        fontSize: 48,
+        fontBold: true,
+        fontItalic: true,
+        eyedropperSampleAll: false,
+      },
+      canvasWidth: 100,
+      canvasHeight: 100,
+      layers: [
+        { id: 'real-layer', name: 'Layer 1', visible: true, opacity: 1, imageBlobRef: 'ref1' },
+      ],
+      activeLayerId: 'real-layer',
+      layersPanelOpen: true,
+      historyIndex: -1,
+    };
+
+    (app as any)._backend = {
+      state: { get: vi.fn(async () => fakeRecord) },
+      history: { getEntries: vi.fn(async () => []) },
+      blobs: { get: vi.fn(async () => new Blob([new Uint8Array(4)], { type: 'image/png' })) },
+    };
+
+    const serMod = await import('../src/utils/storage-serialization.js');
+    const deserSpy = vi.spyOn(serMod, 'deserializeLayer').mockResolvedValue(makeLayer(100, 100, {
+      id: 'real-layer',
+      name: 'Layer 1',
+    }));
+
+    await (app as any)._loadProject('test-project');
+
+    expect((app as any)._state.brush).toMatchObject({
+      size: 18,
+      opacity: 0.4,
+      flow: 0.6,
+      hardness: 0.3,
+      spacing: 0.2,
+      pressureSize: false,
+      pressureOpacity: true,
+      pressureCurve: 'heavy',
+      tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' },
+      ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
+    });
+    expect((app as any)._state.activePreset).toBe('flat');
+    expect((app as any)._state.isPresetModified).toBe(true);
+    expect((app as any)._state.cropAspectRatio).toBe('16:9');
+    expect((app as any)._state.fontFamily).toBe('serif');
+    expect((app as any)._state.fontSize).toBe(48);
+    expect((app as any)._state.fontBold).toBe(true);
+    expect((app as any)._state.fontItalic).toBe(true);
+    expect((app as any)._state.eyedropperSampleAll).toBe(false);
+
+    deserSpy.mockRestore();
+  });
+
   it('snapshots document dimensions before async serialization in _save', async () => {
     const app = new DrawingApp();
 
-    const layerCanvas = document.createElement('canvas');
-    layerCanvas.width = 200;
-    layerCanvas.height = 150;
+    const layer = makeLayer(200, 150);
 
     (app as any)._currentProject = { id: 'p1', name: 'P', createdAt: 0, updatedAt: 0, thumbnail: null };
-    (app as any)._state = {
+    (app as any)._state = makeState({
       activeTool: 'pencil',
-      strokeColor: '#000000',
-      fillColor: '#ff0000',
-      useFill: false,
-      brushSize: 4,
-      stampImage: null,
-      layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas }],
-      activeLayerId: 'l1',
-      layersPanelOpen: true,
+      layers: [layer],
+      activeLayerId: layer.id,
       documentWidth: 200,
       documentHeight: 150,
-    };
+    });
     (app as any)._dirty = true;
     (app as any)._dirtyVersion = 1;
 
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        getFloatSnapshot: () => null,
-        getViewport: () => ({ zoom: 1, panX: 0, panY: 0 }),
-        getHistory: () => [],
-        getHistoryIndex: () => -1,
-        getHistoryVersion: () => 0,
-        mainCanvas: null,
-        clearSelection: vi.fn(),
-      },
+      value: makeAppCanvasStub(),
     });
 
     // Intercept backend.state.save to capture the stateRecord
@@ -521,45 +576,122 @@ describe('DrawingApp', () => {
     serSpy.mockRestore();
   });
 
+  it('persists advanced brush, crop, and text settings during save', async () => {
+    const app = new DrawingApp();
+    const layer = makeLayer(200, 150);
+
+    (app as any)._currentProject = { id: 'p1', name: 'P', createdAt: 0, updatedAt: 0, thumbnail: null };
+    (app as any)._state = makeState({
+      activeTool: 'pencil',
+      strokeColor: '#102030',
+      fillColor: '#405060',
+      useFill: true,
+      brush: {
+        size: 18,
+        opacity: 0.4,
+        flow: 0.6,
+        hardness: 0.3,
+        spacing: 0.2,
+        pressureSize: false,
+        pressureOpacity: true,
+        pressureCurve: 'heavy',
+        tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' },
+        ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
+      },
+      activePreset: 'flat',
+      isPresetModified: true,
+      layers: [layer],
+      activeLayerId: layer.id,
+      documentWidth: 200,
+      documentHeight: 150,
+      cropAspectRatio: '16:9',
+      fontFamily: 'serif',
+      fontSize: 48,
+      fontBold: true,
+      fontItalic: true,
+      eyedropperSampleAll: false,
+    });
+    (app as any)._dirty = true;
+    (app as any)._dirtyVersion = 1;
+
+    Object.defineProperty(app, 'canvas', {
+      configurable: true,
+      value: makeAppCanvasStub(),
+    });
+
+    let savedRecord: any = null;
+    const fakeRef = 'blob-ref-1';
+    (app as any)._backend = {
+      blobs: { put: vi.fn(async () => fakeRef), deleteMany: vi.fn(async () => {}) },
+      state: {
+        get: vi.fn(async () => null),
+        save: vi.fn(async (record: any) => { savedRecord = record; }),
+      },
+      history: { replaceAll: vi.fn(async () => {}), putEntries: vi.fn(async () => {}) },
+      projects: {
+        get: vi.fn(async () => ({ id: 'p1', name: 'P', createdAt: 0, updatedAt: 0, thumbnailRef: null })),
+        update: vi.fn(async () => ({ id: 'p1', name: 'P', createdAt: 0, updatedAt: 0, thumbnailRef: null })),
+        list: vi.fn(async () => []),
+      },
+    };
+
+    const serMod = await import('../src/utils/storage-serialization.js');
+    const serSpy = vi.spyOn(serMod, 'serializeLayerFromImageData').mockResolvedValue(
+      { id: layer.id, name: layer.name, visible: true, opacity: 1, imageBlobRef: fakeRef as any },
+    );
+
+    await (app as any)._save(true);
+
+    expect(savedRecord.toolSettings).toMatchObject({
+      activeTool: 'pencil',
+      strokeColor: '#102030',
+      fillColor: '#405060',
+      useFill: true,
+      brushSize: 18,
+      opacity: 0.4,
+      flow: 0.6,
+      hardness: 0.3,
+      spacing: 0.2,
+      pressureSize: false,
+      pressureOpacity: true,
+      pressureCurve: 'heavy',
+      tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' },
+      ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
+      activePreset: 'flat',
+      isPresetModified: true,
+      cropAspectRatio: '16:9',
+      fontFamily: 'serif',
+      fontSize: 48,
+      fontBold: true,
+      fontItalic: true,
+      eyedropperSampleAll: false,
+    });
+
+    serSpy.mockRestore();
+  });
+
   it('composites active float into layer snapshot during save', () => {
     const app = new DrawingApp();
 
-    const layerCanvas = document.createElement('canvas');
-    layerCanvas.width = 100;
-    layerCanvas.height = 100;
+    const layer = makeLayer(100, 100);
 
     // Float tempCanvas — the content lifted from the selection
     const floatCanvas = document.createElement('canvas');
     floatCanvas.width = 20;
     floatCanvas.height = 20;
 
-    const layer = { id: 'l1', name: 'Layer 1', visible: true, opacity: 1, canvas: layerCanvas };
-
-    (app as any)._state = {
+    (app as any)._state = makeState({
       activeTool: 'select',
-      strokeColor: '#000000',
-      fillColor: '#ff0000',
-      useFill: false,
-      brushSize: 4,
-      stampImage: null,
       layers: [layer],
-      activeLayerId: 'l1',
-      layersPanelOpen: true,
-      documentWidth: 100,
-      documentHeight: 100,
-    };
+      activeLayerId: layer.id,
+    });
 
     // Mock canvas with an active float
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        getFloatSnapshot: () => ({ layerId: 'l1', tempCanvas: floatCanvas, x: 10, y: 15 }),
-        getHistory: () => [],
-        getHistoryIndex: () => -1,
-        getHistoryVersion: () => 0,
-        mainCanvas: null,
-        clearSelection: vi.fn(),
-      },
+      value: makeAppCanvasStub({
+        getFloatSnapshot: () => ({ layerId: layer.id, tempCanvas: floatCanvas, x: 10, y: 15 }),
+      }),
     });
 
     // Track drawImage calls on any temp canvas created during the snapshot.
@@ -603,7 +735,7 @@ describe('DrawingApp', () => {
     expect(floatDraw![2]).toBe(15); // y
 
     // The live layer canvas must NOT have had drawImage called on it
-    const liveCtx = layerCanvas.getContext('2d')!;
+    const liveCtx = layer.canvas.getContext('2d')!;
     expect(liveCtx.drawImage).not.toHaveBeenCalled();
   });
 });

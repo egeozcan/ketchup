@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { DrawingApp } from '../src/components/drawing-app.ts';
 import type { HistoryEntry, LayerSnapshot } from '../src/types.ts';
+import { makeAppCanvasStub } from './helpers.ts';
 
 /**
  * Bug: Undoing deletion of a NON-active layer incorrectly switches the
@@ -43,12 +44,11 @@ describe('Undo delete of non-active layer preserves active layer', () => {
     const historyEntries: HistoryEntry[] = [];
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        clearSelection: vi.fn(),
+      value: makeAppCanvasStub({
         pushLayerOperation: vi.fn((entry: HistoryEntry) => {
           historyEntries.push(entry);
         }),
-      },
+      }),
     });
 
     // Add two more layers: [A, B, C].

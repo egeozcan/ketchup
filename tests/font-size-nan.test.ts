@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { DrawingApp } from '../src/components/drawing-app.ts';
+import { makeAppCanvasStub } from './helpers.ts';
 
 /**
  * Bug: setFontSize does not guard against NaN input.
@@ -49,11 +50,7 @@ describe('setFontSize NaN passthrough', () => {
     // Stub canvas to prevent errors from missing DOM element
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        clearSelection: vi.fn(),
-        pushLayerOperation: vi.fn(),
-        cancelCrop: vi.fn(),
-      },
+      value: makeAppCanvasStub(),
     });
 
     const ctx = (app as any)._buildContextValue();
@@ -77,11 +74,7 @@ describe('setFontSize NaN passthrough', () => {
 
     Object.defineProperty(app, 'canvas', {
       configurable: true,
-      value: {
-        clearSelection: vi.fn(),
-        pushLayerOperation: vi.fn(),
-        cancelCrop: vi.fn(),
-      },
+      value: makeAppCanvasStub(),
     });
 
     const ctx = (app as any)._buildContextValue();

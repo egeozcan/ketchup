@@ -45,8 +45,8 @@ describe('clearSelection resets _selectionDrawing', () => {
     (canvas as any)._selectionDrawing = true;
     (canvas as any)._startPoint = { x: 50, y: 50 };
 
-    // No float exists — _commitFloat inside clearSelection returns early.
-    expect((canvas as any)._float).toBeNull();
+    // No transform exists before the tool switch.
+    expect((canvas as any)._transformManager).toBeNull();
 
     // Call clearSelection() — this is what happens when the user switches tools.
     canvas.clearSelection();
