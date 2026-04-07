@@ -228,6 +228,7 @@ export class AppToolbar extends LitElement {
   `;
 
   @state() private _popoverGroup: number | null = null;
+  @state() private _isFullscreen = false;
   private _lastToolPerGroup = new Map<number, ToolType>();
 
   private _ctx = new ContextConsumer(this, {
@@ -237,6 +238,29 @@ export class AppToolbar extends LitElement {
 
   private get ctx(): DrawingContextValue {
     return this._ctx.value!;
+  }
+
+  private _onFullscreenChange = () => {
+    this._isFullscreen = !!document.fullscreenElement;
+  };
+
+  private _toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      document.documentElement.requestFullscreen();
+    }
+    this._closePopover();
+  };
+
+  override connectedCallback() {
+    super.connectedCallback();
+    document.addEventListener('fullscreenchange', this._onFullscreenChange);
+  }
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    document.removeEventListener('fullscreenchange', this._onFullscreenChange);
   }
 
   override willUpdate() {
@@ -417,6 +441,14 @@ export class AppToolbar extends LitElement {
         <div class="popover-divider"></div>
         <button class="menu-btn" title="Save" @click=${() => { this.ctx.saveCanvas(); this._closePopover(); }}>${actionIcons.save} Save</button>
         <button class="menu-btn" title="Clear canvas" @click=${() => { this.ctx.clearCanvas(); this._closePopover(); }}>${actionIcons.clear} Clear</button>
+        <div class="popover-divider"></div>
+        <button class="menu-btn" @click=${this._toggleFullscreen}>
+          ${this._isFullscreen
+            ? html`<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 2v3H2M14 5h-3V2M11 14v-3h3M2 11h3v3"/></svg>`
+            : html`<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>`
+          }
+          ${this._isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+        </button>
       `;
     }
 
