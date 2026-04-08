@@ -64,6 +64,7 @@ export function makeState(
     fontBold: overrides.fontBold ?? false,
     fontItalic: overrides.fontItalic ?? false,
     eyedropperSampleAll: overrides.eyedropperSampleAll ?? true,
+    childMode: overrides.childMode ?? false,
   };
 }
 

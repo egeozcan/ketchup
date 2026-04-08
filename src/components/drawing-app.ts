@@ -177,6 +177,7 @@ export class DrawingApp extends LitElement {
       fontBold: false,
       fontItalic: false,
       eyedropperSampleAll: true,
+      childMode: false,
     };
     this._provider = new ContextProvider(this, {
       context: drawingContext,
@@ -334,6 +335,7 @@ export class DrawingApp extends LitElement {
             fontBold: this._state.fontBold,
             fontItalic: this._state.fontItalic,
             eyedropperSampleAll: this._state.eyedropperSampleAll,
+            childMode: this._state.childMode,
           };
           const snapshotWidth = this._state.documentWidth;
           const snapshotHeight = this._state.documentHeight;
@@ -739,6 +741,7 @@ export class DrawingApp extends LitElement {
       fontBold: false,
       fontItalic: false,
       eyedropperSampleAll: true,
+      childMode: false,
     };
     await this.updateComplete;
     this.canvas?.setHistory([], -1);
@@ -828,6 +831,7 @@ export class DrawingApp extends LitElement {
         fontBold: ts.fontBold ?? false,
         fontItalic: ts.fontItalic ?? false,
         eyedropperSampleAll: ts.eyedropperSampleAll ?? true,
+        childMode: ts.childMode ?? false,
       };
       await this.updateComplete;
       this.canvas?.setHistory(history, record.historyIndex ?? (history.length - 1));
@@ -1212,6 +1216,17 @@ export class DrawingApp extends LitElement {
       transformActive: this.canvas?.isTransformActive() ?? false,
       getTransformValues: () => this.canvas?.getTransformValues() ?? null,
       setTransformValue: (key: string, value: number | boolean) => this.canvas?.setTransformValue(key, value),
+      setChildMode: (on: boolean) => {
+        this._state = { ...this._state, childMode: on };
+        // Switch to pencil when entering child mode if current tool isn't child-friendly
+        if (on) {
+          const childTools = new Set(['pencil', 'eraser', 'line', 'rectangle', 'circle', 'triangle', 'fill']);
+          if (!childTools.has(this._state.activeTool)) {
+            this._state = { ...this._state, activeTool: 'pencil' };
+          }
+        }
+        this._markDirty();
+      },
     };
   }
 
@@ -1482,7 +1497,7 @@ export class DrawingApp extends LitElement {
           </div>
         ` : ''}
       </div>
-      ${this._isMobile ? html`<layers-panel @commit-opacity=${this._onCommitOpacity}></layers-panel>` : ''}
+      ${this._isMobile && !this._state.childMode ? html`<layers-panel @commit-opacity=${this._onCommitOpacity}></layers-panel>` : ''}
     `;
   }
 }

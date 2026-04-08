@@ -13,6 +13,23 @@ const toolGroups: ToolType[][] = [
   ['fill', 'stamp', 'text', 'eyedropper'],
 ];
 
+/** Tools available in child mode */
+const childTools: ToolType[] = ['pencil', 'eraser', 'rectangle', 'circle', 'triangle', 'fill'];
+
+/** Bright, kid-friendly color palette */
+const childColors = [
+  '#000000', '#ffffff', '#ff3b30', '#ff9500', '#ffcc00',
+  '#34c759', '#00c7be', '#007aff', '#5856d6', '#af52de',
+  '#ff2d55', '#a2845e',
+];
+
+/** Size presets for child mode */
+const childSizes = [
+  { label: 'S', value: 4 },
+  { label: 'M', value: 16 },
+  { label: 'L', value: 40 },
+];
+
 @customElement('app-toolbar')
 export class AppToolbar extends LitElement {
   static override styles = css`
@@ -101,6 +118,13 @@ export class AppToolbar extends LitElement {
       overflow: visible;
       border-top: 1px solid #444;
       touch-action: manipulation;
+    }
+
+    :host([mobile][child-mode]) {
+      height: auto;
+      padding: 8px 8px;
+      padding-bottom: calc(8px + env(safe-area-inset-bottom));
+      justify-content: center;
     }
 
     :host([mobile]) .group {
@@ -225,6 +249,119 @@ export class AppToolbar extends LitElement {
     .popover button.menu-btn svg {
       flex-shrink: 0;
     }
+
+    /* ── Child Mode ───────────────────────────── */
+    .child-bar {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      gap: 6px;
+    }
+
+    .child-colors {
+      display: flex;
+      justify-content: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .child-color-btn {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      border: 3px solid transparent;
+      padding: 0;
+      cursor: pointer;
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
+
+    .child-color-btn:hover {
+      transform: scale(1.15);
+    }
+
+    .child-color-btn.active {
+      border-color: #fff;
+      box-shadow: 0 0 0 2px #5b8cf7;
+      transform: scale(1.15);
+    }
+
+    .child-tools-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+
+    .child-tool-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 48px;
+      height: 48px;
+      border: none;
+      border-radius: 14px;
+      background: #3a3a3a;
+      color: #ccc;
+      cursor: pointer;
+      padding: 0;
+      transition: all 0.15s ease;
+    }
+
+    .child-tool-btn svg {
+      width: 22px;
+      height: 22px;
+    }
+
+    .child-tool-btn:hover {
+      background: #555;
+      color: #fff;
+    }
+
+    .child-tool-btn.active {
+      background: #5b8cf7;
+      color: #fff;
+    }
+
+    .child-tool-btn:disabled {
+      opacity: 0.3;
+      cursor: default;
+    }
+
+    .child-size-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 48px;
+      border: none;
+      border-radius: 14px;
+      background: #3a3a3a;
+      color: #ccc;
+      font-size: 0.85rem;
+      font-weight: 700;
+      cursor: pointer;
+      padding: 0;
+      transition: all 0.15s ease;
+    }
+
+    .child-size-btn:hover {
+      background: #555;
+      color: #fff;
+    }
+
+    .child-size-btn.active {
+      background: #ff9500;
+      color: #fff;
+    }
+
+    .child-sep {
+      width: 1px;
+      height: 32px;
+      background: #555;
+      margin: 0 2px;
+      flex-shrink: 0;
+    }
   `;
 
   @state() private _popoverGroup: number | null = null;
@@ -265,6 +402,7 @@ export class AppToolbar extends LitElement {
 
   override willUpdate() {
     this.toggleAttribute('mobile', this.ctx?.isMobile ?? false);
+    this.toggleAttribute('child-mode', this.ctx?.state?.childMode ?? false);
     const activeTool = this.ctx?.state?.activeTool;
     if (activeTool) {
       const groupIndex = toolGroups.findIndex(g => g.includes(activeTool));
@@ -335,7 +473,101 @@ export class AppToolbar extends LitElement {
     `;
   }
 
+  private _closestChildSize(brushSize: number): number {
+    let best = childSizes[0].value;
+    let bestDist = Math.abs(brushSize - best);
+    for (const s of childSizes) {
+      const d = Math.abs(brushSize - s.value);
+      if (d < bestDist) { bestDist = d; best = s.value; }
+    }
+    return best;
+  }
+
+  private _renderChildMode(activeTool: ToolType) {
+    const strokeColor = this.ctx.state.strokeColor;
+    const brushSize = this.ctx.state.brush.size;
+    const activeSize = this._closestChildSize(brushSize);
+
+    return html`
+      <div class="child-bar">
+        <div class="child-colors">
+          ${childColors.map(c => html`
+            <button
+              class="child-color-btn ${strokeColor === c ? 'active' : ''}"
+              style="background:${c}${c === '#ffffff' ? ';box-shadow:inset 0 0 0 1px #666' : ''}"
+              @click=${() => this.ctx.setStrokeColor(c)}
+            ></button>
+          `)}
+          <input
+            type="color"
+            .value=${strokeColor}
+            @input=${(e: Event) => this.ctx.setStrokeColor((e.target as HTMLInputElement).value)}
+            style="width:36px;height:36px;border:none;border-radius:50%;padding:0;cursor:pointer;background:none;"
+            title="Pick color"
+          />
+        </div>
+
+        <div class="child-tools-row">
+          <button
+            class="child-tool-btn"
+            title="Undo"
+            ?disabled=${!this.ctx.canUndo}
+            @click=${() => this.ctx.undo()}
+          >${actionIcons.undo}</button>
+          <button
+            class="child-tool-btn"
+            title="Redo"
+            ?disabled=${!this.ctx.canRedo}
+            @click=${() => this.ctx.redo()}
+          >${actionIcons.redo}</button>
+
+          <div class="child-sep"></div>
+
+          ${childTools.map(tool => html`
+            <button
+              class="child-tool-btn ${activeTool === tool ? 'active' : ''}"
+              title=${toolLabels[tool]}
+              @click=${() => this._selectTool(tool)}
+            >${toolIcons[tool]}</button>
+          `)}
+
+          <div class="child-sep"></div>
+
+          ${childSizes.map(s => html`
+            <button
+              class="child-size-btn ${activeSize === s.value ? 'active' : ''}"
+              title="${s.label} brush"
+              @click=${() => this.ctx.setBrushSize(s.value)}
+            >${s.label}</button>
+          `)}
+
+          <div class="child-sep"></div>
+
+          <button
+            class="child-tool-btn"
+            title="Save"
+            @click=${() => this.ctx.saveCanvas()}
+          >${actionIcons.save}</button>
+          <button
+            class="child-tool-btn"
+            title="Clear canvas"
+            @click=${() => this.ctx.clearCanvas()}
+          >${actionIcons.clear}</button>
+          <button
+            class="child-tool-btn"
+            title="Exit Child Mode"
+            @click=${() => this.ctx.setChildMode(false)}
+          >${html`<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>`}</button>
+        </div>
+      </div>
+    `;
+  }
+
   private _renderMobile(activeTool: ToolType) {
+    if (this.ctx.state.childMode) {
+      return this._renderChildMode(activeTool);
+    }
+
     return html`
       <!-- Undo/Redo at left -->
       <button
@@ -448,6 +680,11 @@ export class AppToolbar extends LitElement {
             : html`<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>`
           }
           ${this._isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+        </button>
+        <div class="popover-divider"></div>
+        <button class="menu-btn" @click=${() => { this.ctx.setChildMode(true); this._closePopover(); }}>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+          Child Mode
         </button>
       `;
     }
