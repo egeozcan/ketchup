@@ -61,6 +61,7 @@ export interface DrawingContextValue {
   getTransformValues: () => { x: number; y: number; width: number; height: number; rotation: number; skewX: number; skewY: number; flipH: boolean; flipV: boolean } | null;
   /** Set a transform value from the numeric panel */
   setTransformValue: (key: string, value: number | boolean) => void;
+  setChildMode: (on: boolean) => void;
 }
 
 export const drawingContext = createContext<DrawingContextValue>('drawing-context');

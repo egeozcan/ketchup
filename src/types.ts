@@ -70,6 +70,7 @@ export interface DrawingState {
   fontBold: boolean;
   fontItalic: boolean;
   eyedropperSampleAll: boolean;
+  childMode: boolean;
 }
 
 export type HistoryEntry =
