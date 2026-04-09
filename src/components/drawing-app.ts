@@ -13,7 +13,7 @@ import {
   serializeLayerFromImageData, deserializeLayer,
   serializeHistoryEntry, deserializeHistoryEntry,
 } from '../utils/storage-serialization.js';
-import { toolForShortcut } from './tool-icons.js';
+import { toolForShortcut, CHILD_TOOL_SET } from './tool-icons.js';
 import './app-toolbar.js';
 import './tool-settings.js';
 import './drawing-canvas.js';
@@ -1219,11 +1219,8 @@ export class DrawingApp extends LitElement {
       setChildMode: (on: boolean) => {
         this._state = { ...this._state, childMode: on };
         // Switch to pencil when entering child mode if current tool isn't child-friendly
-        if (on) {
-          const childTools = new Set(['pencil', 'eraser', 'line', 'rectangle', 'circle', 'triangle', 'fill']);
-          if (!childTools.has(this._state.activeTool)) {
-            this._state = { ...this._state, activeTool: 'pencil' };
-          }
+        if (on && !CHILD_TOOL_SET.has(this._state.activeTool)) {
+          this._state = { ...this._state, activeTool: 'pencil' };
         }
         this._markDirty();
       },
@@ -1378,6 +1375,10 @@ export class DrawingApp extends LitElement {
         const w = entry.contentRect.width;
         if (this._isMobile && w > 800) {
           this._isMobile = false;
+          // Child mode is mobile-only; disable when switching to desktop
+          if (this._state.childMode) {
+            this._state = { ...this._state, childMode: false };
+          }
         } else if (!this._isMobile && w < 768) {
           this._isMobile = true;
         }

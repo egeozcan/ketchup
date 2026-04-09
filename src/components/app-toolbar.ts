@@ -3,7 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { ToolType } from '../types.js';
-import { toolIcons, toolLabels, toolShortcuts, actionIcons } from './tool-icons.js';
+import { toolIcons, toolLabels, toolShortcuts, actionIcons, CHILD_TOOLS } from './tool-icons.js';
 import './tool-settings.js';
 
 const toolGroups: ToolType[][] = [
@@ -13,14 +13,20 @@ const toolGroups: ToolType[][] = [
   ['fill', 'stamp', 'text', 'eyedropper'],
 ];
 
-/** Tools available in child mode */
-const childTools: ToolType[] = ['pencil', 'eraser', 'rectangle', 'circle', 'triangle', 'fill'];
-
-/** Bright, kid-friendly color palette */
-const childColors = [
-  '#000000', '#ffffff', '#ff3b30', '#ff9500', '#ffcc00',
-  '#34c759', '#00c7be', '#007aff', '#5856d6', '#af52de',
-  '#ff2d55', '#a2845e',
+/** Bright, kid-friendly color palette with accessible names */
+const childColors: { hex: string; name: string }[] = [
+  { hex: '#000000', name: 'Black' },
+  { hex: '#ffffff', name: 'White' },
+  { hex: '#ff3b30', name: 'Red' },
+  { hex: '#ff9500', name: 'Orange' },
+  { hex: '#ffcc00', name: 'Yellow' },
+  { hex: '#34c759', name: 'Green' },
+  { hex: '#00c7be', name: 'Teal' },
+  { hex: '#007aff', name: 'Blue' },
+  { hex: '#5856d6', name: 'Indigo' },
+  { hex: '#af52de', name: 'Purple' },
+  { hex: '#ff2d55', name: 'Pink' },
+  { hex: '#a2845e', name: 'Brown' },
 ];
 
 /** Size presets for child mode */
@@ -362,6 +368,16 @@ export class AppToolbar extends LitElement {
       margin: 0 2px;
       flex-shrink: 0;
     }
+
+    .child-color-picker {
+      width: 36px;
+      height: 36px;
+      border: none;
+      border-radius: 50%;
+      padding: 0;
+      cursor: pointer;
+      background: none;
+    }
   `;
 
   @state() private _popoverGroup: number | null = null;
@@ -483,6 +499,12 @@ export class AppToolbar extends LitElement {
     return best;
   }
 
+  private _confirmClearCanvas() {
+    if (confirm('Clear the whole drawing?')) {
+      this.ctx.clearCanvas();
+    }
+  }
+
   private _renderChildMode(activeTool: ToolType) {
     const strokeColor = this.ctx.state.strokeColor;
     const brushSize = this.ctx.state.brush.size;
@@ -493,16 +515,17 @@ export class AppToolbar extends LitElement {
         <div class="child-colors">
           ${childColors.map(c => html`
             <button
-              class="child-color-btn ${strokeColor === c ? 'active' : ''}"
-              style="background:${c}${c === '#ffffff' ? ';box-shadow:inset 0 0 0 1px #666' : ''}"
-              @click=${() => this.ctx.setStrokeColor(c)}
+              class="child-color-btn ${strokeColor === c.hex ? 'active' : ''}"
+              style="background:${c.hex}${c.hex === '#ffffff' ? ';box-shadow:inset 0 0 0 1px #666' : ''}"
+              aria-label=${c.name}
+              @click=${() => this.ctx.setStrokeColor(c.hex)}
             ></button>
           `)}
           <input
             type="color"
+            class="child-color-picker"
             .value=${strokeColor}
             @input=${(e: Event) => this.ctx.setStrokeColor((e.target as HTMLInputElement).value)}
-            style="width:36px;height:36px;border:none;border-radius:50%;padding:0;cursor:pointer;background:none;"
             title="Pick color"
           />
         </div>
@@ -523,7 +546,7 @@ export class AppToolbar extends LitElement {
 
           <div class="child-sep"></div>
 
-          ${childTools.map(tool => html`
+          ${CHILD_TOOLS.map(tool => html`
             <button
               class="child-tool-btn ${activeTool === tool ? 'active' : ''}"
               title=${toolLabels[tool]}
@@ -551,13 +574,13 @@ export class AppToolbar extends LitElement {
           <button
             class="child-tool-btn"
             title="Clear canvas"
-            @click=${() => this.ctx.clearCanvas()}
+            @click=${() => this._confirmClearCanvas()}
           >${actionIcons.clear}</button>
           <button
             class="child-tool-btn"
             title="Exit Child Mode"
             @click=${() => this.ctx.setChildMode(false)}
-          >${html`<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>`}</button>
+          >${actionIcons.exitChildMode}</button>
         </div>
       </div>
     `;
