@@ -8,6 +8,7 @@ import { StampStrokeEngine } from '../engine/stamp-stroke.js';
 import { blendModeToCompositeOp } from '../engine/types.js';
 import type { BrushDescriptor } from '../engine/types.js';
 import { tintAlphaMask } from '../engine/canvas-pool.js';
+import { createThrottledScheduler } from '../utils/raf-throttle.js';
 import { getDefaultDescriptor } from '../engine/brush-presets.js';
 import { floodFill } from '../tools/fill.js';
 import { drawSelectionRect } from '../tools/select.js';
@@ -103,6 +104,12 @@ export class DrawingCanvas extends LitElement {
   private _tintPreviewCanvas: HTMLCanvasElement | null = null;
   private _strokeTintCanvas: HTMLCanvasElement | null = null;
   private _samplingDirty = true;
+  /** Coalesces gesture-driven composites into at most one per animation frame. */
+  private _compositeScheduler = createThrottledScheduler(() => this.composite());
+  /** Cached mainCanvas bounding rect — avoids a forced layout on every pointer move. */
+  private _canvasRect: DOMRect | null = null;
+  /** Set when a new stroke starts so the stroke tint scratch canvas is fully cleared once. */
+  private _strokeTintNeedsClear = true;
   private _samplingBuffer: HTMLCanvasElement | null = null;
   private _altSampling = false;
 
@@ -145,6 +152,14 @@ export class DrawingCanvas extends LitElement {
   public getWidth() { return this._docWidth; }
   public getHeight() { return this._docHeight; }
   public invalidateSamplingBuffer() { this._samplingDirty = true; }
+
+  /**
+   * Request a composite on the next animation frame. Use this for anything driven
+   * by a continuous gesture (drawing, dragging, panning, zooming) so a burst of
+   * pointer/wheel events produces one redraw per frame instead of one per event.
+   * Discrete operations (undo, layer edits, commits) should call composite() directly.
+   */
+  public scheduleComposite() { this._compositeScheduler.schedule(); }
 
   // --- Transform mode ---
 
@@ -299,6 +314,7 @@ export class DrawingCanvas extends LitElement {
 
   public composite() {
     if (!this.mainCanvas) return;
+    this._compositeScheduler.cancel();
     const displayCtx = this.mainCanvas.getContext('2d')!;
     const vw = this._vw;
     const vh = this._vh;
@@ -332,13 +348,32 @@ export class DrawingCanvas extends LitElement {
       if (hasBlend) {
         displayCtx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
       }
-      // Show in-progress stroke preview merged with the layer content.
-      // Both eraser and paint previews are composited onto a temp canvas first,
-      // then drawn to the display — this avoids destination-out punching through
-      // the checkerboard/workspace on the display canvas.
-      if (this._drawing && layer.id === activeLayerId) {
-        const preview = this._engine.getStrokePreview();
-        if (preview) {
+      // Show the in-progress stroke on top of the layer it is being drawn into.
+      // Only the region the stroke has actually touched (preview.bounds) is
+      // reprocessed each frame — a long stroke still repaints one rect, not the page.
+      const preview = this._drawing && layer.id === activeLayerId
+        ? this._engine.getStrokePreview()
+        : null;
+      const b = preview?.bounds ?? null;
+
+      if (preview && b) {
+        // Source-over is associative, so a plain stroke on an opaque, normally
+        // blended layer can go straight to the display. Erasing cannot: its
+        // destination-out would punch through the checkerboard and workspace
+        // behind the document, so it merges onto a temp copy of the layer first.
+        // Partial layer opacity and blend modes also have to merge, because the
+        // stroke's own opacity must be applied before the layer's is.
+        const canDrawDirect = !preview.eraser && layer.opacity >= 1 && layer.blendMode === 'normal';
+
+        if (canDrawDirect) {
+          displayCtx.drawImage(layer.canvas, 0, 0);
+          const strokeSrc = preview.color === null
+            ? (preview.canvas as HTMLCanvasElement)
+            : this._tintStrokeRegion(preview.canvas as HTMLCanvasElement, b, preview.color);
+          displayCtx.globalAlpha = preview.opacity;
+          displayCtx.drawImage(strokeSrc, b.x, b.y, b.w, b.h, b.x, b.y, b.w, b.h);
+          displayCtx.globalAlpha = layer.opacity;
+        } else {
           if (!this._tintPreviewCanvas || this._tintPreviewCanvas.width !== this._docWidth || this._tintPreviewCanvas.height !== this._docHeight) {
             this._tintPreviewCanvas = document.createElement('canvas');
             this._tintPreviewCanvas.width = this._docWidth;
@@ -351,35 +386,17 @@ export class DrawingCanvas extends LitElement {
           // Start with the layer content
           tintCtx.drawImage(layer.canvas, 0, 0);
 
+          tintCtx.globalAlpha = preview.opacity;
           if (preview.eraser) {
             // Apply eraser: destination-out on the layer copy
-            tintCtx.globalAlpha = preview.opacity;
             tintCtx.globalCompositeOperation = 'destination-out';
-            tintCtx.drawImage(preview.canvas as HTMLCanvasElement, 0, 0);
+            tintCtx.drawImage(preview.canvas as HTMLCanvasElement, b.x, b.y, b.w, b.h, b.x, b.y, b.w, b.h);
           } else if (preview.color === null) {
             // Color mode / wet brush — preview already has correct colors
-            tintCtx.globalAlpha = preview.opacity;
-            tintCtx.globalCompositeOperation = 'source-over';
-            tintCtx.drawImage(preview.canvas as HTMLCanvasElement, 0, 0);
+            tintCtx.drawImage(preview.canvas as HTMLCanvasElement, b.x, b.y, b.w, b.h, b.x, b.y, b.w, b.h);
           } else {
-            // Tint the stroke buffer, then overlay on the layer copy
-            // Use a second temp canvas: copy stroke mask, tint it, composite
-            const w = this._docWidth;
-            const h = this._docHeight;
-            if (!this._strokeTintCanvas || this._strokeTintCanvas.width !== w || this._strokeTintCanvas.height !== h) {
-              this._strokeTintCanvas = document.createElement('canvas');
-              this._strokeTintCanvas.width = w;
-              this._strokeTintCanvas.height = h;
-            }
-            const strokeCtx = this._strokeTintCanvas.getContext('2d')!;
-            strokeCtx.globalCompositeOperation = 'source-over';
-            strokeCtx.clearRect(0, 0, w, h);
-            strokeCtx.drawImage(preview.canvas as HTMLCanvasElement, 0, 0);
-            tintAlphaMask(strokeCtx, preview.color, w, h);
-
-            tintCtx.globalAlpha = preview.opacity;
-            tintCtx.globalCompositeOperation = 'source-over';
-            tintCtx.drawImage(this._strokeTintCanvas!, 0, 0);
+            const tinted = this._tintStrokeRegion(preview.canvas as HTMLCanvasElement, b, preview.color);
+            tintCtx.drawImage(tinted, b.x, b.y, b.w, b.h, b.x, b.y, b.w, b.h);
           }
 
           tintCtx.globalAlpha = 1;
@@ -387,8 +404,6 @@ export class DrawingCanvas extends LitElement {
 
           // Draw the combined layer+stroke preview instead of the raw layer
           displayCtx.drawImage(this._tintPreviewCanvas, 0, 0);
-        } else {
-          displayCtx.drawImage(layer.canvas, 0, 0);
         }
       } else {
         displayCtx.drawImage(layer.canvas, 0, 0);
@@ -416,6 +431,45 @@ export class DrawingCanvas extends LitElement {
       detail: null,
     }));
     this.invalidateSamplingBuffer();
+  }
+
+  /**
+   * Copy `bounds` of an alpha-mask stroke buffer into a scratch canvas and tint it
+   * with `color`, returning the scratch canvas. Work is clipped to `bounds`, and the
+   * caller is expected to read back only that region: outside it the scratch canvas
+   * is transparent, cleared once when the stroke began.
+   */
+  private _tintStrokeRegion(
+    source: HTMLCanvasElement,
+    bounds: { x: number; y: number; w: number; h: number },
+    color: string,
+  ): HTMLCanvasElement {
+    const w = this._docWidth;
+    const h = this._docHeight;
+    if (!this._strokeTintCanvas || this._strokeTintCanvas.width !== w || this._strokeTintCanvas.height !== h) {
+      this._strokeTintCanvas = document.createElement('canvas');
+      this._strokeTintCanvas.width = w;
+      this._strokeTintCanvas.height = h;
+      this._strokeTintNeedsClear = false; // a fresh canvas is already blank
+    }
+    const ctx = this._strokeTintCanvas.getContext('2d')!;
+    if (this._strokeTintNeedsClear) {
+      ctx.clearRect(0, 0, w, h);
+      this._strokeTintNeedsClear = false;
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(bounds.x, bounds.y, bounds.w, bounds.h);
+    ctx.clip();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.clearRect(bounds.x, bounds.y, bounds.w, bounds.h);
+    ctx.drawImage(source, bounds.x, bounds.y, bounds.w, bounds.h, bounds.x, bounds.y, bounds.w, bounds.h);
+    // Clipped so source-in only erases inside the region we just rewrote
+    tintAlphaMask(ctx, color, w, h);
+    ctx.restore();
+
+    return this._strokeTintCanvas;
   }
 
   private _getCheckerboardPattern(ctx: CanvasRenderingContext2D): CanvasPattern {
@@ -481,7 +535,10 @@ export class DrawingCanvas extends LitElement {
     this._panX = Math.round((vw - this._docWidth * this._zoom) / 2);
     this._panY = Math.round((vh - this._docHeight * this._zoom) / 2);
 
-    this._resizeObserver = new ResizeObserver(() => this._resizeToFit());
+    this._resizeObserver = new ResizeObserver(() => {
+      this._invalidateCanvasRect();
+      this._resizeToFit();
+    });
     this._resizeObserver.observe(this);
 
     // White-fill the initial default layer. Safe even when a project will be loaded
@@ -1014,9 +1071,23 @@ export class DrawingCanvas extends LitElement {
 
   // --- Coordinate conversion ---
 
+  /**
+   * Bounding rect of the display canvas, cached between layout changes.
+   * getBoundingClientRect() forces a layout flush and the pointer handlers call it
+   * several times per event; the cache is dropped whenever the canvas can have moved.
+   */
+  private _getCanvasRect(): DOMRect {
+    if (!this._canvasRect) {
+      this._canvasRect = this.mainCanvas.getBoundingClientRect();
+    }
+    return this._canvasRect;
+  }
+
+  private _invalidateCanvasRect = () => { this._canvasRect = null; };
+
   /** Convert viewport pointer position to document coordinates */
   private _getDocPoint(e: PointerEvent): Point {
-    const rect = this.mainCanvas.getBoundingClientRect();
+    const rect = this._getCanvasRect();
     return {
       x: (e.clientX - rect.left - this._panX) / this._zoom,
       y: (e.clientY - rect.top - this._panY) / this._zoom,
@@ -1024,7 +1095,7 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _clientToDoc(clientX: number, clientY: number): Point {
-    const rect = this.mainCanvas.getBoundingClientRect();
+    const rect = this._getCanvasRect();
     return {
       x: (clientX - rect.left - this._panX) / this._zoom,
       y: (clientY - rect.top - this._panY) / this._zoom,
@@ -1049,7 +1120,7 @@ export class DrawingCanvas extends LitElement {
     this._panX = this._panStartOffsetX + (e.clientX - this._panStartX);
     this._panY = this._panStartOffsetY + (e.clientY - this._panStartY);
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
-    this.composite();
+    this.scheduleComposite();
     if (this._textEditing) this._renderTextPreview();
   }
 
@@ -1081,7 +1152,7 @@ export class DrawingCanvas extends LitElement {
       // Zoom anchored to cursor position
       e.preventDefault();
       if (e.deltaY === 0) return; // Pure horizontal scroll — don't zoom
-      const rect = this.mainCanvas.getBoundingClientRect();
+      const rect = this._getCanvasRect();
       const viewportX = e.clientX - rect.left;
       const viewportY = e.clientY - rect.top;
 
@@ -1105,7 +1176,7 @@ export class DrawingCanvas extends LitElement {
       this._zoom = newZoom;
 
       this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
-      this.composite();
+      this.scheduleComposite();
       if (this._textEditing) this._renderTextPreview();
       this._dispatchZoomChange();
       return;
@@ -1116,7 +1187,7 @@ export class DrawingCanvas extends LitElement {
     this._panX -= e.deltaX;
     this._panY -= e.deltaY;
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
-    this.composite();
+    this.scheduleComposite();
     if (this._textEditing) this._renderTextPreview();
     this._dispatchViewportChange();
   };
@@ -1170,7 +1241,7 @@ export class DrawingCanvas extends LitElement {
     this._panX = panX;
     this._panY = panY;
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
-    this.composite();
+    this.scheduleComposite();
     if (this._textEditing) this._renderTextPreview();
     this._dispatchViewportChange();
   }
@@ -1269,7 +1340,7 @@ export class DrawingCanvas extends LitElement {
     const TOTAL_HEIGHT = GRID_SIZE + SWATCH_HEIGHT + 4;
     const OFFSET = 20;
 
-    const rect = this.mainCanvas.getBoundingClientRect();
+    const rect = this._getCanvasRect();
     let destX = e.clientX - rect.left + OFFSET;
     let destY = e.clientY - rect.top - OFFSET - TOTAL_HEIGHT;
 
@@ -1404,6 +1475,9 @@ export class DrawingCanvas extends LitElement {
   // --- Pointer events ---
 
   private _onPointerDown(e: PointerEvent) {
+    // Re-measure once per gesture: panels and toolbars may have shifted the canvas
+    // since the last pointer interaction.
+    this._invalidateCanvasRect();
     // Track all active pointers for multi-touch
     this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -1580,6 +1654,9 @@ export class DrawingCanvas extends LitElement {
       const color = this.ctx.state.strokeColor;
       const eraser = this.ctx.state.activeTool === 'eraser';
       this._engine.begin(desc, color, eraser, this._docWidth, this._docHeight);
+      // The tint scratch canvas is only cleared inside the previous stroke's bounds,
+      // so wipe it once per stroke before reusing it.
+      this._strokeTintNeedsClear = true;
       const layerCtx = desc.ink.wetness > 0 ? this._getActiveLayerCtx() ?? undefined : undefined;
       this._engine.stroke(p.x, p.y, e.pressure || 0.5, layerCtx);
       this.composite();
@@ -1592,7 +1669,7 @@ export class DrawingCanvas extends LitElement {
       this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     }
 
-    const rect = this.mainCanvas.getBoundingClientRect();
+    const rect = this._getCanvasRect();
     this._lastPointerScreenX = e.clientX - rect.left;
     this._lastPointerScreenY = e.clientY - rect.top;
 
@@ -1611,7 +1688,7 @@ export class DrawingCanvas extends LitElement {
       const before = this.getTransformValues();
       this._transformManager.onPointerMove(p, modifiers);
       this.style.cursor = this._transformManager.getCursor(p);
-      this.composite();
+      this.scheduleComposite();
       const after = this.getTransformValues();
       if (!this._transformValuesEqual(before, after)) {
         this._dispatchTransformChange();
@@ -1679,7 +1756,7 @@ export class DrawingCanvas extends LitElement {
       if (layerCtx) {
         layerCtx.clearRect(0, 0, this._docWidth, this._docHeight);
         layerCtx.drawImage(this._moveTempCanvas, Math.round(dx), Math.round(dy));
-        this.composite();
+        this.scheduleComposite();
       }
       return;
     }
@@ -1704,7 +1781,7 @@ export class DrawingCanvas extends LitElement {
       const layerCtx = desc.ink.wetness > 0 ? this._getActiveLayerCtx() ?? undefined : undefined;
       this._engine.stroke(p.x, p.y, e.pressure || 0.5, layerCtx);
       this._lastPoint = p;
-      this.composite();
+      this.scheduleComposite();
     } else if (
       activeTool === 'rectangle' ||
       activeTool === 'circle' ||
@@ -1873,7 +1950,7 @@ export class DrawingCanvas extends LitElement {
 
   private _onPointerEnter = (e: PointerEvent) => {
     this._pointerOnCanvas = true;
-    const rect = this.mainCanvas.getBoundingClientRect();
+    const rect = this._getCanvasRect();
     this._lastPointerScreenX = e.clientX - rect.left;
     this._lastPointerScreenY = e.clientY - rect.top;
     this._renderPreview();
@@ -2007,7 +2084,7 @@ export class DrawingCanvas extends LitElement {
     // Zoom: ratio of current distance to previous distance
     if (this._lastPinchDist > 0) {
       const scale = dist / this._lastPinchDist;
-      const rect = this.mainCanvas.getBoundingClientRect();
+      const rect = this._getCanvasRect();
       const viewportX = midX - rect.left;
       const viewportY = midY - rect.top;
 
@@ -2030,7 +2107,7 @@ export class DrawingCanvas extends LitElement {
     this._lastPinchMidY = midY;
 
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
-    this.composite();
+    this.scheduleComposite();
     if (this._textEditing) this._renderTextPreview();
     this._dispatchZoomChange();
   }
@@ -2902,6 +2979,9 @@ export class DrawingCanvas extends LitElement {
     this.addEventListener('dragleave', this._onDragLeave);
     this.addEventListener('drop', this._onDrop);
     window.addEventListener('blur', this._onWindowBlur);
+    window.addEventListener('resize', this._invalidateCanvasRect);
+    // Any scroll in an ancestor can move the canvas without resizing it.
+    window.addEventListener('scroll', this._invalidateCanvasRect, true);
   }
 
   override disconnectedCallback() {
@@ -2916,6 +2996,7 @@ export class DrawingCanvas extends LitElement {
     }
     this._resizeObserver?.disconnect();
     this._resizeObserver = null;
+    this._compositeScheduler.cancel();
     if (this._transformManager) {
       this._transformManager.dispose();
       this._transformManager = null;
@@ -2930,6 +3011,8 @@ export class DrawingCanvas extends LitElement {
     this.removeEventListener('dragleave', this._onDragLeave);
     this.removeEventListener('drop', this._onDrop);
     window.removeEventListener('blur', this._onWindowBlur);
+    window.removeEventListener('resize', this._invalidateCanvasRect);
+    window.removeEventListener('scroll', this._invalidateCanvasRect, true);
   }
 
   /** Re-render the text preview on the overlay canvas with cursor and bounding box. */

@@ -1,4 +1,5 @@
 import { LitElement, html, css, nothing } from 'lit';
+import { createThrottledScheduler } from '../utils/raf-throttle.js';
 import { customElement, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
@@ -503,9 +504,16 @@ export class LayersPanel extends LitElement {
 
   private _floatDetail: { tempCanvas: HTMLCanvasElement; rect: { x: number; y: number; w: number; h: number }; layerId: string; rotation?: number } | null = null;
 
+  /**
+   * Redrawing every layer thumbnail means downscaling every full-size layer canvas.
+   * A stroke composites once per frame, so throttle thumbnails to a slower cadence —
+   * the trailing run guarantees they still catch up once the gesture ends.
+   */
+  private _thumbnailScheduler = createThrottledScheduler(() => this._updateThumbnails(), 250);
+
   private _onComposited = (e: Event) => {
     this._floatDetail = (e as CustomEvent).detail;
-    this._updateThumbnails();
+    this._thumbnailScheduler.schedule();
   };
 
   private _onDocClick = () => {
@@ -532,6 +540,7 @@ export class LayersPanel extends LitElement {
   override disconnectedCallback() {
     super.disconnectedCallback();
     (this.getRootNode() as ShadowRoot | Document).removeEventListener('composited', this._onComposited);
+    this._thumbnailScheduler.cancel();
     window.removeEventListener('resize', this._onResize);
     document.removeEventListener('click', this._onDocClick);
     document.removeEventListener('keydown', this._onDocKeyDown);
@@ -1170,8 +1179,25 @@ export class LayersPanel extends LitElement {
       }
       this._syncingSheet = false;
     }
-    this._updateThumbnails();
+
+    // Every viewport change (wheel zoom, pan, pinch) rebuilds the context value and
+    // re-renders this panel, so painting thumbnails here unthrottled would redraw
+    // every layer once per wheel tick. Only a structural change — a row added,
+    // removed, reordered, or rendered for the first time — needs them immediately;
+    // content changes come through the throttled `composited` path instead.
+    const layers = this._ctx.value?.state.layers ?? null;
+    const rowCount = this.shadowRoot?.querySelectorAll('.layer-thumb').length ?? 0;
+    if (layers !== this._lastThumbLayers || rowCount !== this._lastThumbRowCount) {
+      this._lastThumbLayers = layers;
+      this._lastThumbRowCount = rowCount;
+      this._updateThumbnails();
+    } else {
+      this._thumbnailScheduler.schedule();
+    }
   }
+
+  private _lastThumbLayers: readonly unknown[] | null = null;
+  private _lastThumbRowCount = -1;
 
   private _updateThumbnails() {
     const layers = this._ctx.value?.state.layers ?? [];

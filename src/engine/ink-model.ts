@@ -107,6 +107,11 @@ export function applyBuildup(ink: InkDescriptor, baseFlow: number, spacingPx: nu
   return Math.min(1, baseFlow * (1 + ink.buildup * overlapDensity));
 }
 
+/** Longest side, in samples, of the grid walked by sampleSnapshot. Large brushes
+ *  sample a strided subset rather than every pixel: the result is an average, so a
+ *  sparser grid gives the same colour for a fraction of the work. */
+const MAX_SAMPLE_STEPS = 48;
+
 /** Sample averaged canvas color from a region around (x, y). Radius scales with
  *  brush size to produce smooth color transitions instead of per-pixel noise. */
 export function sampleSnapshot(snapshot: ImageData, x: number, y: number, radius = 6): { color: string; alpha: number } {
@@ -117,6 +122,8 @@ export function sampleSnapshot(snapshot: ImageData, x: number, y: number, radius
   const cy = Math.round(y);
   const r = Math.max(1, Math.round(radius));
   const r2 = r * r;
+  // Bounds the per-stamp cost at ~MAX_SAMPLE_STEPS² reads instead of growing with r².
+  const step = Math.max(1, Math.ceil((2 * r + 1) / MAX_SAMPLE_STEPS));
 
   let totalR = 0, totalG = 0, totalB = 0, totalA = 0, count = 0;
 
@@ -125,9 +132,9 @@ export function sampleSnapshot(snapshot: ImageData, x: number, y: number, radius
   const y0 = Math.max(0, cy - r);
   const y1 = Math.min(h - 1, cy + r);
 
-  for (let py = y0; py <= y1; py++) {
+  for (let py = y0; py <= y1; py += step) {
     const dy = py - cy;
-    for (let px = x0; px <= x1; px++) {
+    for (let px = x0; px <= x1; px += step) {
       const dx = px - cx;
       if (dx * dx + dy * dy > r2) continue;
       const i = (py * w + px) * 4;

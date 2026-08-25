@@ -1,4 +1,5 @@
 import { LitElement, html, css } from 'lit';
+import { createThrottledScheduler } from '../utils/raf-throttle.js';
 import { customElement, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
@@ -171,18 +172,16 @@ export class NavigatorPanel extends LitElement {
 
   // --- Composited event listening (same pattern as layers-panel) ---
 
-  private _minimapPending = false;
+  /**
+   * The minimap downscales the whole document, so it is throttled below frame rate:
+   * during a stroke the canvas composites every frame and the thumbnail barely changes.
+   * Deferring at least a frame also lets Lit's context update settle, so viewport
+   * values (zoom/pan) are current rather than stale on initial load.
+   */
+  private _minimapScheduler = createThrottledScheduler(() => this._renderMinimap(), 100);
 
   private _onComposited = () => {
-    // Defer render to next frame so Lit's context update cycle completes first.
-    // Without this, viewport values (zoom/pan) in context are stale on initial load.
-    if (!this._minimapPending) {
-      this._minimapPending = true;
-      requestAnimationFrame(() => {
-        this._minimapPending = false;
-        this._renderMinimap();
-      });
-    }
+    this._minimapScheduler.schedule();
   };
 
   override connectedCallback() {
@@ -200,6 +199,7 @@ export class NavigatorPanel extends LitElement {
       'composited',
       this._onComposited,
     );
+    this._minimapScheduler.cancel();
     document.removeEventListener('fullscreenchange', this._onFullscreenChange);
   }
 

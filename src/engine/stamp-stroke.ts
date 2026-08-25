@@ -46,6 +46,12 @@ export class StampStrokeEngine {
   private _tintCanvas: AnyCanvas | null = null;
   private _tintW = 0;
   private _tintH = 0;
+  // Union of every stamp footprint laid down this stroke, in document pixels.
+  // Lets the canvas repaint only the touched region of the stroke buffer.
+  private _dirtyMinX = Infinity;
+  private _dirtyMinY = Infinity;
+  private _dirtyMaxX = -Infinity;
+  private _dirtyMaxY = -Infinity;
 
   begin(descriptor: BrushDescriptor, color: string, eraser: boolean, docWidth: number, docHeight: number) {
     this._descriptor = { ...descriptor, tip: { ...descriptor.tip }, ink: { ...descriptor.ink } };
@@ -59,6 +65,10 @@ export class StampStrokeEngine {
     this._prevStamp = null;
     this._variantCounter = 0;
     this._snapshotCaptured = false;
+    this._dirtyMinX = Infinity;
+    this._dirtyMinY = Infinity;
+    this._dirtyMaxX = -Infinity;
+    this._dirtyMaxY = -Infinity;
     this._inkState = initInkState(this._color, null);
   }
 
@@ -134,6 +144,14 @@ export class StampStrokeEngine {
       const tipW = tip.width;
       const tipH = tip.height;
 
+      // Half-diagonal covers the tip footprint at any rotation; +1 absorbs the
+      // Math.round applied to the draw position below.
+      const reach = Math.sqrt(tipW * tipW + tipH * tipH) / 2 + 1;
+      if (stamp.x - reach < this._dirtyMinX) this._dirtyMinX = stamp.x - reach;
+      if (stamp.y - reach < this._dirtyMinY) this._dirtyMinY = stamp.y - reach;
+      if (stamp.x + reach > this._dirtyMaxX) this._dirtyMaxX = stamp.x + reach;
+      if (stamp.y + reach > this._dirtyMaxY) this._dirtyMaxY = stamp.y + reach;
+
       if (this._colorMode) {
         // Reuse a single tinting canvas — grow only, never shrink
         if (tipW > this._tintW || tipH > this._tintH) {
@@ -208,13 +226,34 @@ export class StampStrokeEngine {
     this._smoother.reset();
   }
 
-  getStrokePreview(): { canvas: AnyCanvas; eraser: boolean; opacity: number; color: string | null } | null {
+  /**
+   * Region of the stroke buffer written so far, clamped to the document.
+   * Null until the first stamp lands.
+   */
+  getDirtyBounds(): { x: number; y: number; w: number; h: number } | null {
+    if (this._dirtyMaxX < this._dirtyMinX) return null;
+    const x = Math.max(0, Math.floor(this._dirtyMinX));
+    const y = Math.max(0, Math.floor(this._dirtyMinY));
+    const w = Math.min(this._docWidth, Math.ceil(this._dirtyMaxX)) - x;
+    const h = Math.min(this._docHeight, Math.ceil(this._dirtyMaxY)) - y;
+    if (w <= 0 || h <= 0) return null;
+    return { x, y, w, h };
+  }
+
+  getStrokePreview(): {
+    canvas: AnyCanvas;
+    eraser: boolean;
+    opacity: number;
+    color: string | null;
+    bounds: { x: number; y: number; w: number; h: number } | null;
+  } | null {
     if (!this._descriptor || !this._bufferPool.current) return null;
     return {
       canvas: this._bufferPool.current,
       eraser: this._eraser,
       opacity: this._descriptor.opacity,
       color: this._colorMode ? null : this._color,
+      bounds: this.getDirtyBounds(),
     };
   }
 }
