@@ -97,14 +97,15 @@ export function applyDepletion(ink: InkDescriptor, state: InkState): number {
   return remaining;
 }
 
+/** Pointer speeds at or above this value receive no buildup boost. */
+const FULL_SPEED_PX_PER_MS = 1;
+
 /** Apply buildup: returns adjusted flow value. */
-export function applyBuildup(ink: InkDescriptor, baseFlow: number, spacingPx: number, stampDeltaDist: number): number {
+export function applyBuildup(ink: InkDescriptor, baseFlow: number, speedPxPerMs: number): number {
   if (ink.buildup <= 0) return baseFlow;
-  // overlapDensity is 0 at normal spacing, positive only when stamps cluster
-  // tighter than the configured spacing (slow movement)
-  const ratio = stampDeltaDist > 0.01 ? spacingPx / stampDeltaDist : 4;
-  const overlapDensity = Math.min(3, Math.max(0, ratio - 1));
-  return Math.min(1, baseFlow * (1 + ink.buildup * overlapDensity));
+  const normalizedSpeed = Math.min(1, Math.max(0, speedPxPerMs / FULL_SPEED_PX_PER_MS));
+  const slowFactor = 1 - normalizedSpeed;
+  return Math.min(1, baseFlow * (1 + ink.buildup * slowFactor * 3));
 }
 
 /** Longest side, in samples, of the grid walked by sampleSnapshot. Large brushes

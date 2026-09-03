@@ -1,5 +1,9 @@
 import { createOffscreenCanvas, get2dContext, type AnyCanvas } from './canvas-pool.js';
 import type { TipDescriptor, TipShape } from './types.js';
+import { getDefaultTipDescriptor } from './brush-capabilities.js';
+
+const FAN_DEFAULT_TIP = getDefaultTipDescriptor('fan');
+const SPLATTER_DEFAULT_TIP = getDefaultTipDescriptor('splatter');
 
 export type TipGeneratorFn = (
   diameter: number,
@@ -147,8 +151,8 @@ function seededRandom(seed: number): () => number {
 }
 
 export function generateFanTip(diameter: number, hardness: number, tip: TipDescriptor, variantIndex = 0): AnyCanvas {
-  const bristleCount = tip.bristles ?? 8;
-  const spreadDeg = tip.spread ?? 120;
+  const bristleCount = tip.bristles ?? FAN_DEFAULT_TIP.bristles!;
+  const spreadDeg = tip.spread ?? FAN_DEFAULT_TIP.spread!;
   const spreadRad = (spreadDeg * Math.PI) / 180;
   const radius = diameter / 2;
   const bristleR = Math.max(1, diameter / 8);
@@ -186,8 +190,8 @@ export function generateFanTip(diameter: number, hardness: number, tip: TipDescr
 }
 
 export function generateSplatterTip(diameter: number, hardness: number, tip: TipDescriptor, variantIndex = 0): AnyCanvas {
-  const dotCount = tip.bristles ?? 12;
-  const spreadRatio = tip.spread ?? 0.8;
+  const dotCount = tip.bristles ?? SPLATTER_DEFAULT_TIP.bristles!;
+  const spreadRatio = tip.spread ?? SPLATTER_DEFAULT_TIP.spread!;
   const maxRadius = (diameter / 2) * spreadRatio;
   const dotR = Math.max(1, diameter / 10);
   const canvas = createOffscreenCanvas(diameter, diameter);

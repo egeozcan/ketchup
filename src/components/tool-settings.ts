@@ -4,10 +4,10 @@ import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import { storageBackendContext, projectServiceContext } from '../storage/storage-context.js';
 import type { StampEntry } from '../storage/types.js';
-import type { PressureCurveName, TipShape, OrientationMode, BrushPreset } from '../engine/types.js';
-import { quantizeDiameter } from '../engine/types.js';
+import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushPreset } from '../engine/types.js';
 import { BRUSH_PRESETS } from '../engine/brush-presets.js';
-import { tipGenerators } from '../engine/tip-generators.js';
+import { getDefaultTipDescriptor, getTipCapabilities } from '../engine/brush-capabilities.js';
+import { StampStrokeEngine } from '../engine/stamp-stroke.js';
 
 const documentPresets = [
   { label: '800 \u00d7 600', width: 800, height: 600 },
@@ -668,10 +668,6 @@ export class ToolSettings extends LitElement {
     }
 
     /* Dimmed control */
-    .dimmed {
-      opacity: 0.4;
-      pointer-events: none;
-    }
 
     /* Transform numeric panel */
     .transform-section {
@@ -801,6 +797,12 @@ export class ToolSettings extends LitElement {
   @state() private _advancedOpen = false;
   @state() private _brushDropdownOpen = false;
   private _previewCache = new Map<string, string>();
+  private _customPreviewKey = '';
+  private _customPreviewUrl = '';
+  private _previewCanvas: HTMLCanvasElement | null = null;
+  private _previewSampleCanvas: HTMLCanvasElement | null = null;
+  private _previewStrokeCanvas: HTMLCanvasElement | null = null;
+  private _previewEngine = new StampStrokeEngine();
   @state() private _renamingProjectId: string | null = null;
   @state() private _newProjectName = 'Untitled';
   @state() private _newProjectWidth = '800';
@@ -1090,23 +1092,46 @@ export class ToolSettings extends LitElement {
     return t === 'rectangle' || t === 'circle' || t === 'triangle';
   }
 
-  private _generatePreview(preset: BrushPreset): string {
-    const cached = this._previewCache.get(preset.id);
+  private _generatePreview(preset: BrushPreset, eraser = false): string {
+    const cacheKey = `${eraser ? 'eraser' : 'paint'}:${preset.id}`;
+    const cached = this._previewCache.get(cacheKey);
     if (cached) return cached;
 
+    const url = this._generateDescriptorPreview(preset.descriptor, eraser);
+    this._previewCache.set(cacheKey, url);
+    return url;
+  }
+
+  private _generateCustomPreview(descriptor: BrushDescriptor, eraser = false): string {
+    const key = `${eraser ? 'eraser' : 'paint'}:${JSON.stringify(descriptor)}`;
+    if (key === this._customPreviewKey) return this._customPreviewUrl;
+
+    this._customPreviewKey = key;
+    this._customPreviewUrl = this._generateDescriptorPreview(descriptor, eraser);
+    return this._customPreviewUrl;
+  }
+
+  private _generateDescriptorPreview(descriptor: BrushDescriptor, eraser = false): string {
     const W = 160, H = 48;
-    const canvas = document.createElement('canvas');
-    canvas.width = W;
-    canvas.height = H;
+    const canvas = this._previewCanvas ??= document.createElement('canvas');
+    if (canvas.width !== W) canvas.width = W;
+    if (canvas.height !== H) canvas.height = H;
     const ctx = canvas.getContext('2d')!;
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.clearRect(0, 0, W, H);
 
     // Dark background
     ctx.fillStyle = '#2a2a2a';
     ctx.fillRect(0, 0, W, H);
 
-    const d = preset.descriptor;
-    const previewSize = Math.min(d.size, 14);
-    const spacing = Math.max(2, d.spacing * previewSize);
+    const previewSize = Math.max(2, Math.min(18, 2 + Math.log2(Math.max(1, descriptor.size)) * 2.5));
+    const d: BrushDescriptor = {
+      ...descriptor,
+      size: previewSize,
+      tip: { ...descriptor.tip },
+      ink: { ...descriptor.ink },
+    };
 
     // Generate S-curve points — keep amplitude small enough that
     // the largest stamp (previewSize) stays fully within the canvas
@@ -1116,95 +1141,51 @@ export class ToolSettings extends LitElement {
     const cy = H / 2;
     const totalLen = W - padX * 2;
 
-    // Accumulate stamps in alpha-mask mode, clipped to canvas bounds
-    const stampCanvas = document.createElement('canvas');
-    stampCanvas.width = W;
-    stampCanvas.height = H;
-    const stampCtx = stampCanvas.getContext('2d')!;
-    stampCtx.beginPath();
-    stampCtx.rect(0, 0, W, H);
-    stampCtx.clip();
+    // The sample layer is not displayed. It exists so wet brushes pick up
+    // meaningful colors while the engine paints onto a transparent target.
+    const sampleCanvas = this._previewSampleCanvas ??= document.createElement('canvas');
+    if (sampleCanvas.width !== W) sampleCanvas.width = W;
+    if (sampleCanvas.height !== H) sampleCanvas.height = H;
+    const sampleCtx = sampleCanvas.getContext('2d')!;
+    sampleCtx.globalAlpha = 1;
+    sampleCtx.globalCompositeOperation = 'source-over';
+    sampleCtx.clearRect(0, 0, W, H);
+    sampleCtx.fillStyle = '#ef6c57';
+    sampleCtx.fillRect(0, 0, W / 2, H);
+    sampleCtx.fillStyle = '#5b8cf7';
+    sampleCtx.fillRect(W / 2, 0, W / 2, H);
 
-    let dist = 0;
-    let prevX = padX;
-    let prevY = cy;
-    const depletionRate = d.ink.depletion;
-    const depletionLen = d.ink.depletionLength || 500;
+    const strokeCanvas = this._previewStrokeCanvas ??= document.createElement('canvas');
+    if (strokeCanvas.width !== W) strokeCanvas.width = W;
+    if (strokeCanvas.height !== H) strokeCanvas.height = H;
+    const strokeCtx = strokeCanvas.getContext('2d')!;
+    strokeCtx.globalAlpha = 1;
+    strokeCtx.globalCompositeOperation = 'source-over';
+    strokeCtx.clearRect(0, 0, W, H);
+    if (eraser) {
+      strokeCtx.fillStyle = '#cccccc';
+      strokeCtx.fillRect(0, 0, W, H);
+    }
+    this._previewEngine.begin(d, '#cccccc', eraser, W, H);
+
+    let timestamp = 0;
 
     for (let x = padX; x <= W - padX; x += 1) {
       const t = (x - padX) / totalLen;
       const y = cy + amplitude * Math.sin(t * Math.PI * 2);
-
-      const dx = x - prevX;
-      const dy = y - prevY;
-      const segDist = Math.sqrt(dx * dx + dy * dy);
-      dist += segDist;
-      prevX = x;
-      prevY = y;
-
-      // Only stamp at spacing intervals
-      if (dist < spacing && x > padX) continue;
-      dist = 0;
-
-      // Pressure simulation: gentle pressure curve across the stroke
       const pressure = 0.4 + 0.6 * Math.sin(t * Math.PI);
-      const stampSize = d.pressureSize ? Math.max(1, previewSize * pressure) : previewSize;
-      const diam = quantizeDiameter(stampSize);
-
-      // Get tip
-      const tipDesc = d.tip;
-      const tip = tipGenerators[tipDesc.shape](diam, d.hardness, tipDesc);
-
-      // Apply depletion
-      const strokeT = (x - padX) / totalLen;
-      const remaining = depletionRate > 0
-        ? Math.max(0, 1 - (strokeT * totalLen / depletionLen) * depletionRate)
-        : 1;
-
-      const stampAlpha = (d.pressureOpacity ? d.flow * pressure : d.flow) * remaining;
-      if (stampAlpha <= 0) continue;
-
-      // Rotation for direction-following tips
-      let rotation = 0;
-      if (tipDesc.orientation === 'direction') {
-        const nextX = x + 1;
-        const nextT = (nextX - padX) / totalLen;
-        const nextY = cy + amplitude * Math.sin(nextT * Math.PI * 2);
-        rotation = Math.atan2(nextY - y, 1) + tipDesc.angle * Math.PI / 180;
-      } else if (tipDesc.orientation === 'fixed' && tipDesc.angle !== 0) {
-        rotation = tipDesc.angle * Math.PI / 180;
-      }
-
-      const tipW = (tip as HTMLCanvasElement).width;
-      const tipH = (tip as HTMLCanvasElement).height;
-
-      stampCtx.globalAlpha = stampAlpha;
-      stampCtx.globalCompositeOperation = 'source-over';
-      if (rotation !== 0) {
-        stampCtx.save();
-        stampCtx.translate(Math.round(x), Math.round(y));
-        stampCtx.rotate(rotation);
-        stampCtx.drawImage(tip as HTMLCanvasElement, -tipW / 2, -tipH / 2, tipW, tipH);
-        stampCtx.restore();
-      } else {
-        stampCtx.drawImage(tip as HTMLCanvasElement, Math.round(x - tipW / 2), Math.round(y - tipH / 2), tipW, tipH);
-      }
+      // Slow the middle of the preview so buildup has something observable to
+      // respond to while preserving the same geometric path.
+      timestamp += t > 0.35 && t < 0.65 ? 4 : 1;
+      const layerCtx = !eraser && d.ink.wetness > 0 ? sampleCtx : undefined;
+      this._previewEngine.stroke(x, y, pressure, layerCtx, timestamp);
     }
-
-    stampCtx.globalAlpha = 1;
-
-    // Tint the alpha mask with light gray
-    stampCtx.globalCompositeOperation = 'source-in';
-    stampCtx.fillStyle = '#cccccc';
-    stampCtx.fillRect(0, 0, W, H);
-    stampCtx.globalCompositeOperation = 'source-over';
+    this._previewEngine.commit(strokeCtx);
 
     // Composite onto the dark background
-    ctx.drawImage(stampCanvas, 0, 0);
+    ctx.drawImage(strokeCanvas, 0, 0);
 
-    const url = canvas.toDataURL();
-    this._previewCache.set(preset.id, url);
-    return url;
+    return canvas.toDataURL();
   }
 
   private _toggleBrushDropdown() {
@@ -1360,6 +1341,8 @@ export class ToolSettings extends LitElement {
 
     const state = this.ctx.state;
     const { strokeColor, fillColor, useFill, activeTool, stampImage, brush } = state;
+    const tipCapabilities = getTipCapabilities(brush.tip.shape);
+    const tipDefaults = getDefaultTipDescriptor(brush.tip.shape);
 
     // Select tool: show transform controls or a hint
     if (activeTool === 'select') {
@@ -1420,6 +1403,7 @@ export class ToolSettings extends LitElement {
         <div class="separator"></div>
       ` : ''}
 
+      ${activeTool !== 'eraser' ? html`
       <div class="section">
         <label>Color</label>
         <input
@@ -1443,6 +1427,7 @@ export class ToolSettings extends LitElement {
       </div>
 
       <div class="separator"></div>
+      ` : nothing}
 
       <div class="section">
         <label>Size</label>
@@ -1461,7 +1446,12 @@ export class ToolSettings extends LitElement {
         <div class="section">
           <div class="brush-dropdown-wrap">
             <button class="brush-dropdown-btn" @click=${() => this._toggleBrushDropdown()}>
-              <img src=${this._generatePreview(BRUSH_PRESETS.find(p => p.id === state.activePreset) ?? BRUSH_PRESETS[0])} alt="" />
+              <img src=${state.isPresetModified
+                ? this._generateCustomPreview(brush, activeTool === 'eraser')
+                : this._generatePreview(
+                    BRUSH_PRESETS.find(p => p.id === state.activePreset) ?? BRUSH_PRESETS[0],
+                    activeTool === 'eraser',
+                  )} alt="" />
               <span>${(BRUSH_PRESETS.find(p => p.id === state.activePreset) ?? BRUSH_PRESETS[0]).name}${state.isPresetModified ? ' *' : ''}</span>
               <span class="chevron">&#9660;</span>
             </button>
@@ -1472,7 +1462,7 @@ export class ToolSettings extends LitElement {
                     class="brush-dropdown-item ${state.activePreset === preset.id && !state.isPresetModified ? 'active' : ''}"
                     @click=${() => this._selectPreset(preset.id)}
                   >
-                    <img src=${this._generatePreview(preset)} alt="" />
+                    <img src=${this._generatePreview(preset, activeTool === 'eraser')} alt="" />
                     <span>${preset.name}</span>
                   </button>
                 `)}
@@ -1507,22 +1497,22 @@ export class ToolSettings extends LitElement {
         </div>
         <div class="separator"></div>
         <div class="section">
-          <label class="checkbox-label">
+          <label class="checkbox-label" title="Affects pressure-sensitive pen or stylus input; mouse input uses full pressure.">
             <input type="checkbox" .checked=${brush.pressureSize}
               @change=${(e: Event) => this.ctx.setBrush({ pressureSize: (e.target as HTMLInputElement).checked })} />
-            Pressure Size
+            Stylus Size
           </label>
         </div>
         <div class="section">
-          <label class="checkbox-label">
+          <label class="checkbox-label" title="Affects pressure-sensitive pen or stylus input; mouse input uses full pressure.">
             <input type="checkbox" .checked=${brush.pressureOpacity}
               @change=${(e: Event) => this.ctx.setBrush({ pressureOpacity: (e.target as HTMLInputElement).checked })} />
-            Pressure Opacity
+            Stylus Opacity
           </label>
         </div>
         ${(brush.pressureSize || brush.pressureOpacity) ? html`
         <div class="section">
-          <label>Curve</label>
+          <label title="Maps pressure-sensitive pen or stylus input; mouse input uses full pressure.">Stylus Curve</label>
           <select class="font-select" .value=${brush.pressureCurve}
             @change=${(e: Event) => this.ctx.setBrush({ pressureCurve: (e.target as HTMLSelectElement).value as PressureCurveName })}>
             <option value="linear">Linear</option>
@@ -1541,25 +1531,30 @@ export class ToolSettings extends LitElement {
                 ${(['round', 'flat', 'chisel', 'calligraphy', 'fan', 'splatter'] as TipShape[]).map(shape => html`
                   <button
                     class="pill-btn ${brush.tip.shape === shape ? 'active' : ''}"
-                    @click=${() => this.ctx.setBrushTip({ shape })}
+                    @click=${() => {
+                      if (brush.tip.shape !== shape) {
+                        this.ctx.setBrushTip(getDefaultTipDescriptor(shape));
+                      }
+                    }}
                   >${shape.charAt(0).toUpperCase() + shape.slice(1)}</button>
                 `)}
               </div>
             </div>
-            <div class="section ${brush.tip.shape === 'round' ? 'dimmed' : ''}">
+            ${tipCapabilities.aspect ? html`
+            <div class="section">
               <label>Aspect</label>
               <input type="range" min="1" max="6" step="0.5" .value=${String(brush.tip.aspect)}
                 @input=${(e: Event) => this.ctx.setBrushTip({ aspect: Number((e.target as HTMLInputElement).value) })} />
               <span class="size-value">${brush.tip.aspect}</span>
             </div>
-            ${brush.tip.shape !== 'round' ? html`
+            ` : nothing}
+            ${tipCapabilities.rotation ? html`
             <div class="section">
               <label>${brush.tip.orientation === 'direction' ? 'Offset' : 'Angle'}</label>
               <input type="range" min="0" max="360" .value=${String(brush.tip.angle)}
                 @input=${(e: Event) => this.ctx.setBrushTip({ angle: Number((e.target as HTMLInputElement).value) })} />
               <span class="size-value">${brush.tip.angle}&deg;</span>
             </div>
-            ` : nothing}
             <div class="section">
               <label>Orient</label>
               <select class="font-select" .value=${brush.tip.orientation}
@@ -1568,21 +1563,24 @@ export class ToolSettings extends LitElement {
                 <option value="direction">Direction</option>
               </select>
             </div>
-            ${(brush.tip.shape === 'fan' || brush.tip.shape === 'splatter') ? html`
+            ` : nothing}
+            ${tipCapabilities.bristles ? html`
               <div class="section">
                 <label>Bristles</label>
-                <input type="range" min="1" max="20" .value=${String(brush.tip.bristles ?? 8)}
+                <input type="range" min="1" max="20" .value=${String(brush.tip.bristles ?? tipDefaults.bristles)}
                   @input=${(e: Event) => this.ctx.setBrushTip({ bristles: Number((e.target as HTMLInputElement).value) })} />
-                <span class="size-value">${brush.tip.bristles ?? 8}</span>
+                <span class="size-value">${brush.tip.bristles ?? tipDefaults.bristles}</span>
               </div>
               <div class="section">
                 <label>Spread</label>
-                <input type="range" min="0" max="200" .value=${String(Math.round((brush.tip.spread ?? 1) * (brush.tip.shape === 'fan' ? 1 : 100)))}
+                <input type="range" min="0" max="200" .value=${String(Math.round((brush.tip.spread ?? tipDefaults.spread!) * (brush.tip.shape === 'fan' ? 1 : 100)))}
                   @input=${(e: Event) => {
                     const v = Number((e.target as HTMLInputElement).value);
                     this.ctx.setBrushTip({ spread: brush.tip.shape === 'fan' ? v : v / 100 });
                   }} />
-                <span class="size-value">${brush.tip.shape === 'fan' ? (brush.tip.spread ?? 120) : Math.round((brush.tip.spread ?? 0.8) * 100) + '%'}</span>
+                <span class="size-value">${brush.tip.shape === 'fan'
+                  ? (brush.tip.spread ?? tipDefaults.spread)
+                  : Math.round((brush.tip.spread ?? tipDefaults.spread!) * 100) + '%'}</span>
               </div>
             ` : nothing}
             <div class="section">
@@ -1599,18 +1597,22 @@ export class ToolSettings extends LitElement {
                 <span class="size-value">${brush.ink.depletionLength}px</span>
               </div>
             ` : nothing}
+            ${(brush.flow < 1 || brush.pressureOpacity) ? html`
             <div class="section">
               <label>Buildup</label>
               <input type="range" min="0" max="100" .value=${String(Math.round(brush.ink.buildup * 100))}
                 @input=${(e: Event) => this.ctx.setBrushInk({ buildup: Number((e.target as HTMLInputElement).value) / 100 })} />
               <span class="size-value">${Math.round(brush.ink.buildup * 100)}%</span>
             </div>
+            ` : nothing}
+            ${activeTool !== 'eraser' ? html`
             <div class="section">
               <label>Wetness</label>
               <input type="range" min="0" max="100" .value=${String(Math.round(brush.ink.wetness * 100))}
                 @input=${(e: Event) => this.ctx.setBrushInk({ wetness: Number((e.target as HTMLInputElement).value) / 100 })} />
               <span class="size-value">${Math.round(brush.ink.wetness * 100)}%</span>
             </div>
+            ` : nothing}
           </div>
         ` : html`
           <div class="section">

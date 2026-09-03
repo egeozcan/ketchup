@@ -72,9 +72,18 @@ export class StampStrokeEngine {
     this._inkState = initInkState(this._color, null);
   }
 
-  stroke(x: number, y: number, pressure: number, layerCtx?: CanvasRenderingContext2D) {
+  stroke(x: number, y: number, pressure: number, layerCtx?: CanvasRenderingContext2D, timestamp = 0) {
     if (!this._descriptor || !this._inkState) return;
     const d = this._descriptor;
+    let inputPressure = pressure;
+    if (!Number.isFinite(pressure) || pressure <= 0) {
+      if (d.pressureSize || d.pressureOpacity) {
+        this._smoother.reset();
+        this._prevStamp = null;
+        return;
+      }
+      inputPressure = 1;
+    }
 
     if (this._colorMode && !this._snapshotCaptured && layerCtx) {
       this._inkState.layerSnapshot = layerCtx.getImageData(0, 0, this._docWidth, this._docHeight);
@@ -82,17 +91,17 @@ export class StampStrokeEngine {
     }
 
     const curveFn = PRESSURE_CURVES[d.pressureCurve];
-    const mappedPressure = curveFn(pressure);
+    const mappedPressure = curveFn(inputPressure);
     this._lastMappedPressure = mappedPressure;
 
     const effectiveSize = d.pressureSize ? Math.max(1, d.size * mappedPressure) : d.size;
     const effectiveSpacing = Math.max(1, d.spacing * effectiveSize);
-    const stamps = this._smoother.addPoint(x, y, mappedPressure, effectiveSpacing);
+    const stamps = this._smoother.addPoint(x, y, mappedPressure, effectiveSpacing, timestamp);
 
-    this._stampPoints(stamps, effectiveSpacing);
+    this._stampPoints(stamps);
   }
 
-  private _stampPoints(stamps: StampPoint[], spacingPx: number) {
+  private _stampPoints(stamps: StampPoint[]) {
     if (!this._descriptor || !this._inkState) return;
     const d = this._descriptor;
     const ink = d.ink;
@@ -121,7 +130,7 @@ export class StampStrokeEngine {
       }
 
       const baseFlow = d.pressureOpacity ? d.flow * stamp.pressure : d.flow;
-      const effectiveFlow = applyBuildup(ink, baseFlow, spacingPx, stampDist);
+      const effectiveFlow = applyBuildup(ink, baseFlow, stamp.speedPxPerMs);
 
       const stampSize = d.pressureSize ? Math.max(1, d.size * stamp.pressure) : d.size;
       applyPickup(ink, state, stamp.x, stamp.y, stampSize / 2);
@@ -204,7 +213,7 @@ export class StampStrokeEngine {
     const flushSpacing = Math.max(1, this._descriptor.spacing * lastSize);
     const remaining = this._smoother.flush(flushSpacing);
     if (remaining.length > 0) {
-      this._stampPoints(remaining, flushSpacing);
+      this._stampPoints(remaining);
     }
 
     this._bufferPool.commit(

@@ -4,7 +4,10 @@ interface RawPoint {
   x: number;
   y: number;
   pressure: number;
+  timestamp: number;
 }
+
+const DEFAULT_SPEED_PX_PER_MS = 1;
 
 /**
  * Catmull-Rom spline interpolator for pointer events.
@@ -30,8 +33,8 @@ export class PathSmoother {
    * Feed a new raw pointer sample. Returns stamp positions along the
    * smoothed path spaced at `spacing` pixel intervals.
    */
-  addPoint(x: number, y: number, pressure: number, spacing: number): StampPoint[] {
-    const pt: RawPoint = { x, y, pressure };
+  addPoint(x: number, y: number, pressure: number, spacing: number, timestamp = 0): StampPoint[] {
+    const pt: RawPoint = { x, y, pressure, timestamp };
     this._count++;
 
     // Maintain rolling window of at most 4 points
@@ -45,7 +48,7 @@ export class PathSmoother {
     // Single point (stroke start dot)
     if (n === 1) {
       this._remainder = spacing;
-      return [{ x, y, pressure }];
+      return [{ x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS }];
     }
 
     // Second point: linear interpolation (only linear segment we emit)
@@ -94,6 +97,7 @@ export class PathSmoother {
       x: p2.x + (p2.x - p1.x),
       y: p2.y + (p2.y - p1.y),
       pressure: p2.pressure,
+      timestamp: p2.timestamp + Math.max(0, p2.timestamp - p1.timestamp),
     };
     return this._walkCatmullRom(p0, p1, p2, p3, spacing);
   }
@@ -105,6 +109,8 @@ export class PathSmoother {
     if (dist < 0.001) return [];
 
     const stamps: StampPoint[] = [];
+    const elapsed = to.timestamp - from.timestamp;
+    const speedPxPerMs = elapsed > 0 ? dist / elapsed : DEFAULT_SPEED_PX_PER_MS;
     let d = this._remainder;
 
     while (d <= dist) {
@@ -113,6 +119,7 @@ export class PathSmoother {
         x: from.x + dx * t,
         y: from.y + dy * t,
         pressure: from.pressure + (to.pressure - from.pressure) * t,
+        speedPxPerMs,
       });
       d += spacing;
     }
@@ -143,6 +150,8 @@ export class PathSmoother {
     if (totalLen < 0.001) return [];
 
     const stamps: StampPoint[] = [];
+    const elapsed = p2.timestamp - p1.timestamp;
+    const speedPxPerMs = elapsed > 0 ? totalLen / elapsed : DEFAULT_SPEED_PX_PER_MS;
     let d = this._remainder;
 
     while (d <= totalLen) {
@@ -162,6 +171,7 @@ export class PathSmoother {
         x: catmullRom(p0.x, p1.x, p2.x, p3.x, t),
         y: catmullRom(p0.y, p1.y, p2.y, p3.y, t),
         pressure: p1.pressure + (p2.pressure - p1.pressure) * t,
+        speedPxPerMs,
       });
       d += spacing;
     }

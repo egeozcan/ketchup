@@ -9,6 +9,7 @@ import { blendModeToCompositeOp } from '../engine/types.js';
 import type { BrushDescriptor } from '../engine/types.js';
 import { tintAlphaMask } from '../engine/canvas-pool.js';
 import { createThrottledScheduler } from '../utils/raf-throttle.js';
+import { normalizePointerPressure } from '../utils/pointer-pressure.js';
 import { getDefaultDescriptor } from '../engine/brush-presets.js';
 import { floodFill } from '../tools/fill.js';
 import { drawSelectionRect } from '../tools/select.js';
@@ -1658,7 +1659,7 @@ export class DrawingCanvas extends LitElement {
       // so wipe it once per stroke before reusing it.
       this._strokeTintNeedsClear = true;
       const layerCtx = desc.ink.wetness > 0 ? this._getActiveLayerCtx() ?? undefined : undefined;
-      this._engine.stroke(p.x, p.y, e.pressure || 0.5, layerCtx);
+      this._engine.stroke(p.x, p.y, normalizePointerPressure(e), layerCtx, e.timeStamp);
       this.composite();
     }
   }
@@ -1779,7 +1780,7 @@ export class DrawingCanvas extends LitElement {
     if (activeTool === 'pencil' || activeTool === 'eraser') {
       const desc = this._brushDescriptor;
       const layerCtx = desc.ink.wetness > 0 ? this._getActiveLayerCtx() ?? undefined : undefined;
-      this._engine.stroke(p.x, p.y, e.pressure || 0.5, layerCtx);
+      this._engine.stroke(p.x, p.y, normalizePointerPressure(e), layerCtx, e.timeStamp);
       this._lastPoint = p;
       this.scheduleComposite();
     } else if (

@@ -53,6 +53,7 @@ export interface StampPoint {
   x: number;
   y: number;
   pressure: number;
+  speedPxPerMs: number;
 }
 
 export type BlendMode =

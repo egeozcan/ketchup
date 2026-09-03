@@ -1,9 +1,14 @@
 import { vi } from 'vitest';
 import { getDefaultDescriptor } from '../src/engine/brush-presets.ts';
-import type { BrushDescriptor } from '../src/engine/types.ts';
+import type { BrushDescriptor, InkDescriptor, TipDescriptor } from '../src/engine/types.ts';
 import type { DrawingState, Layer } from '../src/types.ts';
 
-export function makeBrush(overrides: Partial<BrushDescriptor> = {}): BrushDescriptor {
+type BrushOverrides = Omit<Partial<BrushDescriptor>, 'tip' | 'ink'> & {
+  tip?: Partial<TipDescriptor>;
+  ink?: Partial<InkDescriptor>;
+};
+
+export function makeBrush(overrides: BrushOverrides = {}): BrushDescriptor {
   const base = getDefaultDescriptor();
   return {
     ...base,
@@ -38,7 +43,7 @@ export function makeLayer(
 }
 
 export function makeState(
-  overrides: Partial<DrawingState> & { brush?: Partial<BrushDescriptor> } = {},
+  overrides: Omit<Partial<DrawingState>, 'brush'> & { brush?: BrushOverrides } = {},
 ): DrawingState {
   const documentWidth = overrides.documentWidth ?? 100;
   const documentHeight = overrides.documentHeight ?? 100;
