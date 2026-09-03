@@ -1,14 +1,26 @@
 import type { BlendMode, BrushDescriptor } from './engine/types.js';
 
+export const SHAPE_TOOLS = [
+  'rectangle',
+  'circle',
+  'line',
+  'triangle',
+  'diamond',
+  'pentagon',
+  'hexagon',
+  'star',
+  'heart',
+  'arrow',
+] as const;
+
+export type ShapeType = typeof SHAPE_TOOLS[number];
+
 export type ToolType =
+  | ShapeType
   | 'select'
   | 'move'
   | 'pencil'
   | 'eraser'
-  | 'line'
-  | 'rectangle'
-  | 'circle'
-  | 'triangle'
   | 'fill'
   | 'stamp'
   | 'text'

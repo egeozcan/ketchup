@@ -10,6 +10,8 @@ import { getDefaultTipDescriptor, getTipCapabilities } from '../engine/brush-cap
 import { StampStrokeEngine } from '../engine/stamp-stroke.js';
 import { getStampThumbnailUrl, removeStampThumbnail } from '../utils/stamp-thumbnail-cache.js';
 import { MAX_STAMP_SIZE, MIN_STAMP_SIZE } from '../tools/stamp-size.js';
+import { SHAPE_TOOLS, isShapeTool } from '../tools/shapes.js';
+import { toolIcons, toolLabels, toolShortcuts } from './tool-icons.js';
 
 const documentPresets = [
   { label: '800 \u00d7 600', width: 800, height: 600 },
@@ -728,6 +730,42 @@ export class ToolSettings extends LitElement {
       border-color: #5b8cf7;
     }
 
+    .shape-picker {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+    }
+
+    .shape-option {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 2rem;
+      height: 2rem;
+      padding: 0.35rem;
+      border: 1px solid #555;
+      border-radius: 0.375rem;
+      background: #444;
+      color: #bbb;
+      cursor: pointer;
+    }
+
+    .shape-option:hover {
+      background: #555;
+      color: #fff;
+    }
+
+    .shape-option.active {
+      background: #5b8cf7;
+      border-color: #77a1ff;
+      color: #fff;
+    }
+
+    .shape-option svg {
+      width: 1.125rem;
+      height: 1.125rem;
+    }
+
     /* Dimmed control */
 
     /* Transform numeric panel */
@@ -1212,7 +1250,7 @@ export class ToolSettings extends LitElement {
 
   private _showsShapeOptions(): boolean {
     const t = this.ctx.state.activeTool;
-    return t === 'rectangle' || t === 'circle' || t === 'triangle';
+    return isShapeTool(t) && t !== 'line';
   }
 
   private _generatePreview(preset: BrushPreset, eraser = false): string {
@@ -1525,6 +1563,25 @@ export class ToolSettings extends LitElement {
         </div>
         <div class="separator"></div>
       ` : ''}
+
+      ${isShapeTool(activeTool) ? html`
+        <div class="section">
+          <label>Shape</label>
+          <div class="shape-picker" role="group" aria-label="Shape">
+            ${SHAPE_TOOLS.map(shape => html`
+              <button
+                class="shape-option ${activeTool === shape ? 'active' : ''}"
+                data-shape=${shape}
+                title=${`${toolLabels[shape]} (${toolShortcuts[shape]})`}
+                aria-label=${`Select ${toolLabels[shape]} shape`}
+                aria-pressed=${activeTool === shape ? 'true' : 'false'}
+                @click=${() => this.ctx.setTool(shape)}
+              >${toolIcons[shape]}</button>
+            `)}
+          </div>
+        </div>
+        <div class="separator"></div>
+      ` : nothing}
 
       ${activeTool !== 'eraser' && activeTool !== 'stamp' ? html`
       <div class="section">

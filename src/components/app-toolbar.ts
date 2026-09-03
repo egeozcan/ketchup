@@ -3,13 +3,16 @@ import { customElement, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { ToolType } from '../types.js';
-import { toolIcons, toolLabels, toolShortcuts, actionIcons, CHILD_TOOLS } from './tool-icons.js';
+import { toolIcons, toolLabels, toolShortcuts, actionIcons, CHILD_TOOLS, shapesIcon } from './tool-icons.js';
+import { SHAPE_TOOLS, isShapeTool } from '../tools/shapes.js';
 import './tool-settings.js';
+
+const shapeToolGroup: ToolType[] = [...SHAPE_TOOLS];
 
 const toolGroups: ToolType[][] = [
   ['select', 'move', 'crop', 'hand'],
   ['pencil', 'eraser'],
-  ['line', 'rectangle', 'circle', 'triangle'],
+  shapeToolGroup,
   ['fill', 'stamp', 'text', 'eyedropper'],
 ];
 
@@ -448,7 +451,22 @@ export class AppToolbar extends LitElement {
         (group, i) => html`
           ${i > 0 ? html`<div class="separator"></div>` : ''}
           <div class="group">
-            ${group.map(
+            ${group === shapeToolGroup
+              ? html`
+                <button
+                  class=${isShapeTool(activeTool) ? 'active' : ''}
+                  title="Shapes (U)"
+                  aria-label="Shapes"
+                  @click=${() => this._selectTool(
+                    isShapeTool(activeTool)
+                      ? activeTool
+                      : this._lastToolPerGroup.get(i) ?? SHAPE_TOOLS[0],
+                  )}
+                >
+                  ${shapesIcon}
+                </button>
+              `
+              : group.map(
               (tool) => html`
                 <button
                   class=${activeTool === tool ? 'active' : ''}
@@ -611,13 +629,15 @@ export class AppToolbar extends LitElement {
         const activeToolInGroup = group.find(t => t === activeTool);
         const displayTool = activeToolInGroup ?? group[0];
         const isActiveGroup = group.includes(activeTool);
+        const isShapeGroup = group === shapeToolGroup;
 
         return html`
           <button
             class=${isActiveGroup ? 'active' : ''}
-            title=${toolLabels[displayTool]}
+            title=${isShapeGroup ? 'Shapes' : toolLabels[displayTool]}
+            aria-label=${isShapeGroup ? 'Shapes' : toolLabels[displayTool]}
             @click=${() => this._onMobileToolTap(group, i)}
-          >${toolIcons[displayTool]}</button>
+          >${isShapeGroup ? shapesIcon : toolIcons[displayTool]}</button>
         `;
       })}
 
@@ -716,7 +736,7 @@ export class AppToolbar extends LitElement {
     if (!group) return html``;
 
     return html`
-      ${group.length > 1 ? html`
+      ${group.length > 1 && group !== shapeToolGroup ? html`
         <div class="sub-tools">
           ${group.map(tool => html`
             <button

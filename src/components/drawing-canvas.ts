@@ -3,7 +3,7 @@ import { customElement, query } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { Point, HistoryEntry, Layer, LayerSnapshot } from '../types.js';
-import { drawShapePreview } from '../tools/shapes.js';
+import { drawShapePreview, isShapeTool } from '../tools/shapes.js';
 import { StampStrokeEngine } from '../engine/stamp-stroke.js';
 import { blendModeToCompositeOp } from '../engine/types.js';
 import type { BrushDescriptor } from '../engine/types.js';
@@ -1881,12 +1881,7 @@ export class DrawingCanvas extends LitElement {
       this._engine.stroke(p.x, p.y, normalizePointerPressure(e), layerCtx, e.timeStamp);
       this._lastPoint = p;
       this.scheduleComposite();
-    } else if (
-      activeTool === 'rectangle' ||
-      activeTool === 'circle' ||
-      activeTool === 'line' ||
-      activeTool === 'triangle'
-    ) {
+    } else if (isShapeTool(activeTool)) {
       // Preview on overlay with pan transform
       const previewCtx = this.previewCanvas.getContext('2d')!;
       previewCtx.clearRect(0, 0, this._vw, this._vh);
@@ -1957,8 +1952,7 @@ export class DrawingCanvas extends LitElement {
     // Select, stamp, move, hand, and fill never set _drawing, so _drawing
     // being true here means the tool switched away from a brush/shape tool.
     if (this._drawing && activeTool !== 'pencil' &&
-        activeTool !== 'eraser' && activeTool !== 'rectangle' &&
-        activeTool !== 'circle' && activeTool !== 'line' && activeTool !== 'triangle') {
+        activeTool !== 'eraser' && !isShapeTool(activeTool)) {
       const layerCtx = this._getActiveLayerCtx();
       if (layerCtx) this._engine.commit(layerCtx);
       this._drawing = false;
@@ -2005,12 +1999,7 @@ export class DrawingCanvas extends LitElement {
     if (!this._drawing) return;
     const p = this._getDocPoint(e);
 
-    if (
-      activeTool === 'rectangle' ||
-      activeTool === 'circle' ||
-      activeTool === 'line' ||
-      activeTool === 'triangle'
-    ) {
+    if (isShapeTool(activeTool)) {
       // Capture before draw for shapes (they only commit on pointerup)
       this._captureBeforeDraw();
       // Commit shape to active layer

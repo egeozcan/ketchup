@@ -61,6 +61,36 @@ export const toolIcons: Record<ToolType, ReturnType<typeof svg>> = {
       <path d="M12 3L22 21H2z"/>
     </svg>`,
 
+  diamond: svg`
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 2L22 12 12 22 2 12z"/>
+    </svg>`,
+
+  pentagon: svg`
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 2L22 9.3 18.2 21H5.8L2 9.3z"/>
+    </svg>`,
+
+  hexagon: svg`
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M7 2H17L22 12 17 22H7L2 12z"/>
+    </svg>`,
+
+  star: svg`
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 2.5l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3-5.8 3 1.1-6.5-4.7-4.6 6.5-.9z"/>
+    </svg>`,
+
+  heart: svg`
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21.2l7.8-7.7 1.1-1.1a5.5 5.5 0 0 0-.1-7.8z"/>
+    </svg>`,
+
+  arrow: svg`
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 9h10V4l8 8-8 8v-5H3z"/>
+    </svg>`,
+
   // Fill — paint bucket
   fill: svg`
     <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -116,6 +146,14 @@ export const toolIcons: Record<ToolType, ReturnType<typeof svg>> = {
     </svg>`,
 };
 
+/** Stable toolbar icon for the combined geometric-shapes tool. */
+export const shapesIcon = svg`
+  <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 2.5 17 10H7z"/>
+    <circle cx="6.5" cy="17" r="4"/>
+    <rect x="13" y="13" width="8" height="8" rx="1"/>
+  </svg>`;
+
 export const actionIcons = {
   undo: svg`
     <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -161,6 +199,12 @@ export const toolShortcuts: Record<ToolType, string> = {
   rectangle: 'U',
   circle: 'C',
   triangle: 'T',
+  diamond: 'D',
+  pentagon: 'P',
+  hexagon: 'K',
+  star: 'A',
+  heart: 'J',
+  arrow: 'Q',
   fill: 'G',
   stamp: 'S',
   text: 'X',
@@ -185,6 +229,12 @@ export const toolLabels: Record<ToolType, string> = {
   rectangle: 'Rectangle',
   circle: 'Circle',
   triangle: 'Triangle',
+  diamond: 'Diamond',
+  pentagon: 'Pentagon',
+  hexagon: 'Hexagon',
+  star: 'Star',
+  heart: 'Heart',
+  arrow: 'Arrow',
   fill: 'Fill',
   stamp: 'Stamp',
   text: 'Text',
