@@ -10,7 +10,8 @@ export interface DrawingContextValue {
   setFillColor: (color: string) => void;
   setUseFill: (useFill: boolean) => void;
   setBrushSize: (size: number) => void;
-  setStampImage: (img: HTMLImageElement | null) => void;
+  setStampSize: (size: number) => void;
+  setStampImage: (img: HTMLImageElement | null, stampId?: string | null) => void;
   undo: () => void;
   redo: () => void;
   clearCanvas: () => void;

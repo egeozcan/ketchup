@@ -136,3 +136,118 @@ describe('ToolSettings brush controls', () => {
     });
   });
 });
+
+describe('ToolSettings stamp controls', () => {
+  function renderStampSettings() {
+    const settings = new ToolSettings();
+    const state = makeState({ activeTool: 'stamp', activeStampId: 'stamp-1', stampSize: 120 });
+    const setStampSize = vi.fn();
+    (settings as any)._ctx = {
+      value: {
+        state,
+        isMobile: true,
+        saving: false,
+        setBrushSize: vi.fn(),
+        setStampSize,
+        setStampImage: vi.fn(),
+      },
+    };
+    (settings as any)._recentStamps = [
+      { id: 'stamp-1', projectId: 'project-1', blobRef: 'blob-1', createdAt: 1 },
+    ];
+    (settings as any)._thumbUrls = new Map([['stamp-1', 'blob:thumbnail-1']]);
+    const container = document.createElement('div');
+    render(settings.render(), container, { host: settings });
+    return { settings, container, setStampSize };
+  }
+
+  it('shows stamp-specific sizing without an irrelevant color palette', () => {
+    const { container } = renderStampSettings();
+
+    expect(container.textContent).toContain('Stamp size');
+    expect(container.querySelector('input[type="range"]')?.getAttribute('aria-label')).toBe('Stamp size');
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Stamp size in pixels"]')?.value).toBe('120');
+    expect(container.textContent).not.toContain('Color');
+  });
+
+  it('allows precise stamp sizing with a numeric pixel input', () => {
+    const { container, setStampSize } = renderStampSettings();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Stamp size in pixels"]')!;
+
+    input.value = '333';
+    input.dispatchEvent(new Event('change'));
+
+    expect(setStampSize).toHaveBeenCalledWith(333);
+  });
+
+  it('uses keyboard-accessible labeled buttons and preserves the selected id', () => {
+    const { container } = renderStampSettings();
+    const select = container.querySelector<HTMLButtonElement>('button[aria-label="Select recent stamp 1"]');
+    const remove = container.querySelector<HTMLButtonElement>('button[aria-label="Delete recent stamp 1"]');
+
+    expect(select).not.toBeNull();
+    expect(select?.getAttribute('aria-pressed')).toBe('true');
+    expect(remove).not.toBeNull();
+    expect(container.querySelector('.stamp-preview')).toBeNull();
+  });
+
+  it('does not revoke shared thumbnail URLs when a mobile popover unmounts', () => {
+    const settings = new ToolSettings();
+    (settings as any)._thumbUrls = new Map([['stamp-1', 'blob:thumbnail-1']]);
+    const revoke = vi.spyOn(URL, 'revokeObjectURL');
+
+    settings.disconnectedCallback();
+
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
+  it('clears the previous project stamp actions before loading the next project', () => {
+    const settings = new ToolSettings();
+    (settings as any)._lastProjectId = 'project-1';
+    (settings as any)._recentStamps = [
+      { id: 'stamp-1', projectId: 'project-1', blobRef: 'blob-1', createdAt: 1 },
+    ];
+    (settings as any)._ctx = {
+      value: {
+        state: makeState({ activeTool: 'stamp' }),
+        currentProject: { id: 'project-2' },
+        isMobile: false,
+      },
+    };
+    const loadStamps = vi.spyOn(settings as any, '_loadStamps').mockResolvedValue(undefined);
+
+    settings.willUpdate();
+
+    expect((settings as any)._recentStamps).toEqual([]);
+    expect(loadStamps).toHaveBeenCalledWith('project-2');
+  });
+
+  it('rejects stale select and delete actions from another project', async () => {
+    const settings = new ToolSettings();
+    const getBlob = vi.fn();
+    const deleteStamp = vi.fn();
+    const setStampImage = vi.fn();
+    (settings as any)._lastProjectId = 'project-2';
+    (settings as any)._ctx = {
+      value: {
+        state: makeState({ activeTool: 'stamp' }),
+        currentProject: { id: 'project-2' },
+        setStampImage,
+      },
+    };
+    (settings as any)._storageCtx = {
+      value: {
+        blobs: { get: getBlob },
+        stamps: { delete: deleteStamp },
+      },
+    };
+    const stale = { id: 'stamp-1', projectId: 'project-1', blobRef: 'blob-1', createdAt: 1 };
+
+    await (settings as any)._selectStamp(stale);
+    await (settings as any)._deleteStamp(stale, { stopPropagation: vi.fn() });
+
+    expect(getBlob).not.toHaveBeenCalled();
+    expect(deleteStamp).not.toHaveBeenCalled();
+    expect(setStampImage).not.toHaveBeenCalled();
+  });
+});

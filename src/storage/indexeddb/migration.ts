@@ -97,6 +97,8 @@ export function migrateV3toV4(
 
     switch (entry?.type) {
       case 'draw':
+      case 'transform':
+      case 'patch':
         if (migrateImageData(entry.before)) updated = true;
         if (migrateImageData(entry.after)) updated = true;
         break;

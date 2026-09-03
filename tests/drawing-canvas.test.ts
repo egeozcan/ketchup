@@ -176,6 +176,176 @@ describe('DrawingCanvas', () => {
     expect(values.height).toBeGreaterThanOrEqual(1);
   });
 
+  it('places stamps using stamp size instead of the active brush size', () => {
+    const img = new Image();
+    const { canvas } = setupCanvas({
+      stateOverrides: {
+        activeTool: 'stamp',
+        stampImage: img,
+        stampSize: 120,
+        brush: { size: 4 },
+      },
+    });
+    const createStamp = vi.spyOn(canvas as any, '_createStampAsTransform');
+
+    (canvas as any)._onPointerDown({
+      button: 0,
+      pointerId: 1,
+      pointerType: 'mouse',
+      clientX: 50,
+      clientY: 50,
+      shiftKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+    } as PointerEvent);
+
+    expect(createStamp).toHaveBeenCalledWith(img, expect.any(Number), expect.any(Number), 120, false);
+  });
+
+  it('previews a stamp at the configured stamp size', () => {
+    const img = new Image();
+    Object.defineProperty(img, 'naturalWidth', { value: 20 });
+    Object.defineProperty(img, 'naturalHeight', { value: 10 });
+    const { canvas } = setupCanvas({
+      stateOverrides: {
+        activeTool: 'stamp',
+        stampImage: img,
+        stampSize: 120,
+        brush: { size: 4 },
+      },
+    });
+    const previewCtx = canvas.previewCanvas.getContext('2d')!;
+    const drawImage = vi.spyOn(previewCtx, 'drawImage');
+    (canvas as any)._pointerOnCanvas = true;
+    (canvas as any)._lastPointerScreenX = 100;
+    (canvas as any)._lastPointerScreenY = 80;
+    (canvas as any)._zoom = 1;
+
+    (canvas as any)._renderStampCursor();
+
+    expect(drawImage).toHaveBeenCalledWith(img, 40, 50, 120, 60);
+  });
+
+  it('records an unchanged newly inserted stamp as a bounded patch', () => {
+    const { canvas, activeLayer } = setupCanvas({ width: 100, height: 100 });
+    const layerCtx = activeLayer.canvas.getContext('2d')!;
+    const before = new ImageData(20, 10);
+    const after = new ImageData(20, 10);
+    after.data[3] = 255;
+    vi.spyOn(layerCtx, 'getImageData')
+      .mockReturnValueOnce(before)
+      .mockReturnValueOnce(after);
+    (canvas as any)._transformContentMode = 'inserted';
+    (canvas as any)._transformManager = makeTransformManagerStub({
+      hasChanged: vi.fn(() => false),
+      getBounds: vi.fn(() => ({ x: 10, y: 15, w: 20, h: 10 })),
+    });
+
+    canvas.commitTransform();
+
+    expect((canvas as any)._history).toEqual([
+      expect.objectContaining({
+        type: 'patch',
+        layerId: activeLayer.id,
+        x: 10,
+        y: 15,
+        before,
+        after,
+      }),
+    ]);
+    expect(layerCtx.getImageData).toHaveBeenNthCalledWith(1, 10, 15, 20, 10);
+    expect(layerCtx.getImageData).toHaveBeenNthCalledWith(2, 10, 15, 20, 10);
+  });
+
+  it('undoes and redoes a stamp patch at its document position', () => {
+    const { canvas, activeLayer } = setupCanvas({ width: 100, height: 100 });
+    const layerCtx = activeLayer.canvas.getContext('2d')!;
+    const before = new ImageData(8, 6);
+    const after = new ImageData(8, 6);
+    (canvas as any)._history = [{
+      type: 'patch', layerId: activeLayer.id, x: 12, y: 14, before, after,
+    }];
+    (canvas as any)._historyIndex = 0;
+    const putSpy = vi.spyOn(layerCtx, 'putImageData');
+
+    canvas.undo();
+    canvas.redo();
+
+    expect(putSpy).toHaveBeenNthCalledWith(1, before, 12, 14);
+    expect(putSpy).toHaveBeenNthCalledWith(2, after, 12, 14);
+  });
+
+  it('cancels an inserted stamp without writing it to the layer', () => {
+    const { canvas, activeLayer } = setupCanvas();
+    const layerCtx = activeLayer.canvas.getContext('2d')!;
+    const manager = makeTransformManagerStub();
+    (canvas as any)._transformContentMode = 'inserted';
+    (canvas as any)._transformManager = manager;
+    const putSpy = vi.spyOn(layerCtx, 'putImageData');
+
+    canvas.cancelTransform();
+
+    expect(manager.cancel).toHaveBeenCalledTimes(1);
+    expect(putSpy).not.toHaveBeenCalled();
+    expect((canvas as any)._history).toHaveLength(0);
+  });
+
+  it('preserves transform handles when the stamp cursor preview refreshes', () => {
+    const { canvas } = setupCanvas({ stateOverrides: { activeTool: 'stamp' } });
+    const previewCtx = canvas.previewCanvas.getContext('2d')!;
+    const clearSpy = vi.spyOn(previewCtx, 'clearRect');
+    const img = new Image();
+    Object.defineProperty(img, 'naturalWidth', { value: 20 });
+    Object.defineProperty(img, 'naturalHeight', { value: 10 });
+
+    (canvas as any)._createStampAsTransform(img, 50, 50, 40);
+    expect((canvas as any)._transformManager).not.toBeNull();
+    const renderHandles = vi.spyOn((canvas as any)._transformManager, 'renderPreview');
+
+    (canvas as any)._renderPreview();
+
+    expect(renderHandles).toHaveBeenCalledTimes(1);
+    expect(clearSpy).toHaveBeenCalled();
+  });
+
+  it('keeps Duplicate then Delete as its own undo step', () => {
+    const { canvas } = setupCanvas();
+    const snapshotCanvas = document.createElement('canvas');
+    snapshotCanvas.width = 10;
+    snapshotCanvas.height = 10;
+    (canvas as any)._transformContentMode = 'inserted';
+    (canvas as any)._transformManager = makeTransformManagerStub({
+      snapshot: vi.fn(() => ({ canvas: snapshotCanvas, x: 10, y: 12, w: 10, h: 10 })),
+      getBounds: vi.fn(() => ({ x: 10, y: 12, w: 10, h: 10 })),
+    });
+    (canvas as any)._writeToSystemClipboard = vi.fn();
+
+    canvas.duplicateInPlace();
+    expect((canvas as any)._beforeDrawData).not.toBeNull();
+
+    const historyBeforeDelete = (canvas as any)._history.length;
+    canvas.deleteSelection();
+
+    expect((canvas as any)._transformManager).toBeNull();
+    expect((canvas as any)._history).toHaveLength(historyBeforeDelete + 1);
+  });
+
+  it('captures an undo barrier for a newly imported external-image float', async () => {
+    const { canvas } = setupCanvas();
+    const img = new Image();
+    Object.defineProperty(img, 'naturalWidth', { value: 10 });
+    Object.defineProperty(img, 'naturalHeight', { value: 10 });
+    Object.defineProperty(canvas, 'updateComplete', { value: Promise.resolve(true) });
+    (canvas as any)._ctx.value.addLayer = vi.fn();
+    const captureBeforeDraw = vi.spyOn(canvas as any, '_captureBeforeDraw');
+
+    await (canvas as any)._handleExternalImage(img, 'Imported Image');
+
+    expect(captureBeforeDraw).toHaveBeenCalledTimes(1);
+    expect((canvas as any)._beforeDrawData).not.toBeNull();
+  });
+
   it('reports canUndo when a transform is active with empty history', () => {
     const { canvas } = setupCanvas();
     (canvas as any)._history = [];

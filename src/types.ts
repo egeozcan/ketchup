@@ -59,6 +59,8 @@ export interface DrawingState {
   activePreset: string;
   isPresetModified: boolean;
   stampImage: HTMLImageElement | null;
+  activeStampId: string | null;
+  stampSize: number;
   layers: Layer[];
   activeLayerId: string;
   layersPanelOpen: boolean;
@@ -75,6 +77,7 @@ export interface DrawingState {
 
 export type HistoryEntry =
   | { type: 'draw'; layerId: string; before: ImageData; after: ImageData }
+  | { type: 'patch'; layerId: string; x: number; y: number; before: ImageData; after: ImageData }
   | { type: 'add-layer'; layer: LayerSnapshot; index: number }
   | { type: 'delete-layer'; layer: LayerSnapshot; index: number }
   | { type: 'reorder'; fromIndex: number; toIndex: number }

@@ -22,6 +22,7 @@ export interface ToolSettings {
   fillColor: string;
   useFill: boolean;
   brushSize: number;
+  stampSize?: number;
   opacity?: number;
   flow?: number;
   hardness?: number;
@@ -63,6 +64,7 @@ export interface SerializedLayerSnapshot {
 
 export type SerializedHistoryEntry =
   | { type: 'draw'; layerId: string; before: SerializedImageData; after: SerializedImageData }
+  | { type: 'patch'; layerId: string; x: number; y: number; before: SerializedImageData; after: SerializedImageData }
   | { type: 'add-layer'; layer: SerializedLayerSnapshot; index: number }
   | { type: 'delete-layer'; layer: SerializedLayerSnapshot; index: number }
   | { type: 'reorder'; fromIndex: number; toIndex: number }

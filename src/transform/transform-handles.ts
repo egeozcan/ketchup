@@ -162,6 +162,7 @@ export function drawRotationHandle(
  */
 export function getCommitCancelPositions(
   state: TransformState,
+  config: HandleConfig,
   zoom: number,
 ): { commitCenter: Point; cancelCenter: Point; buttonRadius: number } {
   const tr = localToDoc({ x: state.width, y: 0 }, state);
@@ -169,9 +170,10 @@ export function getCommitCancelPositions(
   const dx = tr.x - center.x;
   const dy = tr.y - center.y;
   const len = Math.sqrt(dx * dx + dy * dy);
-  const offsetPx = 30 / zoom;
-  const buttonRadius = 12 / zoom;
-  const gap = 28 / zoom;
+  const touch = config.shape === 'circle';
+  const offsetPx = (touch ? 38 : 30) / zoom;
+  const buttonRadius = (touch ? 22 : 12) / zoom;
+  const gap = (touch ? 48 : 28) / zoom;
 
   const baseX = len > 1 ? tr.x + (dx / len) * offsetPx : tr.x + offsetPx;
   const baseY = len > 1 ? tr.y + (dy / len) * offsetPx : tr.y - offsetPx;
@@ -189,9 +191,10 @@ export function getCommitCancelPositions(
 export function drawCommitCancelButtons(
   ctx: CanvasRenderingContext2D,
   state: TransformState,
+  config: HandleConfig,
   zoom: number,
 ): void {
-  const { commitCenter, cancelCenter, buttonRadius } = getCommitCancelPositions(state, zoom);
+  const { commitCenter, cancelCenter, buttonRadius } = getCommitCancelPositions(state, config, zoom);
 
   ctx.save();
   ctx.lineCap = 'round';

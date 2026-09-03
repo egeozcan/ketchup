@@ -96,6 +96,8 @@ export class DrawingCanvas extends LitElement {
 
   // --- Floating selection / transform state ---
   private _transformManager: TransformManager | null = null;
+  /** Inserted content is not present on the layer until commit; lifted content is. */
+  private _transformContentMode: 'lifted' | 'inserted' = 'lifted';
   private _clipboard: ImageData | null = null;
   private _clipboardOrigin: Point | null = null;
   private _clipboardRotation = 0;
@@ -183,6 +185,7 @@ export class DrawingCanvas extends LitElement {
     this._captureBeforeDraw();
     const regionData = ctx.getImageData(bounds.x, bounds.y, bounds.w, bounds.h);
     ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+    this._transformContentMode = 'lifted';
     this._transformManager = new TransformManager(
       regionData,
       bounds,
@@ -193,6 +196,7 @@ export class DrawingCanvas extends LitElement {
     this.composite();
     this.requestUpdate();
     this._dispatchTransformChange();
+    this._notifyHistory();
   }
 
   getTransformValues(): { x: number; y: number; width: number; height: number; rotation: number; skewX: number; skewY: number; flipH: boolean; flipV: boolean } | null {
@@ -231,12 +235,39 @@ export class DrawingCanvas extends LitElement {
     const layer = state.layers.find(l => l.id === state.activeLayerId);
     if (!layer) return;
 
-    // Always commit the image back to the layer (the layer was cleared on lift)
+    const layerCtx = layer.canvas.getContext('2d')!;
+    const isInsertion = this._transformContentMode === 'inserted';
+    let patch: { x: number; y: number; w: number; h: number; before: ImageData } | null = null;
+    if (isInsertion) {
+      const bounds = this._transformManager.getBounds();
+      const x = Math.max(0, bounds.x);
+      const y = Math.max(0, bounds.y);
+      const right = Math.min(this._docWidth, bounds.x + bounds.w);
+      const bottom = Math.min(this._docHeight, bounds.y + bounds.h);
+      const w = right - x;
+      const h = bottom - y;
+      if (w > 0 && h > 0) {
+        patch = { x, y, w, h, before: layerCtx.getImageData(x, y, w, h) };
+      }
+    }
+
+    // Always commit the image back to the layer (or add it for an insertion).
     this._transformManager.commit(layer.canvas);
 
-    // Only push history if something actually changed
-    if (this._transformManager.hasChanged() && this._beforeDrawData) {
-      const after = layer.canvas.getContext('2d')!.getImageData(
+    if (isInsertion && patch) {
+      const after = layerCtx.getImageData(patch.x, patch.y, patch.w, patch.h);
+      if (!this._imageDataEqual(patch.before, after)) {
+        this._pushHistoryEntry({
+          type: 'patch',
+          layerId: layer.id,
+          x: patch.x,
+          y: patch.y,
+          before: patch.before,
+          after,
+        });
+      }
+    } else if (this._transformManager.hasChanged() && this._beforeDrawData) {
+      const after = layerCtx.getImageData(
         0, 0, layer.canvas.width, layer.canvas.height,
       );
       this._pushHistoryEntry({
@@ -247,6 +278,8 @@ export class DrawingCanvas extends LitElement {
       });
     }
     this._beforeDrawData = null;
+    this._transformContentMode = 'lifted';
+    this._floatIsExternalImage = false;
 
     this._transformManager.dispose();
     this._transformManager = null;
@@ -256,6 +289,9 @@ export class DrawingCanvas extends LitElement {
     this.composite();
     this.requestUpdate();
     this._dispatchTransformChange();
+    // A no-op or fully off-canvas insertion does not push history, but ending
+    // the transform still changes whether Undo/Redo should be enabled.
+    this._notifyHistory();
   }
 
   cancelTransform(): void {
@@ -265,9 +301,16 @@ export class DrawingCanvas extends LitElement {
     const layer = state.layers.find(l => l.id === state.activeLayerId);
     if (!layer) return;
 
+    if (this._floatIsExternalImage) {
+      this.cancelExternalFloat();
+      return;
+    }
+
     const ctx = layer.canvas.getContext('2d')!;
 
-    if (this._beforeDrawData) {
+    if (this._transformContentMode === 'inserted') {
+      this._transformManager.cancel();
+    } else if (this._beforeDrawData) {
       ctx.putImageData(this._beforeDrawData, 0, 0);
     } else {
       const originalData = this._transformManager.cancel();
@@ -278,12 +321,14 @@ export class DrawingCanvas extends LitElement {
     this._transformManager.dispose();
     this._transformManager = null;
     this._beforeDrawData = null;
+    this._transformContentMode = 'lifted';
     this.previewCanvas.getContext('2d')!.clearRect(
       0, 0, this.previewCanvas.width, this.previewCanvas.height,
     );
     this.composite();
     this.requestUpdate();
     this._dispatchTransformChange();
+    this._notifyHistory();
   }
 
   // --- Viewport helpers ---
@@ -640,17 +685,9 @@ export class DrawingCanvas extends LitElement {
     const after = ctx.getImageData(0, 0, this._docWidth, this._docHeight);
     // Skip no-op: if before and after are identical, discard without pushing.
     if (!force) {
-      const beforeBuf = this._beforeDrawData.data;
-      const afterBuf = after.data;
-      if (beforeBuf.length === afterBuf.length) {
-        let same = true;
-        for (let i = 0; i < beforeBuf.length; i++) {
-          if (beforeBuf[i] !== afterBuf[i]) { same = false; break; }
-        }
-        if (same) {
-          this._beforeDrawData = null;
-          return;
-        }
+      if (this._imageDataEqual(this._beforeDrawData, after)) {
+        this._beforeDrawData = null;
+        return;
       }
     }
     this._pushHistoryEntry({
@@ -660,6 +697,14 @@ export class DrawingCanvas extends LitElement {
       after,
     });
     this._beforeDrawData = null;
+  }
+
+  private _imageDataEqual(a: ImageData, b: ImageData): boolean {
+    if (a.width !== b.width || a.height !== b.height || a.data.length !== b.data.length) return false;
+    for (let i = 0; i < a.data.length; i++) {
+      if (a.data[i] !== b.data[i]) return false;
+    }
+    return true;
   }
 
   /** Called by drawing-app for layer structural operations */
@@ -687,6 +732,7 @@ export class DrawingCanvas extends LitElement {
   private _getEntryLayerId(entry: HistoryEntry): string | null {
     switch (entry.type) {
       case 'draw':
+      case 'patch':
       case 'visibility':
       case 'opacity':
       case 'rename':
@@ -831,6 +877,11 @@ export class DrawingCanvas extends LitElement {
         if (layer) layer.canvas.getContext('2d')!.putImageData(entry.before, 0, 0);
         break;
       }
+      case 'patch': {
+        const layer = state.layers.find(l => l.id === entry.layerId);
+        if (layer) layer.canvas.getContext('2d')!.putImageData(entry.before, entry.x, entry.y);
+        break;
+      }
       case 'add-layer': {
         this.dispatchEvent(new CustomEvent('layer-undo', {
           bubbles: true, composed: true,
@@ -930,6 +981,11 @@ export class DrawingCanvas extends LitElement {
       case 'transform': {
         const layer = state.layers.find(l => l.id === entry.layerId);
         if (layer) layer.canvas.getContext('2d')!.putImageData(entry.after, 0, 0);
+        break;
+      }
+      case 'patch': {
+        const layer = state.layers.find(l => l.id === entry.layerId);
+        if (layer) layer.canvas.getContext('2d')!.putImageData(entry.after, entry.x, entry.y);
         break;
       }
       case 'add-layer': {
@@ -1454,20 +1510,53 @@ export class DrawingCanvas extends LitElement {
     }
   }
 
+  private _renderStampCursor() {
+    if (!this._pointerOnCanvas || this._transformManager) return;
+    const img = this.ctx.state.stampImage;
+    if (!img || img.naturalWidth <= 0 || img.naturalHeight <= 0) return;
+
+    const previewCtx = this.previewCanvas.getContext('2d')!;
+    const size = this.ctx.state.stampSize;
+    const scale = size / Math.max(img.naturalWidth, img.naturalHeight);
+    const w = Math.max(1, img.naturalWidth * scale) * this._zoom;
+    const h = Math.max(1, img.naturalHeight * scale) * this._zoom;
+    const x = this._lastPointerScreenX - w / 2;
+    const y = this._lastPointerScreenY - h / 2;
+
+    previewCtx.save();
+    previewCtx.globalAlpha = 0.55;
+    previewCtx.drawImage(img, x, y, w, h);
+    previewCtx.globalAlpha = 1;
+    previewCtx.strokeStyle = 'rgba(255,255,255,0.9)';
+    previewCtx.lineWidth = 1;
+    previewCtx.setLineDash([4, 3]);
+    previewCtx.strokeRect(x - 0.5, y - 0.5, w + 1, h + 1);
+    previewCtx.restore();
+  }
+
   private _renderPreview() {
     const previewCtx = this.previewCanvas?.getContext('2d');
     if (!previewCtx) return;
+    // TransformManager owns the preview canvas while a float is active. Any
+    // general preview refresh must delegate to it so the outline and handles
+    // remain populated after reactive updates or canvas clears.
+    if (this._transformManager) {
+      this._transformManager.renderPreview();
+      return;
+    }
 
     const { activeTool } = this.ctx.state;
 
-    if (activeTool === 'pencil' || activeTool === 'eraser' || activeTool === 'eyedropper') {
+    if (activeTool === 'pencil' || activeTool === 'eraser' || activeTool === 'eyedropper' || activeTool === 'stamp') {
       previewCtx.clearRect(0, 0, this._vw, this._vh);
 
       if (this._altSampling || activeTool === 'eyedropper') {
         return;
       }
 
-      if (!this._drawing) {
+      if (activeTool === 'stamp') {
+        this._renderStampCursor();
+      } else if (!this._drawing) {
         this._renderBrushCursor();
       }
     }
@@ -1600,8 +1689,14 @@ export class DrawingCanvas extends LitElement {
       // Commit any active transform, then place a new stamp.
       if (this._transformManager) this.commitTransform();
       if (this.ctx.state.stampImage) {
-        this._captureBeforeDraw();
-        this._createStampAsTransform(this.ctx.state.stampImage, p.x, p.y, this._brushDescriptor.size * 10);
+        this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
+        this._createStampAsTransform(
+          this.ctx.state.stampImage,
+          p.x,
+          p.y,
+          this.ctx.state.stampSize,
+          e.pointerType === 'touch',
+        );
       }
       return;
     }
@@ -1767,7 +1862,10 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
-    // Stamp transforms are handled by the TransformManager intercept above.
+    if (activeTool === 'stamp') {
+      this._renderPreview();
+      return;
+    }
 
     // Render brush cursor when hovering (not drawing)
     if (!this._drawing && (activeTool === 'pencil' || activeTool === 'eraser')) {
@@ -2211,6 +2309,7 @@ export class DrawingCanvas extends LitElement {
         this._captureBeforeDraw();
         const regionData = ctx.getImageData(rx, ry, rw, rh);
         ctx.clearRect(rx, ry, rw, rh);
+        this._transformContentMode = 'lifted';
         this._transformManager = new TransformManager(
           regionData,
           { x: rx, y: ry, w: rw, h: rh },
@@ -2473,7 +2572,14 @@ export class DrawingCanvas extends LitElement {
 
   // --- Stamp as TransformManager ---
 
-  private _createStampAsTransform(img: HTMLImageElement, centerX: number, centerY: number, size: number) {
+  private _createStampAsTransform(
+    img: HTMLImageElement,
+    centerX: number,
+    centerY: number,
+    size: number,
+    touch = false,
+  ) {
+    if (img.naturalWidth <= 0 || img.naturalHeight <= 0) return;
     const scale = size / Math.max(img.naturalWidth, img.naturalHeight);
     const w = Math.max(1, Math.round(img.naturalWidth * scale));
     const h = Math.max(1, Math.round(img.naturalHeight * scale));
@@ -2486,6 +2592,7 @@ export class DrawingCanvas extends LitElement {
     src.getContext('2d')!.drawImage(img, 0, 0, w, h);
     const imageData = src.getContext('2d')!.getImageData(0, 0, w, h);
 
+    this._transformContentMode = 'inserted';
     this._transformManager = new TransformManager(
       imageData,
       { x, y, w, h },
@@ -2493,9 +2600,11 @@ export class DrawingCanvas extends LitElement {
       this._zoom,
       { x: this._panX, y: this._panY },
     );
+    this._transformManager.setTouchMode(touch);
     this.composite();
     this.requestUpdate();
     this._dispatchTransformChange();
+    this._notifyHistory();
   }
 
   /**
@@ -2525,7 +2634,8 @@ export class DrawingCanvas extends LitElement {
     this.ctx.addLayer(name);
     await this.updateComplete;
 
-    // Capture before-draw state on the new empty layer (blank ImageData for undo)
+    // Preserve the established undo barrier for deleting an uncommitted
+    // external-image float. Committing it still stores only a bounded patch.
     this._captureBeforeDraw();
 
     // Create the TransformManager for the external image
@@ -2541,6 +2651,7 @@ export class DrawingCanvas extends LitElement {
     src.getContext('2d')!.drawImage(img, 0, 0, w, h);
     const imageData = src.getContext('2d')!.getImageData(0, 0, w, h);
 
+    this._transformContentMode = 'inserted';
     this._transformManager = new TransformManager(
       imageData,
       { x, y, w, h },
@@ -2551,6 +2662,7 @@ export class DrawingCanvas extends LitElement {
     this.composite();
     this.requestUpdate();
     this._dispatchTransformChange();
+    this._notifyHistory();
   }
 
   // --- Public selection API (for keyboard shortcuts) ---
@@ -2608,12 +2720,9 @@ export class DrawingCanvas extends LitElement {
   public pasteSelection() {
     if (!this._clipboard || !this._clipboardOrigin) return;
     if (this._transformManager) this.commitTransform();
-    // Only capture if _beforeDrawData isn't already owned by an in-progress
-    // brush stroke — overwriting it would corrupt that stroke's undo entry.
-    if (!this._beforeDrawData) {
-      this._captureBeforeDraw();
-    }
-
+    // Keep the pre-paste snapshot until the float is either committed or
+    // deleted. Deleting a pasted float is a deliberate, undoable action.
+    if (!this._beforeDrawData) this._captureBeforeDraw();
     const w = this._clipboard.width;
     const h = this._clipboard.height;
 
@@ -2627,6 +2736,7 @@ export class DrawingCanvas extends LitElement {
       w, h,
     );
 
+    this._transformContentMode = 'inserted';
     this._transformManager = new TransformManager(
       imageData,
       { x, y, w, h },
@@ -2640,6 +2750,7 @@ export class DrawingCanvas extends LitElement {
     this.composite();
     this.requestUpdate();
     this._dispatchTransformChange();
+    this._notifyHistory();
   }
 
   public async paste() {
@@ -2706,6 +2817,7 @@ export class DrawingCanvas extends LitElement {
     this._captureBeforeDraw();
     const regionData = ctx.getImageData(bounds.x, bounds.y, bounds.w, bounds.h);
     ctx.clearRect(bounds.x, bounds.y, bounds.w, bounds.h);
+    this._transformContentMode = 'lifted';
     this._transformManager = new TransformManager(
       regionData,
       bounds,
@@ -2732,6 +2844,7 @@ export class DrawingCanvas extends LitElement {
     this._captureBeforeDraw();
     const regionData = ctx.getImageData(0, 0, w, h);
     ctx.clearRect(0, 0, w, h);
+    this._transformContentMode = 'lifted';
     this._transformManager = new TransformManager(
       regionData,
       { x: 0, y: 0, w, h },
@@ -2758,8 +2871,10 @@ export class DrawingCanvas extends LitElement {
       // Commit the first copy back to the layer, then create a new active
       // transform for the duplicate using the rasterized transformed content.
       this.commitTransform();
+      // Deleting the duplicate is an explicit undo step, matching paste.
       this._captureBeforeDraw();
       const dupData = new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+      this._transformContentMode = 'inserted';
       this._transformManager = new TransformManager(
         dupData,
         { x: snapshot.x, y: snapshot.y, w: snapshot.w, h: snapshot.h },
@@ -2770,6 +2885,7 @@ export class DrawingCanvas extends LitElement {
       this.composite();
       this.requestUpdate();
       this._dispatchTransformChange();
+      this._notifyHistory();
     } else {
       // No active transform — paste from internal clipboard if available
       this.pasteSelection();
@@ -2778,6 +2894,13 @@ export class DrawingCanvas extends LitElement {
 
   public deleteSelection() {
     if (!this._transformManager) return;
+    // A newly inserted stamp has no pre-existing layer mutation, so Delete is
+    // equivalent to cancelling it. Pasted floats retain a before snapshot so
+    // their deletion stays as an explicit undo step.
+    if (this._transformContentMode === 'inserted' && !this._beforeDrawData) {
+      this.cancelTransform();
+      return;
+    }
     // Cancel the transform (discards the lifted content, restoring before-draw state
     // if available). Then push a history entry for the deletion.
     if (!this._beforeDrawData) {
@@ -2786,6 +2909,7 @@ export class DrawingCanvas extends LitElement {
     // Discard the transform content by NOT putting it back on the layer.
     this._transformManager.dispose();
     this._transformManager = null;
+    this._transformContentMode = 'lifted';
     // Push history so the deletion is undoable.
     this._pushDrawHistory(true);
     this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
@@ -2848,6 +2972,7 @@ export class DrawingCanvas extends LitElement {
     this._transformManager.dispose();
     this._transformManager = null;
     this._floatIsExternalImage = false;
+    this._transformContentMode = 'lifted';
     this._selectionDrawing = false;
     this._beforeDrawData = null;
     if (this.previewCanvas) {
@@ -2899,12 +3024,8 @@ export class DrawingCanvas extends LitElement {
     if (!this._transformManager) return null;
     const layerId = this._ctx.value?.state.activeLayerId;
     if (!layerId) return null;
-    // Render the transformed content to a temp canvas for persistence
-    const tmpCanvas = document.createElement('canvas');
-    tmpCanvas.width = this._docWidth;
-    tmpCanvas.height = this._docHeight;
-    this._transformManager.renderTransformed(tmpCanvas.getContext('2d')!);
-    return { layerId, tempCanvas: tmpCanvas, x: 0, y: 0 };
+    const snapshot = this._transformManager.snapshot();
+    return { layerId, tempCanvas: snapshot.canvas, x: snapshot.x, y: snapshot.y };
   }
 
   private _onDragOver = (e: DragEvent) => {
@@ -3001,6 +3122,8 @@ export class DrawingCanvas extends LitElement {
     if (this._transformManager) {
       this._transformManager.dispose();
       this._transformManager = null;
+      this._transformContentMode = 'lifted';
+      this._floatIsExternalImage = false;
     }
     this._pointers.clear();
     this._pinching = false;

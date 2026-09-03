@@ -14,6 +14,7 @@ import {
   serializeHistoryEntry, deserializeHistoryEntry,
 } from '../utils/storage-serialization.js';
 import { toolForShortcut, CHILD_TOOL_SET } from './tool-icons.js';
+import { DEFAULT_STAMP_SIZE, normalizeStampSize } from '../tools/stamp-size.js';
 import './app-toolbar.js';
 import './tool-settings.js';
 import './drawing-canvas.js';
@@ -166,6 +167,8 @@ export class DrawingApp extends LitElement {
       activePreset: 'round',
       isPresetModified: false,
       stampImage: null,
+      activeStampId: null,
+      stampSize: DEFAULT_STAMP_SIZE,
       layers: [layer],
       activeLayerId: layer.id,
       layersPanelOpen: true,
@@ -286,6 +289,13 @@ export class DrawingApp extends LitElement {
     this._markDirty();
   }
 
+  private _updateStampSize(size: number) {
+    const stampSize = normalizeStampSize(size, this._state.stampSize);
+    if (stampSize === this._state.stampSize) return;
+    this._state = { ...this._state, stampSize };
+    this._markDirty();
+  }
+
   private async _save(flushing = false) {
     if (this._savePromise) {
       if (flushing) this._forceFlushNextSave = true;
@@ -318,6 +328,7 @@ export class DrawingApp extends LitElement {
             fillColor: this._state.fillColor,
             useFill: this._state.useFill,
             brushSize: this._state.brush.size,
+            stampSize: this._state.stampSize,
             opacity: this._state.brush.opacity,
             flow: this._state.brush.flow,
             hardness: this._state.brush.hardness,
@@ -685,6 +696,14 @@ export class DrawingApp extends LitElement {
       this.canvas?.zoomOut();
     } else if (!ctrl && !e.altKey && (key === '[' || key === ']')) {
       e.preventDefault();
+      if (this._state.activeTool === 'stamp') {
+        const current = this._state.stampSize;
+        const next = key === ']'
+          ? Math.max(current + 1, Math.round(current * 1.1))
+          : Math.min(current - 1, Math.round(current / 1.1));
+        this._updateStampSize(next);
+        return;
+      }
       const current = this._state.brush.size;
       const maxSize = 150;
       const minSize = 1;
@@ -730,6 +749,8 @@ export class DrawingApp extends LitElement {
       activePreset: 'round',
       isPresetModified: false,
       stampImage: null,
+      activeStampId: null,
+      stampSize: DEFAULT_STAMP_SIZE,
       layers: [layer],
       activeLayerId: layer.id,
       layersPanelOpen: true,
@@ -820,6 +841,8 @@ export class DrawingApp extends LitElement {
         activePreset: ts.activePreset ?? 'round',
         isPresetModified: ts.isPresetModified ?? false,
         stampImage: null,
+        activeStampId: null,
+        stampSize: normalizeStampSize(ts.stampSize),
         layers,
         activeLayerId: validActiveId,
         layersPanelOpen: record.layersPanelOpen,
@@ -887,8 +910,11 @@ export class DrawingApp extends LitElement {
         const safe = Number.isNaN(size) ? this._state.brush.size : size;
         this._updateBrush({ size: Math.max(1, Math.min(150, safe)) });
       },
-      setStampImage: (img: HTMLImageElement | null) => {
-        this._state = { ...this._state, stampImage: img };
+      setStampSize: (size: number) => {
+        this._updateStampSize(size);
+      },
+      setStampImage: (img: HTMLImageElement | null, stampId: string | null = null) => {
+        this._state = { ...this._state, stampImage: img, activeStampId: img ? stampId : null };
         this._markDirty();
       },
       undo: () => this.canvas?.undo(),

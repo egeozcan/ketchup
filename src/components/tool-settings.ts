@@ -8,6 +8,8 @@ import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, Bru
 import { BRUSH_PRESETS } from '../engine/brush-presets.js';
 import { getDefaultTipDescriptor, getTipCapabilities } from '../engine/brush-capabilities.js';
 import { StampStrokeEngine } from '../engine/stamp-stroke.js';
+import { getStampThumbnailUrl, removeStampThumbnail } from '../utils/stamp-thumbnail-cache.js';
+import { MAX_STAMP_SIZE, MIN_STAMP_SIZE } from '../tools/stamp-size.js';
 
 const documentPresets = [
   { label: '800 \u00d7 600', width: 800, height: 600 },
@@ -101,6 +103,17 @@ export class ToolSettings extends LitElement {
       text-align: center;
     }
 
+    .stamp-size-input {
+      width: 4.5rem;
+      min-height: 2rem;
+      box-sizing: border-box;
+      border: 1px solid #555;
+      border-radius: 0.25rem;
+      background: #222;
+      color: #ddd;
+      padding: 0.25rem 0.375rem;
+    }
+
     .checkbox-label {
       display: flex;
       align-items: center;
@@ -137,13 +150,11 @@ export class ToolSettings extends LitElement {
       background: #4a7be6;
     }
 
-    .stamp-preview {
-      width: 1.75rem;
-      height: 1.75rem;
-      border-radius: 0.25rem;
-      border: 0.0625rem solid #555;
-      object-fit: contain;
-      background: #222;
+    .stamp-btn:disabled,
+    .stamp-thumb:disabled,
+    .stamp-delete:disabled {
+      opacity: 0.55;
+      cursor: wait;
     }
 
     .separator {
@@ -182,6 +193,15 @@ export class ToolSettings extends LitElement {
       background: #222;
       cursor: pointer;
       display: block;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    .stamp-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
     }
 
     .stamp-thumb:hover {
@@ -193,25 +213,55 @@ export class ToolSettings extends LitElement {
     }
 
     .stamp-delete {
-      display: none;
       position: absolute;
-      top: 0.0625rem;
-      right: 0.0625rem;
-      width: 0.875rem;
-      height: 0.875rem;
+      top: -0.125rem;
+      right: -0.125rem;
+      width: 1.5rem;
+      height: 1.5rem;
       border-radius: 50%;
-      background: #555;
-      color: #ddd;
+      background: #444;
+      color: #fff;
       border: none;
-      font-size: 0.5625rem;
-      line-height: 0.875rem;
+      font-size: 0.875rem;
+      line-height: 1.5rem;
       text-align: center;
       cursor: pointer;
       padding: 0;
+      z-index: 1;
     }
 
-    .stamp-thumb-wrap:hover .stamp-delete {
-      display: block;
+    @media (hover: hover) and (pointer: fine) {
+      .stamp-delete {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .stamp-thumb-wrap:hover .stamp-delete,
+      .stamp-thumb-wrap:focus-within .stamp-delete {
+        opacity: 1;
+        pointer-events: auto;
+      }
+    }
+
+    @media (hover: none), (pointer: coarse) {
+      .stamp-btn {
+        width: 2.75rem;
+        height: 2.75rem;
+      }
+
+      .stamp-thumb-wrap {
+        display: flex;
+        gap: 0.125rem;
+        overflow: visible;
+      }
+
+      .stamp-delete {
+        position: static;
+        width: 2.75rem;
+        height: 2.75rem;
+        border-radius: 0.25rem;
+        line-height: 2.75rem;
+      }
     }
 
     .stamp-delete:hover {
@@ -224,6 +274,17 @@ export class ToolSettings extends LitElement {
       align-items: center;
       gap: 0.5rem;
       margin-left: -0.5rem;
+    }
+
+    .stamp-help {
+      flex-basis: 100%;
+      color: #aaa;
+      font-size: 0.75rem;
+      margin-left: -0.5rem;
+    }
+
+    .stamp-help.error {
+      color: #ff8a8a;
     }
 
     .project-section {
@@ -788,11 +849,17 @@ export class ToolSettings extends LitElement {
     :host([mobile]) input[type="range"] {
       width: 100%;
     }
+
+    :host([mobile]) .stamp-size-input {
+      min-height: 2.75rem;
+    }
   `;
 
   @state() private _aspectLock = false;
   @state() private _recentStamps: StampEntry[] = [];
-  @state() private _activeStampId: string | null = null;
+  @state() private _stampBusy = false;
+  @state() private _stampMessage = '';
+  @state() private _stampMessageError = false;
   @state() private _projectDropdownOpen = false;
   @state() private _advancedOpen = false;
   @state() private _brushDropdownOpen = false;
@@ -809,6 +876,7 @@ export class ToolSettings extends LitElement {
   @state() private _newProjectHeight = '600';
   private _thumbUrls = new Map<string, string>();
   private _lastProjectId: string | null = null;
+  private _stampLoadVersion = 0;
 
   private _ctx = new ContextConsumer(this, {
     context: drawingContext,
@@ -832,12 +900,13 @@ export class ToolSettings extends LitElement {
     const projectId = this._ctx.value?.currentProject?.id ?? null;
     if (projectId && projectId !== this._lastProjectId) {
       this._lastProjectId = projectId;
-      this._activeStampId = null;
-      // Revoke stale thumb URLs from previous project
-      for (const url of this._thumbUrls.values()) {
-        URL.revokeObjectURL(url);
-      }
+      // Remove the previous project's actions synchronously. Thumbnail
+      // decoding can take time, and stale select/delete buttons must never be
+      // usable against the newly active project.
+      this._recentStamps = [];
       this._thumbUrls.clear();
+      this._stampMessage = '';
+      this._stampMessageError = false;
       this._loadStamps(projectId);
     }
   }
@@ -846,38 +915,46 @@ export class ToolSettings extends LitElement {
     super.disconnectedCallback();
     this._closeDropdown();
     document.removeEventListener('click', this._onBrushDropdownOutsideClick);
-    for (const url of this._thumbUrls.values()) {
-      URL.revokeObjectURL(url);
-    }
+    this._stampLoadVersion++;
     this._thumbUrls.clear();
   }
 
   private async _loadStamps(projectId: string) {
     const backend = this._storageCtx.value;
     if (!backend) return;
-    const stamps = await backend.stamps.list(projectId);
-    // Guard against race: project may have changed while awaiting
-    if (this._lastProjectId !== projectId) return;
-    this._recentStamps = stamps;
-    // Revoke old URLs
-    for (const [id, url] of this._thumbUrls) {
-      if (!this._recentStamps.some((s) => s.id === id)) {
-        URL.revokeObjectURL(url);
-        this._thumbUrls.delete(id);
+    const loadVersion = ++this._stampLoadVersion;
+    try {
+      const stamps = await backend.stamps.list(projectId);
+      if (this._lastProjectId !== projectId || loadVersion !== this._stampLoadVersion) return;
+      this._recentStamps = stamps;
+
+      const currentIds = new Set(stamps.map(s => s.id));
+      for (const id of this._thumbUrls.keys()) {
+        if (!currentIds.has(id)) this._thumbUrls.delete(id);
       }
-    }
-    // Create new URLs (fetch blobs in parallel)
-    await Promise.all(stamps.map(async (s) => {
-      if (!this._thumbUrls.has(s.id)) {
-        const blob = await backend.blobs.get(s.blobRef);
-        this._thumbUrls.set(s.id, URL.createObjectURL(blob));
+
+      // Decode originals one at a time to cap peak memory, then retain only
+      // small session-cached thumbnails.
+      for (const stamp of stamps) {
+        if (this._lastProjectId !== projectId || loadVersion !== this._stampLoadVersion) return;
+        if (!this._thumbUrls.has(stamp.id)) {
+          this._thumbUrls.set(stamp.id, await getStampThumbnailUrl(backend, stamp));
+          // _thumbUrls is not reactive; refresh the row as each thumbnail is
+          // ready instead of holding back the entire list.
+          if (this._lastProjectId === projectId && loadVersion === this._stampLoadVersion) {
+            this._recentStamps = [...stamps];
+          }
+        }
       }
-    }));
-    // _thumbUrls is a plain Map — mutating it doesn't schedule a Lit update.
-    // Re-assign _recentStamps to trigger a rerender so <img src> bindings pick
-    // up the newly populated URLs.
-    if (this._lastProjectId === projectId) {
-      this._recentStamps = [...this._recentStamps];
+
+      if (this._lastProjectId === projectId && loadVersion === this._stampLoadVersion) {
+        this._recentStamps = stamps;
+      }
+    } catch (error) {
+      if (this._lastProjectId === projectId && loadVersion === this._stampLoadVersion) {
+        this._stampMessage = error instanceof Error ? error.message : 'Could not load recent stamps.';
+        this._stampMessageError = true;
+      }
     }
   }
 
@@ -891,6 +968,10 @@ export class ToolSettings extends LitElement {
 
   private _onBrushSize(e: Event) {
     this.ctx.setBrushSize(Number((e.target as HTMLInputElement).value));
+  }
+
+  private _onStampSize(e: Event) {
+    this.ctx.setStampSize(Number((e.target as HTMLInputElement).value));
   }
 
   private _onUseFill(e: Event) {
@@ -915,66 +996,108 @@ export class ToolSettings extends LitElement {
       const MAX_STAMP_SIZE = 10 * 1024 * 1024; // 10MB
       const MAX_STAMP_DIMENSION = 4096;
       let lastEntry: StampEntry | null = null;
-      for (const file of files) {
-        if (file.size > MAX_STAMP_SIZE) {
-          console.warn('Stamp file too large, skipping:', file.name);
-          continue;
-        }
-        try {
-          const bitmap = await createImageBitmap(file);
-          if (bitmap.width > MAX_STAMP_DIMENSION || bitmap.height > MAX_STAMP_DIMENSION) {
-            bitmap.close();
-            console.warn('Stamp dimensions too large, skipping:', file.name);
+      let added = 0;
+      let skipped = 0;
+      this._stampBusy = true;
+      this._stampMessage = `Importing ${files.length === 1 ? files[0].name : `${files.length} images`}…`;
+      this._stampMessageError = false;
+      try {
+        for (const file of files) {
+          if (this._ctx.value?.currentProject?.id !== currentProjectId) break;
+          if (file.size > MAX_STAMP_SIZE) {
+            skipped++;
             continue;
           }
-          bitmap.close();
-        } catch {
-          console.warn('Invalid image file, skipping:', file.name);
-          continue;
+          try {
+            const bitmap = await createImageBitmap(file);
+            if (bitmap.width > MAX_STAMP_DIMENSION || bitmap.height > MAX_STAMP_DIMENSION) {
+              skipped++;
+              bitmap.close();
+              continue;
+            }
+            bitmap.close();
+          } catch {
+            skipped++;
+            continue;
+          }
+          lastEntry = await service.addStamp(currentProjectId, file);
+          added++;
         }
-        lastEntry = await service.addStamp(currentProjectId, file);
+        await this._loadStamps(currentProjectId);
+        if (lastEntry && this._lastProjectId === currentProjectId) {
+          this._stampBusy = false;
+          await this._selectStamp(lastEntry, false);
+        }
+        this._stampMessage = added > 0
+          ? `${added} ${added === 1 ? 'stamp' : 'stamps'} added${skipped ? `; ${skipped} skipped (10 MB / 4096 px limit).` : '.'}`
+          : 'No stamps were added. Use a valid image up to 10 MB and 4096 px per side.';
+        this._stampMessageError = added === 0;
+      } catch (error) {
+        this._stampMessage = error instanceof Error ? error.message : 'Could not add the stamp.';
+        this._stampMessageError = true;
+      } finally {
+        this._stampBusy = false;
       }
-      await this._loadStamps(currentProjectId);
-      if (!lastEntry) return;
-      const url = this._thumbUrls.get(lastEntry.id);
-      if (!url) return;
-      const capturedProjectId = this._lastProjectId;
-      const img = new Image();
-      img.onload = () => {
-        if (this._lastProjectId !== capturedProjectId) return;
-        this.ctx.setStampImage(img);
-        this._activeStampId = lastEntry!.id;
-      };
-      img.src = url;
     };
     input.click();
   }
 
-  private _selectStamp(entry: StampEntry) {
-    const url = this._thumbUrls.get(entry.id);
-    if (!url) return;
-    const capturedProjectId = this._lastProjectId;
-    const img = new Image();
-    img.onload = () => {
-      if (this._lastProjectId !== capturedProjectId) return;
-      this.ctx.setStampImage(img);
-      this._activeStampId = entry.id;
-    };
-    img.src = url;
+  private async _selectStamp(entry: StampEntry, showStatus = true) {
+    const backend = this._storageCtx.value;
+    const capturedProjectId = this._ctx.value?.currentProject?.id ?? null;
+    if (!backend || this._stampBusy || !capturedProjectId ||
+        entry.projectId !== capturedProjectId || this._lastProjectId !== capturedProjectId) return;
+    this._stampBusy = true;
+    if (showStatus) {
+      this._stampMessage = 'Loading stamp…';
+      this._stampMessageError = false;
+    }
+    try {
+      const blob = await backend.blobs.get(entry.blobRef);
+      const url = URL.createObjectURL(blob);
+      let img: HTMLImageElement;
+      try {
+        img = await new Promise<HTMLImageElement>((resolve, reject) => {
+          const candidate = new Image();
+          candidate.onload = () => resolve(candidate);
+          candidate.onerror = () => reject(new Error('The stamp image could not be decoded.'));
+          candidate.src = url;
+        });
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      if (this._lastProjectId !== capturedProjectId ||
+          this._ctx.value?.currentProject?.id !== capturedProjectId) return;
+      this.ctx.setStampImage(img, entry.id);
+      if (showStatus) this._stampMessage = 'Stamp selected. Click the canvas to place it.';
+    } catch (error) {
+      this._stampMessage = error instanceof Error ? error.message : 'Could not load the stamp.';
+      this._stampMessageError = true;
+    } finally {
+      this._stampBusy = false;
+    }
   }
 
   private async _deleteStamp(entry: StampEntry, e: Event) {
     e.stopPropagation();
     const projectId = this._ctx.value?.currentProject?.id;
-    if (!projectId) return;
+    if (!projectId || entry.projectId !== projectId || this._lastProjectId !== projectId) return;
     const backend = this._storageCtx.value;
     if (!backend) return;
-    await backend.stamps.delete(entry.id);
-    if (this._activeStampId === entry.id) {
-      this._activeStampId = null;
-      this.ctx.setStampImage(null);
+    try {
+      await backend.stamps.delete(entry.id);
+      removeStampThumbnail(entry.id);
+      if (this._ctx.value?.currentProject?.id !== projectId || this._lastProjectId !== projectId) return;
+      if (this.ctx.state.activeStampId === entry.id) {
+        this.ctx.setStampImage(null, null);
+      }
+      await this._loadStamps(projectId);
+      this._stampMessage = 'Stamp removed.';
+      this._stampMessageError = false;
+    } catch (error) {
+      this._stampMessage = error instanceof Error ? error.message : 'Could not remove the stamp.';
+      this._stampMessageError = true;
     }
-    await this._loadStamps(projectId);
   }
 
   private _closeDropdown() {
@@ -1340,7 +1463,7 @@ export class ToolSettings extends LitElement {
     if (!this._ctx.value) return html``;
 
     const state = this.ctx.state;
-    const { strokeColor, fillColor, useFill, activeTool, stampImage, brush } = state;
+    const { strokeColor, fillColor, useFill, activeTool, stampImage, stampSize, brush } = state;
     const tipCapabilities = getTipCapabilities(brush.tip.shape);
     const tipDefaults = getDefaultTipDescriptor(brush.tip.shape);
 
@@ -1403,7 +1526,7 @@ export class ToolSettings extends LitElement {
         <div class="separator"></div>
       ` : ''}
 
-      ${activeTool !== 'eraser' ? html`
+      ${activeTool !== 'eraser' && activeTool !== 'stamp' ? html`
       <div class="section">
         <label>Color</label>
         <input
@@ -1430,15 +1553,30 @@ export class ToolSettings extends LitElement {
       ` : nothing}
 
       <div class="section">
-        <label>Size</label>
+        <label>${activeTool === 'stamp' ? 'Stamp size' : 'Size'}</label>
         <input
           type="range"
-          min="1"
-          max="150"
-          .value=${String(brushSize)}
-          @input=${this._onBrushSize}
+          min=${activeTool === 'stamp' ? MIN_STAMP_SIZE : 1}
+          max=${activeTool === 'stamp' ? MAX_STAMP_SIZE : 150}
+          aria-label=${activeTool === 'stamp' ? 'Stamp size' : 'Brush size'}
+          .value=${String(activeTool === 'stamp' ? stampSize : brushSize)}
+          @input=${activeTool === 'stamp' ? this._onStampSize : this._onBrushSize}
         />
-        <span class="size-value">${brushSize}</span>
+        ${activeTool === 'stamp'
+          ? html`
+              <input
+                class="stamp-size-input"
+                type="number"
+                min=${MIN_STAMP_SIZE}
+                max=${MAX_STAMP_SIZE}
+                step="1"
+                aria-label="Stamp size in pixels"
+                title="Stamp size in pixels"
+                .value=${String(stampSize)}
+                @change=${this._onStampSize}
+              />
+            `
+          : html`<span class="size-value">${brushSize}</span>`}
       </div>
 
       ${(activeTool === 'pencil' || activeTool === 'eraser') ? html`
@@ -1725,7 +1863,13 @@ export class ToolSettings extends LitElement {
       ${activeTool === 'stamp'
         ? html`
             <div class="stamp-line">
-              <button class="stamp-btn" @click=${this._uploadStamp} title="Upload Image">
+              <button
+                class="stamp-btn"
+                @click=${this._uploadStamp}
+                title="Upload one or more stamp images"
+                aria-label="Upload one or more stamp images"
+                ?disabled=${this._stampBusy}
+              >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                   <polyline points="17 8 12 3 7 8"/>
@@ -1736,17 +1880,29 @@ export class ToolSettings extends LitElement {
             ? html`
                     <div class="stamp-row">
                       ${this._recentStamps.map(
-              (s) => html`
+              (s, index) => html`
                           <div class="stamp-thumb-wrap">
-                            <img
-                              class="stamp-thumb ${this._activeStampId === s.id ? 'active' : ''}"
-                              src=${this._thumbUrls.get(s.id) ?? ''}
-                              alt="stamp"
+                            <button
+                              class="stamp-thumb ${state.activeStampId === s.id ? 'active' : ''}"
+                              aria-label=${`Select recent stamp ${index + 1}`}
+                              aria-pressed=${state.activeStampId === s.id ? 'true' : 'false'}
+                              title=${`Select recent stamp ${index + 1}`}
                               @click=${() => this._selectStamp(s)}
-                            />
+                              ?disabled=${this._stampBusy}
+                            >
+                              <img
+                                src=${this._thumbUrls.get(s.id) ?? ''}
+                                alt=""
+                                loading="lazy"
+                                decoding="async"
+                              />
+                            </button>
                             <button
                               class="stamp-delete"
+                              aria-label=${`Delete recent stamp ${index + 1}`}
+                              title=${`Delete recent stamp ${index + 1}`}
                               @click=${(e: Event) => this._deleteStamp(s, e)}
+                              ?disabled=${this._stampBusy}
                             >&times;</button>
                           </div>
                         `,
@@ -1754,9 +1910,15 @@ export class ToolSettings extends LitElement {
                     </div>
                   `
             : ''}
-              ${stampImage
-            ? html`<img class="stamp-preview" .src=${stampImage.src} alt="stamp" />`
-            : ''}
+            </div>
+            <div
+              class="stamp-help ${this._stampMessageError ? 'error' : ''}"
+              role="status"
+              aria-live="polite"
+            >
+              ${this._stampMessage || (stampImage
+                ? 'Click the canvas to place the selected stamp. Enter accepts; Escape cancels.'
+                : 'Choose a recent stamp or upload an image, then click the canvas.')}
             </div>
           `
         : ''}

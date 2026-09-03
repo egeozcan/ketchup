@@ -38,8 +38,6 @@ export class TransformManager {
   private _previewCanvas: HTMLCanvasElement;
   private _zoom: number;
   private _pan: Point;
-  private _dashOffset = 0;
-  private _animFrame: number | null = null;
 
   constructor(
     source: ImageData,
@@ -72,7 +70,7 @@ export class TransformManager {
     };
     this._initialState = { ...this._state };
 
-    this._startAnimation();
+    this.renderPreview();
   }
 
   // --- Public getters/setters for numeric panel ---
@@ -133,12 +131,13 @@ export class TransformManager {
 
   setTouchMode(touch: boolean): void {
     this._handleConfig = touch ? HANDLE_CONFIG_TOUCH : HANDLE_CONFIG_DESKTOP;
+    this.renderPreview();
   }
 
   // --- Pointer event handlers ---
 
   onPointerDown(docPoint: Point, modifiers: { shift: boolean; ctrl: boolean; alt: boolean }): boolean {
-    const buttons = getCommitCancelPositions(this._state, this._zoom);
+    const buttons = getCommitCancelPositions(this._state, this._handleConfig, this._zoom);
     const commitDist = Math.hypot(docPoint.x - buttons.commitCenter.x, docPoint.y - buttons.commitCenter.y);
     if (commitDist <= buttons.buttonRadius) return true;
     const cancelDist = Math.hypot(docPoint.x - buttons.cancelCenter.x, docPoint.y - buttons.cancelCenter.y);
@@ -208,7 +207,7 @@ export class TransformManager {
   }
 
   onPointerUp(docPoint: Point): 'commit' | 'cancel-button' | 'commit-button' | null {
-    const buttons = getCommitCancelPositions(this._state, this._zoom);
+    const buttons = getCommitCancelPositions(this._state, this._handleConfig, this._zoom);
     const commitDist = Math.hypot(docPoint.x - buttons.commitCenter.x, docPoint.y - buttons.commitCenter.y);
     if (commitDist <= buttons.buttonRadius) {
       this._interaction = { type: 'idle' };
@@ -336,7 +335,7 @@ export class TransformManager {
     ctx.closePath();
     ctx.stroke();
     ctx.strokeStyle = '#3b82f6';
-    ctx.lineDashOffset = this._dashOffset / this._zoom;
+    ctx.lineDashOffset = 4 / this._zoom;
     ctx.beginPath();
     ctx.moveTo(corners[0].x, corners[0].y);
     for (let i = 1; i < 4; i++) ctx.lineTo(corners[i].x, corners[i].y);
@@ -346,7 +345,7 @@ export class TransformManager {
 
     drawHandles(ctx, this._state, this._handleConfig, this._zoom);
     drawRotationHandleUI(ctx, this._state, this._handleConfig, this._zoom);
-    drawCommitCancelButtons(ctx, this._state, this._zoom);
+    drawCommitCancelButtons(ctx, this._state, this._handleConfig, this._zoom);
 
     ctx.restore();
   }
@@ -416,11 +415,9 @@ export class TransformManager {
       ctx.drawImage(this._sourceCanvas, 0, 0, this._state.width, this._state.height);
       ctx.restore();
     }
-    this._stopAnimation();
   }
 
   cancel(): ImageData {
-    this._stopAnimation();
     return this._sourceImageData;
   }
 
@@ -434,16 +431,18 @@ export class TransformManager {
 
   getState(): Readonly<TransformState> { return this._state; }
   getSourceRect(): Readonly<TransformRect> { return this._sourceRect; }
+  getBounds(): { x: number; y: number; w: number; h: number } { return this._getSnapshotBounds(); }
 
   // --- Viewport ---
 
   updateViewport(zoom: number, pan: Point): void {
     this._zoom = zoom;
     this._pan = pan;
+    this.renderPreview();
   }
 
   getCursor(docPoint: Point): string {
-    const buttons = getCommitCancelPositions(this._state, this._zoom);
+    const buttons = getCommitCancelPositions(this._state, this._handleConfig, this._zoom);
     const commitDist = Math.hypot(docPoint.x - buttons.commitCenter.x, docPoint.y - buttons.commitCenter.y);
     if (commitDist <= buttons.buttonRadius) return 'pointer';
     const cancelDist = Math.hypot(docPoint.x - buttons.cancelCenter.x, docPoint.y - buttons.cancelCenter.y);
@@ -458,15 +457,6 @@ export class TransformManager {
   }
 
   private _getSnapshotBounds(): { x: number; y: number; w: number; h: number } {
-    if (!this._perspectiveActive && this._state.rotation === 0 && this._state.skewX === 0 && this._state.skewY === 0) {
-      return {
-        x: Math.floor(this._state.x),
-        y: Math.floor(this._state.y),
-        w: Math.max(1, Math.ceil(this.width)),
-        h: Math.max(1, Math.ceil(this.height)),
-      };
-    }
-
     const corners = this._perspectiveActive
       ? getPerspectiveDestCorners(this._state, this._perspectiveCorners)
       : [
@@ -484,23 +474,5 @@ export class TransformManager {
     return { x, y, w, h };
   }
 
-  private _startAnimation(): void {
-    const animate = () => {
-      this._dashOffset = (this._dashOffset + 0.5) % 12;
-      this.renderPreview();
-      this._animFrame = requestAnimationFrame(animate);
-    };
-    this._animFrame = requestAnimationFrame(animate);
-  }
-
-  private _stopAnimation(): void {
-    if (this._animFrame !== null) {
-      cancelAnimationFrame(this._animFrame);
-      this._animFrame = null;
-    }
-  }
-
-  dispose(): void {
-    this._stopAnimation();
-  }
+  dispose(): void {}
 }

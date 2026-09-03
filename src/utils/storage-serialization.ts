@@ -92,6 +92,13 @@ export async function serializeHistoryEntry(
       ]);
       return { type: 'draw', layerId: entry.layerId, before, after };
     }
+    case 'patch': {
+      const [before, after] = await Promise.all([
+        serializeImageData(entry.before, blobs),
+        serializeImageData(entry.after, blobs),
+      ]);
+      return { type: 'patch', layerId: entry.layerId, x: entry.x, y: entry.y, before, after };
+    }
     case 'add-layer':
       return { type: 'add-layer', layer: await serializeSnapshot(entry.layer, blobs), index: entry.index };
     case 'delete-layer':
@@ -145,6 +152,13 @@ export async function deserializeHistoryEntry(
         deserializeImageData(entry.after, blobs),
       ]);
       return { type: 'draw', layerId: entry.layerId, before, after };
+    }
+    case 'patch': {
+      const [before, after] = await Promise.all([
+        deserializeImageData(entry.before, blobs),
+        deserializeImageData(entry.after, blobs),
+      ]);
+      return { type: 'patch', layerId: entry.layerId, x: entry.x, y: entry.y, before, after };
     }
     case 'add-layer':
       return { type: 'add-layer', layer: await deserializeSnapshot(entry.layer, blobs), index: entry.index };

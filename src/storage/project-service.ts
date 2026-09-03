@@ -107,6 +107,8 @@ export function collectBlobRefsFromEntry(
 ): void {
   switch (entry.type) {
     case 'draw':
+    case 'patch':
+    case 'transform':
       refs.add(entry.before.blobRef);
       refs.add(entry.after.blobRef);
       break;

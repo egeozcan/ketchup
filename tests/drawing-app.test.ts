@@ -38,6 +38,39 @@ describe('DrawingApp', () => {
     vi.useRealTimers();
   });
 
+  it('uses an independent 120px default for stamps', () => {
+    const app = createAppWithCanvasSpies();
+    const ctx = (app as any)._buildContextValue();
+
+    expect((app as any)._state.stampSize).toBe(120);
+    expect((app as any)._state.brush.size).toBe(4);
+
+    ctx.setStampSize(240);
+
+    expect((app as any)._state.stampSize).toBe(240);
+    expect((app as any)._state.brush.size).toBe(4);
+  });
+
+  it('resizes stamps with bracket shortcuts without changing the brush size', () => {
+    const app = createAppWithCanvasSpies();
+    (app as any)._state = {
+      ...(app as any)._state,
+      activeTool: 'stamp',
+      stampSize: 120,
+      brush: { ...(app as any)._state.brush, size: 4 },
+    };
+
+    (app as any)._onKeyDown(makeKeyEvent(']', []));
+
+    expect((app as any)._state.stampSize).toBe(132);
+    expect((app as any)._state.brush.size).toBe(4);
+
+    (app as any)._onKeyDown(makeKeyEvent('[', []));
+
+    expect((app as any)._state.stampSize).toBe(120);
+    expect((app as any)._state.brush.size).toBe(4);
+  });
+
   it('does not run shortcuts while typing in text inputs', () => {
     const app = createAppWithCanvasSpies();
     const input = document.createElement('input');
@@ -374,6 +407,7 @@ describe('DrawingApp', () => {
     // activeLayerId must fall back to the first layer, not stay on the
     // non-existent 'deleted-layer-id'.
     expect((app as any)._state.activeLayerId).toBe('real-layer');
+    expect((app as any)._state.stampSize).toBe(120);
 
     deserSpy.mockRestore();
   });
@@ -443,6 +477,7 @@ describe('DrawingApp', () => {
         fillColor: '#405060',
         useFill: true,
         brushSize: 18,
+        stampSize: 320,
         opacity: 0.4,
         flow: 0.6,
         hardness: 0.3,
@@ -497,6 +532,7 @@ describe('DrawingApp', () => {
       tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' },
       ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
     });
+    expect((app as any)._state.stampSize).toBe(320);
     expect((app as any)._state.activePreset).toBe('flat');
     expect((app as any)._state.isPresetModified).toBe(true);
     expect((app as any)._state.cropAspectRatio).toBe('16:9');
@@ -648,6 +684,7 @@ describe('DrawingApp', () => {
       fillColor: '#405060',
       useFill: true,
       brushSize: 18,
+      stampSize: 120,
       opacity: 0.4,
       flow: 0.6,
       hardness: 0.3,

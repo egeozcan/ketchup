@@ -56,7 +56,7 @@ describe('DrawingCanvas transformed selection clipboard operations', () => {
 
     expect((canvas as any)._clipboard.width).toBe(16);
     expect((canvas as any)._clipboard.height).toBe(6);
-    expect((canvas as any)._clipboardOrigin).toEqual({ x: 5, y: 7 });
+    expect((canvas as any)._clipboardOrigin).toEqual({ x: 2, y: 9 });
   });
 
   it('cutSelection clears the transformed region, not the original source rect', () => {
@@ -66,7 +66,7 @@ describe('DrawingCanvas transformed selection clipboard operations', () => {
 
     canvas.cutSelection();
 
-    expect(clearRectSpy).toHaveBeenCalledWith(5, 7, 16, 6);
+    expect(clearRectSpy).toHaveBeenCalledWith(2, 9, 16, 6);
   });
 
   it('duplicateInPlace duplicates the current transformed result', () => {
@@ -76,10 +76,10 @@ describe('DrawingCanvas transformed selection clipboard operations', () => {
 
     expect((canvas as any)._clipboard.width).toBe(16);
     expect((canvas as any)._clipboard.height).toBe(6);
-    expect((canvas as any)._clipboardOrigin).toEqual({ x: 5, y: 7 });
+    expect((canvas as any)._clipboardOrigin).toEqual({ x: 2, y: 9 });
     expect((canvas as any).getTransformValues()).toMatchObject({
-      x: 5,
-      y: 7,
+      x: 2,
+      y: 9,
       width: 16,
       height: 6,
     });
