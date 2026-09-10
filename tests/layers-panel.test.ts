@@ -1,5 +1,32 @@
 import { describe, expect, it, vi } from 'vitest';
 import { LayersPanel } from '../src/components/layers-panel.ts';
+import { ContextProvider } from '@lit/context';
+import { drawingContext, type DrawingContextValue } from '../src/contexts/drawing-context.ts';
+import { makeState } from './helpers.ts';
+
+describe('LayersPanel mobile update cycle', () => {
+  it('renders sheet visibility in one update when context opens or closes it', async () => {
+    const host = document.createElement('div');
+    const context = {
+      state: makeState({ layersPanelOpen: false }),
+      isMobile: true,
+    } as DrawingContextValue;
+    const provider = new ContextProvider(host, { context: drawingContext, initialValue: context });
+    const panel = new LayersPanel();
+    host.append(panel);
+    document.body.append(host);
+    try {
+      expect(await panel.updateComplete).toBe(true);
+      for (const open of [true, false, true]) {
+        provider.setValue({ ...context, state: { ...context.state, layersPanelOpen: open } });
+        expect(await panel.updateComplete, 'sheet synchronization must not schedule another render').toBe(true);
+        expect(panel.shadowRoot!.querySelector('.sheet')!.classList.contains('open')).toBe(open);
+      }
+    } finally {
+      host.remove();
+    }
+  });
+});
 
 describe('LayersPanel thumbnails', () => {
   it('applies layer opacity to thumbnails of hidden layers', () => {

@@ -163,6 +163,10 @@ export class AppToolbar extends LitElement {
       bottom: calc(52px + env(safe-area-inset-bottom));
       left: 8px;
       right: 8px;
+      max-height: calc(100dvh - 72px - env(safe-area-inset-bottom));
+      box-sizing: border-box;
+      overflow-y: auto;
+      overscroll-behavior: contain;
       background: #2c2c2c;
       border: 1px solid #555;
       border-radius: 12px;
@@ -171,6 +175,10 @@ export class AppToolbar extends LitElement {
       z-index: 100;
       touch-action: manipulation;
       box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
+    }
+
+    .popover > * {
+      flex-shrink: 0;
     }
 
     .popover-backdrop {
@@ -636,6 +644,8 @@ export class AppToolbar extends LitElement {
             class=${isActiveGroup ? 'active' : ''}
             title=${isShapeGroup ? 'Shapes' : toolLabels[displayTool]}
             aria-label=${isShapeGroup ? 'Shapes' : toolLabels[displayTool]}
+            aria-expanded=${this._popoverGroup === i}
+            aria-controls="mobile-tool-popover"
             @click=${() => this._onMobileToolTap(group, i)}
           >${isShapeGroup ? shapesIcon : toolIcons[displayTool]}</button>
         `;
@@ -658,7 +668,7 @@ export class AppToolbar extends LitElement {
       <!-- Popover -->
       ${this._popoverGroup !== null ? html`
         <div class="popover-backdrop" @click=${() => this._closePopover()}></div>
-        <div class="popover">
+        <div class="popover" id="mobile-tool-popover">
           ${this._renderPopoverContent(activeTool)}
         </div>
       ` : ''}
@@ -697,6 +707,11 @@ export class AppToolbar extends LitElement {
   private _renderPopoverContent(activeTool: ToolType) {
     if (this._popoverGroup === -1) {
       return html`
+        <button class="menu-btn" @click=${() => {
+          const groupIndex = toolGroups.findIndex(group => group.includes(activeTool));
+          if (groupIndex !== -1) this._onMobileToolTap(toolGroups[groupIndex], groupIndex);
+        }}>Tool settings</button>
+        <div class="popover-divider"></div>
         <span class="popover-label">Projects</span>
         <div class="project-list">
           ${this.ctx.projectList.map(p => html`

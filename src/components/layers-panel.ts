@@ -1168,8 +1168,9 @@ export class LayersPanel extends LitElement {
 
   // ── Thumbnails ──────────────────────────────
 
-  override updated(changed: Map<string, unknown>) {
-    super.updated(changed);
+  override willUpdate() {
+    // Synchronize reactive sheet state before rendering so opening/closing the
+    // panel is included in this update instead of scheduling a second one.
     if (this.ctx?.isMobile && !this._syncingSheet) {
       this._syncingSheet = true;
       if (this.ctx.state.layersPanelOpen && !this._sheetOpen) {
@@ -1179,6 +1180,10 @@ export class LayersPanel extends LitElement {
       }
       this._syncingSheet = false;
     }
+  }
+
+  override updated(changed: Map<string, unknown>) {
+    super.updated(changed);
 
     // Every viewport change (wheel zoom, pan, pinch) rebuilds the context value and
     // re-renders this panel, so painting thumbnails here unthrottled would redraw

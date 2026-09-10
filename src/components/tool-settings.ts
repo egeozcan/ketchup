@@ -878,6 +878,7 @@ export class ToolSettings extends LitElement {
 
     :host([mobile]) .section {
       width: 100%;
+      min-width: 0;
     }
 
     :host([mobile]) .separator {
@@ -885,7 +886,9 @@ export class ToolSettings extends LitElement {
     }
 
     :host([mobile]) input[type="range"] {
-      width: 100%;
+      flex: 1;
+      min-width: 0;
+      width: 0;
     }
 
     :host([mobile]) .stamp-size-input {
@@ -1591,6 +1594,7 @@ export class ToolSettings extends LitElement {
           .value=${strokeColor}
           @input=${this._onStrokeColor}
           title="Stroke color"
+          aria-label="Stroke color"
         />
         <div class="color-grid">
           ${presetColors.map(
@@ -1668,19 +1672,19 @@ export class ToolSettings extends LitElement {
         <div class="separator"></div>
         <div class="section">
           <label>Opacity</label>
-          <input type="range" min="0" max="100" .value=${String(Math.round(brush.opacity * 100))}
+          <input type="range" aria-label="Brush opacity" min="0" max="100" .value=${String(Math.round(brush.opacity * 100))}
             @input=${(e: Event) => this.ctx.setBrush({ opacity: Number((e.target as HTMLInputElement).value) / 100 })} />
           <span class="size-value">${Math.round(brush.opacity * 100)}%</span>
         </div>
         <div class="section">
           <label>Flow</label>
-          <input type="range" min="1" max="100" .value=${String(Math.round(brush.flow * 100))}
+          <input type="range" aria-label="Brush flow" min="1" max="100" .value=${String(Math.round(brush.flow * 100))}
             @input=${(e: Event) => this.ctx.setBrush({ flow: Number((e.target as HTMLInputElement).value) / 100 })} />
           <span class="size-value">${Math.round(brush.flow * 100)}%</span>
         </div>
         <div class="section">
           <label>Hardness</label>
-          <input type="range" min="0" max="100" .value=${String(Math.round(brush.hardness * 100))}
+          <input type="range" aria-label="Brush hardness" min="0" max="100" .value=${String(Math.round(brush.hardness * 100))}
             @input=${(e: Event) => this.ctx.setBrush({ hardness: Number((e.target as HTMLInputElement).value) / 100 })} />
           <span class="size-value">${Math.round(brush.hardness * 100)}%</span>
         </div>
