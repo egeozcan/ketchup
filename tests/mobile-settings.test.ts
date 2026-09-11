@@ -6,29 +6,48 @@ import { makeState } from './helpers.ts';
 
 afterEach(() => document.body.replaceChildren());
 
+async function renderMobileToolbar(contextOverrides: Partial<DrawingContextValue>) {
+  const host = document.createElement('div');
+  new ContextProvider(host, {
+    context: drawingContext,
+    initialValue: {
+      state: makeState({ layersPanelOpen: false }),
+      isMobile: true,
+      projectList: [],
+      ...contextOverrides,
+    } as DrawingContextValue,
+  });
+  const toolbar = new AppToolbar();
+  host.append(toolbar);
+  document.body.append(host);
+  await toolbar.updateComplete;
+  toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button[title="More"]')!.click();
+  await toolbar.updateComplete;
+  return toolbar;
+}
+
 describe('Mobile tool settings access', () => {
+  it('exposes Child Mode from the More menu', async () => {
+    const setChildMode = vi.fn();
+    const toolbar = await renderMobileToolbar({ setChildMode });
+    const childModeButton = Array.from(toolbar.shadowRoot!.querySelectorAll('button'))
+      .find(button => button.textContent?.trim() === 'Child Mode');
+    expect(childModeButton).toBeDefined();
+
+    childModeButton!.click();
+    expect(setChildMode).toHaveBeenCalledWith(true);
+  });
+
   it('opens the current brush settings from More and applies edits', async () => {
-    const host = document.createElement('div');
     const setStrokeColor = vi.fn();
     const setBrushSize = vi.fn();
     const setBrush = vi.fn();
-    new ContextProvider(host, {
-      context: drawingContext,
-      initialValue: {
+    const toolbar = await renderMobileToolbar({
         state: makeState({ activeTool: 'pencil', layersPanelOpen: false }),
-        isMobile: true,
-        projectList: [],
         setStrokeColor,
         setBrushSize,
         setBrush,
-      } as unknown as DrawingContextValue,
     });
-    const toolbar = new AppToolbar();
-    host.append(toolbar);
-    document.body.append(host);
-    await toolbar.updateComplete;
-    toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button[title="More"]')!.click();
-    await toolbar.updateComplete;
 
     const settingsButton = Array.from(toolbar.shadowRoot!.querySelectorAll('button'))
       .find(button => button.textContent?.trim() === 'Tool settings');

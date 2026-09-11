@@ -6,18 +6,18 @@ Full touch screen and small screen (mobile) support for the Ketchup drawing app.
 
 - 100% feature parity across phone, tablet, and desktop
 - Both portrait and landscape orientations
-- Single breakpoint at 768px: mobile layout below, desktop above
+- Width hysteresis enters the mobile layout below 768px and returns to desktop above 800px; touch-first tablets such as iPads use mobile at any width
 - CSS-first responsive strategy with render branching (via ResizeObserver-driven `isMobile` flag) where HTML structure must change
 - Minor desktop touch target improvements
 
 ## 1. Mobile Detection & Flag Propagation
 
-`drawing-app.ts` adds a ResizeObserver on itself that sets a reactive `isMobile: boolean` property (true when component width < 768px). This flag is:
+`drawing-app.ts` adds a ResizeObserver on itself that sets a reactive `isMobile: boolean` property. Pointer-driven devices enter the mobile layout below 768px and return to desktop above 800px, avoiding layout churn near the breakpoint. Devices reporting touch-first input (`hover: none` and `pointer: coarse`) use the mobile layout at any width, allowing iPads to use the mobile toolbar in either orientation. This flag is:
 
 - Added to `DrawingContextValue` so all child components can read it via context
 - Reflected to a host attribute (`[mobile]`) for CSS-based styling via `:host([mobile])`
 
-No `window.matchMedia` — ResizeObserver on the component is more reliable and works with container-based testing. Orientation changes and window resizes are handled automatically via the observer callback.
+ResizeObserver handles component-width and orientation changes. A pointer media query supplements it so touch-first tablets can use the mobile layout even when their viewport is wider than the phone breakpoint; changes to that query are observed independently of resizing.
 
 ## 2. Multi-Touch: Pinch-to-Zoom & Two-Finger Pan
 
@@ -99,7 +99,7 @@ When `isMobile` is true, `app-toolbar.ts` render-branches to a horizontal bottom
 
 ### Desktop
 
-Above 768px, the existing vertical left sidebar renders as-is (with bumped 44px touch targets).
+On pointer-driven devices above 768px, the existing vertical left sidebar renders as-is (with bumped 44px touch targets).
 
 ## 4. Contextual Popovers
 
@@ -157,7 +157,7 @@ Same as desktop layers panel:
 
 ## 6. Desktop Improvements
 
-Applied above 768px:
+Applied on pointer-driven devices above 768px:
 
 - Toolbar buttons: 36px → 44px (padding increase, icon size unchanged)
 - Layer row height: 24px min → 44px min
@@ -204,8 +204,8 @@ Hidden on mobile. Pinch-to-zoom and two-finger pan provide the same navigation f
 
 ## Architecture Summary
 
-| Concern | Mobile (<768px) | Desktop (>=768px) |
-|---------|-----------------|-------------------|
+| Concern | Mobile / touch-first tablet | Pointer-driven desktop |
+|---------|-----------------------------|------------------------|
 | Tool selection | Bottom tab bar | Left sidebar (44px buttons) |
 | Tool settings | Contextual popover (tap active tool) | Top settings bar (unchanged) |
 | Layers | Bottom sheet | Right sidebar (44px rows) |
@@ -232,7 +232,7 @@ Hidden on mobile. Pinch-to-zoom and two-finger pan provide the same navigation f
 - Long-press interactions
 - Pressure sensitivity (stylus/Apple Pencil)
 - Floating/draggable palettes
-- Separate tablet-specific layout (tablet uses mobile or desktop based on 768px breakpoint)
+- Separate tablet-specific layout (touch-first tablets reuse the mobile UI)
 
 ## Accessibility Note
 
