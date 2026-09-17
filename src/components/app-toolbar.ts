@@ -704,6 +704,15 @@ export class AppToolbar extends LitElement {
     this._popoverGroup = null;
   }
 
+  private _dispatchCropShortcut(key: 'Enter' | 'Escape') {
+    this.dispatchEvent(new KeyboardEvent('keydown', {
+      key,
+      bubbles: true,
+      composed: true,
+    }));
+    this._closePopover();
+  }
+
   private _renderPopoverContent(activeTool: ToolType) {
     if (this._popoverGroup === -1) {
       return html`
@@ -761,6 +770,17 @@ export class AppToolbar extends LitElement {
             >${toolIcons[tool]}</button>
           `)}
         </div>
+      ` : ''}
+      ${activeTool === 'crop' ? html`
+        <button class="menu-btn" @click=${() => this._dispatchCropShortcut('Enter')}>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+          Apply crop
+        </button>
+        <button class="menu-btn" @click=${() => this._dispatchCropShortcut('Escape')}>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          Cancel crop
+        </button>
+        <div class="popover-divider"></div>
       ` : ''}
       <tool-settings></tool-settings>
     `;
