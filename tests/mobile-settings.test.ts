@@ -75,4 +75,54 @@ describe('Mobile tool settings access', () => {
     expect(setBrush).toHaveBeenCalledWith({ flow: 0.4 });
     expect(setBrush).toHaveBeenCalledWith({ hardness: 0.2 });
   });
+
+  it('exposes crop apply and cancel actions through the existing shortcuts', async () => {
+    const toolbar = await renderMobileToolbar({
+      state: makeState({ activeTool: 'crop', layersPanelOpen: false }),
+    });
+    const shortcutKeys: string[] = [];
+    toolbar.parentElement!.addEventListener('keydown', (event) => {
+      shortcutKeys.push(event.key);
+    });
+
+    const openToolSettings = async () => {
+      const settingsButton = Array.from(toolbar.shadowRoot!.querySelectorAll('button'))
+        .find(button => button.textContent?.trim() === 'Tool settings');
+      expect(settingsButton).toBeDefined();
+      settingsButton!.click();
+      await toolbar.updateComplete;
+    };
+
+    await openToolSettings();
+    const applyButton = Array.from(toolbar.shadowRoot!.querySelectorAll('button'))
+      .find(button => button.textContent?.trim() === 'Apply crop');
+    expect(applyButton).toBeDefined();
+    applyButton!.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      composed: true,
+    }));
+    applyButton!.click();
+    await toolbar.updateComplete;
+
+    expect(shortcutKeys).toEqual(['Enter']);
+    expect(toolbar.shadowRoot!.querySelector('#mobile-tool-popover')).toBeNull();
+
+    toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button[title="More"]')!.click();
+    await toolbar.updateComplete;
+    await openToolSettings();
+    const cancelButton = Array.from(toolbar.shadowRoot!.querySelectorAll('button'))
+      .find(button => button.textContent?.trim() === 'Cancel crop');
+    expect(cancelButton).toBeDefined();
+    cancelButton!.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      composed: true,
+    }));
+    cancelButton!.click();
+    await toolbar.updateComplete;
+
+    expect(shortcutKeys).toEqual(['Enter', 'Escape']);
+    expect(toolbar.shadowRoot!.querySelector('#mobile-tool-popover')).toBeNull();
+  });
 });

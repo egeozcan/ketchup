@@ -704,6 +704,12 @@ export class AppToolbar extends LitElement {
     this._popoverGroup = null;
   }
 
+  private _stopCropActionKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.stopPropagation();
+    }
+  }
+
   private _dispatchCropShortcut(key: 'Enter' | 'Escape') {
     this.dispatchEvent(new KeyboardEvent('keydown', {
       key,
@@ -772,11 +778,19 @@ export class AppToolbar extends LitElement {
         </div>
       ` : ''}
       ${activeTool === 'crop' ? html`
-        <button class="menu-btn" @click=${() => this._dispatchCropShortcut('Enter')}>
+        <button
+          class="menu-btn"
+          @keydown=${this._stopCropActionKeydown}
+          @click=${() => this._dispatchCropShortcut('Enter')}
+        >
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
           Apply crop
         </button>
-        <button class="menu-btn" @click=${() => this._dispatchCropShortcut('Escape')}>
+        <button
+          class="menu-btn"
+          @keydown=${this._stopCropActionKeydown}
+          @click=${() => this._dispatchCropShortcut('Escape')}
+        >
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
           Cancel crop
         </button>
