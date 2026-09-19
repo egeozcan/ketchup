@@ -216,7 +216,7 @@ Hidden on mobile. Pinch-to-zoom and two-finger pan provide the same navigation f
 
 ## Files Modified
 
-- `index.html` — viewport meta tag update
+- `index.html` — viewport meta tag update, iOS home-screen (standalone) metadata
 - `src/contexts/drawing-context.ts` — add `isMobile` to context
 - `src/components/drawing-app.ts` — ResizeObserver for `isMobile`, propagate via context, mobile layout (flex-direction switch: row→column, hide top settings bar and right sidebar on mobile)
 - `src/components/drawing-canvas.ts` — multi-touch pointer tracking, pinch-to-zoom, two-finger pan

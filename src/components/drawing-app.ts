@@ -38,11 +38,24 @@ export class DrawingApp extends LitElement {
     :host {
       display: flex;
       flex-direction: column;
+      /* The document's border-box rule does not cross the shadow boundary, so
+         set it here: safe-area padding must fit inside the 100% height. */
+      box-sizing: border-box;
       width: 100%;
       height: 100%;
+      /* Keep the UI clear of the status bar and home indicator when installed
+         to the home screen (viewport-fit=cover). */
+      padding-top: env(safe-area-inset-top);
+      padding-left: env(safe-area-inset-left);
+      padding-right: env(safe-area-inset-right);
       background: #1e1e1e;
       font-family: system-ui, -apple-system, sans-serif;
       position: relative;
+    }
+
+    /* The mobile toolbar and layers panel pad their own bottom inset. */
+    :host(:not([mobile])) {
+      padding-bottom: env(safe-area-inset-bottom);
     }
 
     .main-area {
@@ -78,7 +91,6 @@ export class DrawingApp extends LitElement {
     /* ── Mobile layout ─────────────────────────── */
     :host([mobile]) {
       flex-direction: column;
-      padding-top: env(safe-area-inset-top);
     }
 
 
