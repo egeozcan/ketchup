@@ -6,18 +6,18 @@ Full touch screen and small screen (mobile) support for the Ketchup drawing app.
 
 - 100% feature parity across phone, tablet, and desktop
 - Both portrait and landscape orientations
-- Width hysteresis enters the mobile layout below 768px and returns to desktop above 800px; touch-first tablets such as iPads use mobile at any width
+- Width hysteresis enters the mobile layout below 768px and returns to desktop above 800px; wide touch devices such as iPads get the desktop layout
 - CSS-first responsive strategy with render branching (via ResizeObserver-driven `isMobile` flag) where HTML structure must change
 - Minor desktop touch target improvements
 
 ## 1. Mobile Detection & Flag Propagation
 
-`drawing-app.ts` adds a ResizeObserver on itself that sets a reactive `isMobile: boolean` property. Pointer-driven devices enter the mobile layout below 768px and return to desktop above 800px, avoiding layout churn near the breakpoint. Devices reporting touch-first input (`hover: none` and `pointer: coarse`) use the mobile layout at any width, allowing iPads to use the mobile toolbar in either orientation. This flag is:
+`drawing-app.ts` adds a ResizeObserver on itself that sets a reactive `isMobile: boolean` property. The layout is chosen by width alone: it enters the mobile layout below 768px and returns to desktop above 800px, avoiding layout churn near the breakpoint. Input type is not consulted, so tablets at desktop widths (iPads included) use the desktop layout. This flag is:
 
 - Added to `DrawingContextValue` so all child components can read it via context
 - Reflected to a host attribute (`[mobile]`) for CSS-based styling via `:host([mobile])`
 
-ResizeObserver handles component-width and orientation changes. A pointer media query supplements it so touch-first tablets can use the mobile layout even when their viewport is wider than the phone breakpoint; changes to that query are observed independently of resizing.
+ResizeObserver handles component-width and orientation changes.
 
 ## 2. Multi-Touch: Pinch-to-Zoom & Two-Finger Pan
 
@@ -204,8 +204,8 @@ Hidden on mobile. Pinch-to-zoom and two-finger pan provide the same navigation f
 
 ## Architecture Summary
 
-| Concern | Mobile / touch-first tablet | Pointer-driven desktop |
-|---------|-----------------------------|------------------------|
+| Concern | Mobile (narrow viewport) | Desktop (wide viewport) |
+|---------|--------------------------|-------------------------|
 | Tool selection | Bottom tab bar | Left sidebar (44px buttons) |
 | Tool settings | Contextual popover (tap active tool) | Top settings bar (unchanged) |
 | Layers | Bottom sheet | Right sidebar (44px rows) |
@@ -232,7 +232,7 @@ Hidden on mobile. Pinch-to-zoom and two-finger pan provide the same navigation f
 - Long-press interactions
 - Pressure sensitivity (stylus/Apple Pencil)
 - Floating/draggable palettes
-- Separate tablet-specific layout (touch-first tablets reuse the mobile UI)
+- Separate tablet-specific layout (tablets use the layout their width selects)
 
 ## Accessibility Note
 

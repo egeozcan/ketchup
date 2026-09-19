@@ -40,67 +40,15 @@ describe('DrawingApp', () => {
     vi.useRealTimers();
   });
 
-  it('uses the mobile layout on touch-first tablets at iPad widths', () => {
-    expect(shouldUseMobileLayout(1024, false, true)).toBe(true);
-    expect(shouldUseMobileLayout(1366, false, true)).toBe(true);
-  });
-
-  it('applies the touch-first media query to an iPad-width app', () => {
-    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
-    const app = createAppWithCanvasSpies();
-
-    (app as any)._updateMobileLayout(1366);
-
-    expect(window.matchMedia).toHaveBeenCalledWith('(hover: none) and (pointer: coarse)');
-    expect((app as any)._isMobile).toBe(true);
-  });
-
-  it('updates the layout when the touch-first media query changes', () => {
-    let resizeCallback: ResizeObserverCallback | undefined;
-    let mediaChangeListener: EventListener | undefined;
-    let touchFirst = false;
-    const mediaQuery = {
-      get matches() { return touchFirst; },
-      media: '(hover: none) and (pointer: coarse)',
-      onchange: null,
-      addEventListener: vi.fn((_type: string, listener: EventListener) => {
-        mediaChangeListener = listener;
-      }),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-    } as unknown as MediaQueryList;
-    vi.stubGlobal('matchMedia', vi.fn(() => mediaQuery));
-    vi.stubGlobal('ResizeObserver', class {
-      constructor(callback: ResizeObserverCallback) { resizeCallback = callback; }
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    });
-    const app = createAppWithCanvasSpies();
-    vi.spyOn(app as any, '_initStorage').mockImplementation(() => {});
-    document.body.append(app);
-
-    resizeCallback!([{ contentRect: { width: 1366 } } as ResizeObserverEntry], {} as ResizeObserver);
-    expect((app as any)._isMobile).toBe(false);
-
-    touchFirst = true;
-    mediaChangeListener!(new Event('change'));
-    expect((app as any)._isMobile).toBe(true);
-
-    app.remove();
-    expect(mediaQuery.removeEventListener).toHaveBeenCalledWith('change', expect.any(Function));
-  });
-
-  it('keeps wide pointer-driven devices on the desktop layout', () => {
-    expect(shouldUseMobileLayout(1024, false, false)).toBe(false);
+  it('keeps wide devices on the desktop layout, tablets included', () => {
+    expect(shouldUseMobileLayout(1024, false)).toBe(false);
+    expect(shouldUseMobileLayout(1366, false)).toBe(false);
   });
 
   it('preserves the existing mobile width hysteresis', () => {
-    expect(shouldUseMobileLayout(767, false, false)).toBe(true);
-    expect(shouldUseMobileLayout(800, true, false)).toBe(true);
-    expect(shouldUseMobileLayout(801, true, false)).toBe(false);
+    expect(shouldUseMobileLayout(767, false)).toBe(true);
+    expect(shouldUseMobileLayout(800, true)).toBe(true);
+    expect(shouldUseMobileLayout(801, true)).toBe(false);
   });
 
   it('uses an independent 120px default for stamps', () => {

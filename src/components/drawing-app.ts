@@ -23,23 +23,13 @@ import './navigator-panel.js';
 
 const MOBILE_ENTER_WIDTH = 768;
 const MOBILE_EXIT_WIDTH = 800;
-const TOUCH_FIRST_QUERY = '(hover: none) and (pointer: coarse)';
 
 /**
- * Phones use the compact layout by width. Touch-first devices (including
- * iPads in either orientation) use it regardless of their viewport width.
+ * The compact layout is chosen by width alone, with hysteresis around the
+ * breakpoint. Wide touch devices such as iPads get the desktop layout.
  */
-export function shouldUseMobileLayout(
-  width: number,
-  currentlyMobile: boolean,
-  touchFirst: boolean,
-): boolean {
-  if (touchFirst) return true;
+export function shouldUseMobileLayout(width: number, currentlyMobile: boolean): boolean {
   return currentlyMobile ? width <= MOBILE_EXIT_WIDTH : width < MOBILE_ENTER_WIDTH;
-}
-
-function isTouchFirstDevice(): boolean {
-  return typeof window.matchMedia === 'function' && window.matchMedia(TOUCH_FIRST_QUERY).matches;
 }
 
 @customElement('drawing-app')
@@ -132,8 +122,6 @@ export class DrawingApp extends LitElement {
   @state() private _projectList: StorageProjectMeta[] = [];
   @state() private _isMobile = false;
   private _mobileObserver: ResizeObserver | null = null;
-  private _touchLayoutQuery: MediaQueryList | null = null;
-  private _lastObservedWidth = 0;
 
   @property({ attribute: false })
   storageBackend?: StorageBackend;
@@ -1417,9 +1405,7 @@ export class DrawingApp extends LitElement {
   }
 
   private _updateMobileLayout(width: number) {
-    this._lastObservedWidth = width;
-    const touchFirst = this._touchLayoutQuery?.matches ?? isTouchFirstDevice();
-    const useMobileLayout = shouldUseMobileLayout(width, this._isMobile, touchFirst);
+    const useMobileLayout = shouldUseMobileLayout(width, this._isMobile);
     if (useMobileLayout === this._isMobile) return;
 
     this._isMobile = useMobileLayout;
@@ -1429,19 +1415,9 @@ export class DrawingApp extends LitElement {
     }
   }
 
-  private _onTouchLayoutChange = () => {
-    if (this._lastObservedWidth > 0) {
-      this._updateMobileLayout(this._lastObservedWidth);
-    }
-  };
-
   override connectedCallback() {
     super.connectedCallback();
     this._initStorage();
-    this._touchLayoutQuery = typeof window.matchMedia === 'function'
-      ? window.matchMedia(TOUCH_FIRST_QUERY)
-      : null;
-    this._touchLayoutQuery?.addEventListener('change', this._onTouchLayoutChange);
     this._mobileObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
         this._updateMobileLayout(entry.contentRect.width);
@@ -1501,8 +1477,6 @@ export class DrawingApp extends LitElement {
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    this._touchLayoutQuery?.removeEventListener('change', this._onTouchLayoutChange);
-    this._touchLayoutQuery = null;
     this._mobileObserver?.disconnect();
     this._mobileObserver = null;
     this.removeEventListener('keydown', this._onKeyDown);
