@@ -126,42 +126,22 @@ describe('crop handle resize allows zero-size rect (missing minimum check)', () 
     expect((canvas as any)._cropRect).toBeNull();
   });
 
-  it('commitCrop with zero-width rect produces corrupt/empty output', () => {
+  it('commitCrop refuses a zero-width rect instead of corrupting the layer', () => {
     const { canvas, layerCanvas } = setupCanvas();
 
-    // Set up a zero-width crop rect (which can be produced by the bug above)
+    // A zero-width rect must never reach getImageData(100, 100, 0, 200),
+    // which throws IndexSizeError per the Canvas spec. _handleCropPointerUp
+    // nulls such rects out, and commitCrop guards against them as well so a
+    // stale rect (e.g. left behind by a cancelled gesture) cannot corrupt the
+    // document.
     (canvas as any)._cropRect = { x: 100, y: 100, w: 0, h: 200 };
 
-    // commitCrop will try getImageData(100, 100, 0, 200) which throws
-    // IndexSizeError in spec-compliant implementations. In jsdom's canvas mock,
-    // it may return an empty ImageData or throw.
-    // Either way, the crop should not be committed with a zero dimension.
-    //
-    // We test that commitCrop with w=0 either:
-    // a) Throws an error, OR
-    // b) Produces a crop with width 0 (degenerate state)
-    // Both outcomes demonstrate the bug: the zero-size rect should never
-    // have been allowed to reach commitCrop.
+    expect(() => (canvas as any).commitCrop()).not.toThrow();
 
-    let threw = false;
-    let resultWidth = -1;
-    try {
-      (canvas as any).commitCrop();
-      // If it didn't throw, check the resulting layer canvas dimensions
-      const state = (canvas as any)._ctx.value.state;
-      const layer = state.layers[0];
-      resultWidth = layer.canvas.width;
-    } catch {
-      threw = true;
-    }
-
-    // The bug is demonstrated if EITHER:
-    // - commitCrop threw (IndexSizeError from getImageData with width 0)
-    // - commitCrop produced a 0-width canvas (degenerate state)
-    // In a correct implementation, commitCrop should never be called with
-    // a zero-size rect because _handleCropPointerUp should have nulled it out.
-    const bugDemonstrated = threw || resultWidth === 0;
-    expect(bugDemonstrated).toBe(true);
+    const layer = (canvas as any)._ctx.value.state.layers[0];
+    expect(layer.canvas).toBe(layerCanvas);
+    expect(layer.canvas.width).toBe(800);
+    expect(layer.canvas.height).toBe(600);
   });
 
   it('new crop rect draw correctly enforces minimum size (control test)', () => {

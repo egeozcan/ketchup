@@ -1,5 +1,5 @@
 import { LitElement, html, css } from 'lit';
-import { customElement, query } from 'lit/decorators.js';
+import { customElement, query, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { Point, HistoryEntry, Layer, LayerSnapshot } from '../types.js';
@@ -44,6 +44,44 @@ export class DrawingCanvas extends LitElement {
     :host(.drop-target) #main {
       outline: 3px dashed #4a90d9;
       outline-offset: -3px;
+    }
+
+    /* Crop has no keyboard on touch devices, so the commit/cancel actions
+       live on the canvas instead of behind Enter/Escape. */
+    .crop-actions {
+      position: absolute;
+      left: 50%;
+      bottom: 1rem;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 0.5rem;
+      padding: 0.375rem;
+      border-radius: 0.625rem;
+      background: rgba(30, 30, 30, 0.92);
+      border: 1px solid #555;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+    }
+
+    .crop-actions button {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.375rem;
+      min-height: 44px;
+      padding: 0 0.875rem;
+      border: 1px solid #555;
+      border-radius: 0.5rem;
+      background: #3a3a3a;
+      color: #ddd;
+      font-family: inherit;
+      font-size: 0.875rem;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+
+    .crop-actions button.apply {
+      background: #2f7d32;
+      border-color: #3f9e43;
+      color: #fff;
     }
   `;
 
@@ -127,11 +165,33 @@ export class DrawingCanvas extends LitElement {
   private _selectionDrawing = false;
 
   // --- Crop tool state ---
-  private _cropRect: CropRect | null = null;
+  private _cropRectValue: CropRect | null = null;
   private _cropDragging = false;
   private _cropHandle: CropHandle | null = null;
   private _cropDragOrigin: Point | null = null;
   private _cropRectOrigin: CropRect | null = null;
+  /** Drives the on-canvas Apply/Cancel buttons. */
+  @state() private _cropActionsVisible = false;
+
+  private get _cropRect(): CropRect | null {
+    return this._cropRectValue;
+  }
+
+  private set _cropRect(rect: CropRect | null) {
+    this._cropRectValue = rect;
+    this._updateCropActions();
+  }
+
+  /** Show the crop actions only for a usable rect that is not mid-drag. */
+  private _updateCropActions() {
+    const rect = this._cropRectValue;
+    this._cropActionsVisible =
+      rect !== null &&
+      !this._cropDragging &&
+      this._cropHandle === null &&
+      Math.abs(rect.w) >= 1 &&
+      Math.abs(rect.h) >= 1;
+  }
 
   // --- Text tool state ---
   private _textEditing = false;
@@ -2126,11 +2186,23 @@ export class DrawingCanvas extends LitElement {
       this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
     }
 
-    // Cancel crop drag (keep existing rect)
+    // Cancel crop drag (keep existing rect, normalized so it stays committable)
+    const wasCropGesture = this._cropDragging || this._cropHandle !== null;
     this._cropDragging = false;
     this._cropHandle = null;
     this._cropDragOrigin = null;
     this._cropRectOrigin = null;
+    if (wasCropGesture && this._cropRect) {
+      const ratio = parseAspectRatio(this._ctx.value?.state.cropAspectRatio ?? 'free');
+      const rect = this._normalizeCropRect(this._cropRect, ratio);
+      this._cropRect = rect.w < 1 || rect.h < 1 ? null : rect;
+      if (this._cropRect) {
+        this._drawCropPreview();
+      } else {
+        this._clearCropPreview();
+      }
+    }
+    this._updateCropActions();
   }
 
   /** Enter pinch/pan mode: cancel current tool, initialize pinch tracking */
@@ -2219,12 +2291,14 @@ export class DrawingCanvas extends LitElement {
         this._cropHandle = handle;
         this._cropDragOrigin = { x: p.x, y: p.y };
         this._cropRectOrigin = { ...this._cropRect };
+        this._updateCropActions();
         return;
       }
       if (handle === 'move') {
         this._cropHandle = 'move';
         this._cropDragOrigin = { x: p.x, y: p.y };
         this._cropRectOrigin = { ...this._cropRect };
+        this._updateCropActions();
         return;
       }
     }
@@ -2409,6 +2483,7 @@ export class DrawingCanvas extends LitElement {
         this._cropRect = null;
       }
     }
+    this._updateCropActions();
     if (this._cropRect) {
       this._drawCropPreview();
     } else {
@@ -2480,6 +2555,7 @@ export class DrawingCanvas extends LitElement {
   public commitCrop() {
     if (!this._cropRect) return;
     const rect = this._cropRect;
+    if (rect.w < 1 || rect.h < 1) return;
     const state = this._ctx.value?.state;
     if (!state) return;
 
@@ -2547,6 +2623,14 @@ export class DrawingCanvas extends LitElement {
     this._cropRectOrigin = null;
     this._clearCropPreview();
   }
+
+  private _onApplyCropClick = () => {
+    this.commitCrop();
+  };
+
+  private _onCancelCropClick = () => {
+    this.cancelCrop();
+  };
 
   /** Whether a crop rect is currently active (used by drawing-app for keyboard dispatch). */
   public get hasCropRect(): boolean {
@@ -3400,6 +3484,18 @@ export class DrawingCanvas extends LitElement {
         id="preview"
         style="position:absolute;top:0;left:0;pointer-events:none;"
       ></canvas>
+      ${this._cropActionsVisible ? html`
+        <div class="crop-actions" role="group" aria-label="Crop actions">
+          <button class="apply" type="button" title="Apply crop (Enter)" @click=${this._onApplyCropClick}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+            Apply
+          </button>
+          <button type="button" title="Cancel crop (Esc)" @click=${this._onCancelCropClick}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            Cancel
+          </button>
+        </div>
+      ` : ''}
       <resize-dialog></resize-dialog>
     `;
   }
