@@ -8,15 +8,15 @@ import { DrawingCanvas } from '../src/components/drawing-canvas.ts';
  * should equal one logical action.
  *
  * Root cause: Shape tools delay _captureBeforeDraw() until pointerUp (since
- * they only commit on release). This means _beforeDrawData is null during the
+ * they only commit on release). This means _beforeDrawCanvas is null during the
  * drag. When undo() is called mid-drag, it enters the `if (this._drawing)`
  * block and calls _pushDrawHistory(), which returns early because
- * _beforeDrawData is null -- so no history entry is pushed for the in-progress
+ * _beforeDrawCanvas is null -- so no history entry is pushed for the in-progress
  * shape. Because there is no early return after handling the _drawing block,
  * the code falls through to the main undo logic which decrements
  * _historyIndex and applies undo on the PREVIOUS entry.
  *
- * For comparison, brush tools (pencil/marker/eraser) capture _beforeDrawData
+ * For comparison, brush tools (pencil/marker/eraser) capture _beforeDrawCanvas
  * on pointerDown, so _pushDrawHistory() succeeds and pushes a partial-stroke
  * entry. The main undo logic then undoes THAT entry -- effectively cancelling
  * only the current stroke with no net history change.
@@ -89,11 +89,11 @@ describe('undo during shape drag should not undo previous entry', () => {
     // Simulate the state during a shape drag:
     // - _drawing = true (set by _onPointerDown for shapes)
     // - _startPoint/_lastPoint set (set by _onPointerDown)
-    // - _beforeDrawData = null (NOT captured for shapes during pointerDown)
+    // - _beforeDrawCanvas = null (NOT captured for shapes during pointerDown)
     (canvas as any)._drawing = true;
     (canvas as any)._startPoint = { x: 10, y: 10 };
     (canvas as any)._lastPoint = { x: 100, y: 100 };
-    (canvas as any)._beforeDrawData = null;
+    (canvas as any)._beforeDrawCanvas = null;
 
     // Call undo -- simulates pressing Ctrl+Z while dragging a rectangle
     (canvas as any).undo();
@@ -128,7 +128,7 @@ describe('undo during shape drag should not undo previous entry', () => {
       (canvas as any)._drawing = true;
       (canvas as any)._startPoint = { x: 10, y: 10 };
       (canvas as any)._lastPoint = { x: 100, y: 100 };
-      (canvas as any)._beforeDrawData = null;
+      (canvas as any)._beforeDrawCanvas = null;
 
       (canvas as any).undo();
 
@@ -137,7 +137,7 @@ describe('undo during shape drag should not undo previous entry', () => {
     }
   });
 
-  it('does not call _applyUndo when shape drag has no _beforeDrawData', () => {
+  it('does not call _applyUndo when shape drag has no _beforeDrawCanvas', () => {
     const { canvas, layerCanvas } = setupCanvas();
     const layerCtx = layerCanvas.getContext('2d')!;
 
@@ -156,7 +156,7 @@ describe('undo during shape drag should not undo previous entry', () => {
     (canvas as any)._drawing = true;
     (canvas as any)._startPoint = { x: 0, y: 0 };
     (canvas as any)._lastPoint = { x: 50, y: 50 };
-    (canvas as any)._beforeDrawData = null;
+    (canvas as any)._beforeDrawCanvas = null;
 
     (canvas as any).undo();
 

@@ -9,11 +9,11 @@ import { DrawingCanvas } from '../src/components/drawing-canvas.ts';
  *
  * Root cause: The redo() method has the same structural issue that was already
  * fixed in undo() (bug #4). Shape tools delay _captureBeforeDraw() until
- * pointerUp, so _beforeDrawData is null during the drag. When redo() is
+ * pointerUp, so _beforeDrawCanvas is null during the drag. When redo() is
  * called mid-drag, it enters the `if (this._drawing)` block and calls
- * _pushDrawHistory(), which returns early because _beforeDrawData is null —
+ * _pushDrawHistory(), which returns early because _beforeDrawCanvas is null —
  * no history entry is pushed. Unlike undo(), redo() does NOT check whether
- * _beforeDrawData existed and return early. The code falls through to the
+ * _beforeDrawCanvas existed and return early. The code falls through to the
  * main redo logic which increments _historyIndex and applies the next redo
  * entry.
  *
@@ -92,11 +92,11 @@ describe('redo during shape drag should not apply the next redo entry', () => {
     // Simulate the state during a shape drag:
     // - _drawing = true (set by _onPointerDown for shapes)
     // - _startPoint/_lastPoint set (set by _onPointerDown)
-    // - _beforeDrawData = null (NOT captured for shapes during pointerDown)
+    // - _beforeDrawCanvas = null (NOT captured for shapes during pointerDown)
     (canvas as any)._drawing = true;
     (canvas as any)._startPoint = { x: 10, y: 10 };
     (canvas as any)._lastPoint = { x: 100, y: 100 };
-    (canvas as any)._beforeDrawData = null;
+    (canvas as any)._beforeDrawCanvas = null;
 
     // Call redo -- simulates pressing Ctrl+Shift+Z while dragging a rectangle
     (canvas as any).redo();
@@ -134,7 +134,7 @@ describe('redo during shape drag should not apply the next redo entry', () => {
       (canvas as any)._drawing = true;
       (canvas as any)._startPoint = { x: 10, y: 10 };
       (canvas as any)._lastPoint = { x: 100, y: 100 };
-      (canvas as any)._beforeDrawData = null;
+      (canvas as any)._beforeDrawCanvas = null;
 
       (canvas as any).redo();
 
@@ -143,7 +143,7 @@ describe('redo during shape drag should not apply the next redo entry', () => {
     }
   });
 
-  it('does not call _applyRedo when shape drag has no _beforeDrawData', () => {
+  it('does not call _applyRedo when shape drag has no _beforeDrawCanvas', () => {
     const { canvas, layerCanvas } = setupCanvas();
     const layerCtx = layerCanvas.getContext('2d')!;
 
@@ -164,7 +164,7 @@ describe('redo during shape drag should not apply the next redo entry', () => {
     (canvas as any)._drawing = true;
     (canvas as any)._startPoint = { x: 0, y: 0 };
     (canvas as any)._lastPoint = { x: 50, y: 50 };
-    (canvas as any)._beforeDrawData = null;
+    (canvas as any)._beforeDrawCanvas = null;
 
     (canvas as any).redo();
 

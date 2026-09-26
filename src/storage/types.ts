@@ -166,6 +166,8 @@ export interface ProjectHistoryStore {
   getEntries(projectId: string): Promise<ProjectHistoryRecord[]>;
   putEntries(projectId: string, entries: ProjectHistoryRecord[]): Promise<void>;
   replaceAll(projectId: string, entries: ProjectHistoryRecord[]): Promise<void>;
+  /** In one transaction, delete the entries whose `index` is in `removeIndices` and add `entries`. */
+  updateEntries(projectId: string, removeIndices: number[], entries: ProjectHistoryRecord[]): Promise<void>;
   deleteForProject(projectId: string): Promise<void>;
 }
 

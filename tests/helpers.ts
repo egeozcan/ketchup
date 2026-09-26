@@ -24,6 +24,13 @@ export function makeBrush(overrides: BrushOverrides = {}): BrushDescriptor {
   };
 }
 
+export function makeCanvas(width = 100, height = 100): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  return canvas;
+}
+
 export function makeLayer(
   width = 100,
   height = 100,
@@ -146,7 +153,6 @@ export function makeAppCanvasStub(overrides: Record<string, unknown> = {}) {
     getViewport: vi.fn(() => ({ zoom: 1, panX: 0, panY: 0 })),
     getHistory: vi.fn(() => []),
     getHistoryIndex: vi.fn(() => -1),
-    getHistoryVersion: vi.fn(() => 0),
     selectAll: vi.fn(),
     selectAllCanvas: vi.fn(),
     duplicateInPlace: vi.fn(),

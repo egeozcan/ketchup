@@ -4,11 +4,12 @@ import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import { blendModeToCompositeOp, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor } from '../engine/types.js';
 import { getDefaultDescriptor, getPresetById } from '../engine/brush-presets.js';
-import type { DrawingState, Layer, LayerSnapshot, ToolType } from '../types.js';
+import type { DrawingState, HistoryEntry, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
 import { IndexedDBBackend, ProjectService, StorageQuotaError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
 import type { StorageBackend, BlobStore, BlobRef, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord } from '../storage/types.js';
 import { canvasToBlob } from '../utils/canvas-helpers.js';
+import { hashImageData } from '../utils/image-diff.js';
 import {
   serializeLayerFromImageData, deserializeLayer,
   serializeHistoryEntry, deserializeHistoryEntry,
@@ -149,8 +150,8 @@ export class DrawingApp extends LitElement {
   private _serviceProvider?: ContextProvider<typeof projectServiceContext>;
   private _initPromise?: Promise<void>;
 
-  /** Sentinel value that never matches a real _historyVersion, forcing full history rewrite. */
-  private static readonly FORCE_FULL_HISTORY_SAVE = -1;
+  /** Longest side of the project thumbnail stored with each save. */
+  private static readonly THUMBNAIL_SIZE = 256;
   private static readonly NON_TEXT_INPUT_TYPES = new Set([
     'button',
     'checkbox',
@@ -171,8 +172,24 @@ export class DrawingApp extends LitElement {
   private _saveRequested = false;
   private _forceFlushNextSave = false;
   private _dirtyVersion = 0;
-  private _lastSavedHistoryLength = 0;
-  private _lastSavedHistoryVersion = 0;
+  /**
+   * History entries already in storage for the current project, by entry
+   * identity, with the record index each was stored under and the blobs it
+   * owns. A save writes only new entries and deletes only the ones that left
+   * the undo stack, instead of re-encoding the whole history each time the
+   * oldest entry is evicted or redo entries are discarded.
+   */
+  private _savedHistory = new Map<HistoryEntry, { index: number; blobRefs: BlobRef[] }>();
+  /** Record index for the next stored history entry; only grows, so stored order is stack order. */
+  private _nextHistoryRecordIndex = 0;
+  /** Storage may hold history this session knows nothing about; the next save replaces all of it. */
+  private _historyNeedsRewrite = false;
+  /**
+   * Content hash and stored blob of each layer as of the last save, by layer
+   * id. Autosave runs after every edit but usually only one layer changed, so
+   * the others keep their stored PNG instead of being re-encoded.
+   */
+  private _savedLayerBlobs = new Map<string, { hash: string; blobRef: BlobRef }>();
 
   @query('drawing-canvas') canvas!: DrawingCanvas;
 
@@ -319,6 +336,81 @@ export class DrawingApp extends LitElement {
     this._markDirty();
   }
 
+  /**
+   * Work out how stored history must change to match `entries`: which stored
+   * records to delete and which entries to append after them. Falls back to a
+   * full rewrite when storage holds unknown history, or when the stored
+   * entries no longer lead the stack in stored order (not expected, since the
+   * stack only drops entries from either end or filters them in place).
+   */
+  private _planHistorySave(entries: HistoryEntry[]) {
+    const saved = this._savedHistory;
+    let rewrite = this._historyNeedsRewrite;
+    if (!rewrite) {
+      let lastIndex = -1;
+      let sawUnsaved = false;
+      for (const entry of entries) {
+        const record = saved.get(entry);
+        if (!record) {
+          sawUnsaved = true;
+        } else if (sawUnsaved || record.index <= lastIndex) {
+          rewrite = true;
+          break;
+        } else {
+          lastIndex = record.index;
+        }
+      }
+    }
+    if (rewrite) {
+      return { rewrite, remove: [...saved], add: entries, firstIndex: 0 };
+    }
+    const live = new Set(entries);
+    return {
+      rewrite,
+      remove: [...saved].filter(([entry]) => !live.has(entry)),
+      add: entries.filter(entry => !saved.has(entry)),
+      firstIndex: this._nextHistoryRecordIndex,
+    };
+  }
+
+  /** Update the stored-history bookkeeping once a planned history save has been written. */
+  private _recordSavedHistory(
+    plan: ReturnType<DrawingApp['_planHistorySave']>,
+    records: ProjectHistoryRecord[],
+  ) {
+    if (plan.rewrite) this._savedHistory.clear();
+    for (const [entry] of plan.remove) this._savedHistory.delete(entry);
+    plan.add.forEach((entry, i) => {
+      const refs = new Set<BlobRef>();
+      collectBlobRefsFromEntry(records[i].entry, refs);
+      this._savedHistory.set(entry, { index: records[i].index, blobRefs: [...refs] });
+    });
+    this._nextHistoryRecordIndex = plan.firstIndex + plan.add.length;
+    this._historyNeedsRewrite = false;
+  }
+
+  /** Reset stored-history and layer-blob bookkeeping to match a freshly loaded project. */
+  private _trackLoadedProject(history: HistoryEntry[], records: ProjectHistoryRecord[]) {
+    this._savedHistory = new Map(history.map((entry, i) => {
+      const refs = new Set<BlobRef>();
+      collectBlobRefsFromEntry(records[i].entry, refs);
+      return [entry, { index: records[i].index, blobRefs: [...refs] }];
+    }));
+    this._nextHistoryRecordIndex = records.reduce((next, r) => Math.max(next, r.index + 1), 0);
+    this._historyNeedsRewrite = false;
+    this._savedLayerBlobs = new Map();
+  }
+
+  /** Downscale the display canvas to a project thumbnail; encoding the full viewport each save is wasted work. */
+  private _renderThumbnail(source: HTMLCanvasElement): HTMLCanvasElement {
+    const scale = Math.min(1, DrawingApp.THUMBNAIL_SIZE / Math.max(source.width, source.height, 1));
+    const thumb = document.createElement('canvas');
+    thumb.width = Math.max(1, Math.round(source.width * scale));
+    thumb.height = Math.max(1, Math.round(source.height * scale));
+    thumb.getContext('2d')!.drawImage(source, 0, 0, thumb.width, thumb.height);
+    return thumb;
+  }
+
   private async _save(flushing = false) {
     if (this._savePromise) {
       if (flushing) this._forceFlushNextSave = true;
@@ -395,18 +487,12 @@ export class DrawingApp extends LitElement {
             }
             return { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode, imageData };
           });
+          const layerHashes = layerSnapshots.map(snap => hashImageData(snap.imageData));
           const viewport = this.canvas?.getViewport() ?? { zoom: 1, panX: 0, panY: 0 };
           const historySnapshot = this.canvas?.getHistory() ?? [];
           const historyIndex = this.canvas?.getHistoryIndex() ?? -1;
-          const historyVersion = this.canvas?.getHistoryVersion() ?? 0;
-
-          // Determine incremental vs full history save
-          const versionChanged = historyVersion !== this._lastSavedHistoryVersion;
-          const clearExistingHistory = versionChanged;
-          const entriesToSave = versionChanged
-            ? historySnapshot
-            : historySnapshot.slice(this._lastSavedHistoryLength);
-          const startIndex = versionChanged ? 0 : this._lastSavedHistoryLength;
+          const historyPlan = this._planHistorySave(historySnapshot);
+          const clearExistingHistory = historyPlan.rewrite;
 
           // Capture old blob refs before serializing new ones, so we can reclaim them after save.
           const blobs = this._backend!.blobs;
@@ -444,13 +530,24 @@ export class DrawingApp extends LitElement {
           let serializedEntries: ProjectHistoryRecord[];
           try {
             layers = await Promise.all(
-              layerSnapshots.map(snap => serializeLayerFromImageData(snap, snap.imageData, trackingBlobs)),
+              layerSnapshots.map((snap, i) => {
+                // Unchanged since the last save and still referenced by the
+                // stored state: keep the stored PNG rather than re-encoding it.
+                const saved = this._savedLayerBlobs.get(snap.id);
+                if (saved && saved.hash === layerHashes[i] && oldLayerRefs.includes(saved.blobRef)) {
+                  return {
+                    id: snap.id, name: snap.name, visible: snap.visible, opacity: snap.opacity,
+                    blendMode: snap.blendMode, imageBlobRef: saved.blobRef,
+                  };
+                }
+                return serializeLayerFromImageData(snap, snap.imageData, trackingBlobs);
+              }),
             );
 
             serializedEntries = await Promise.all(
-              entriesToSave.map(async (entry, i) => ({
+              historyPlan.add.map(async (entry, i) => ({
                 projectId,
-                index: startIndex + i,
+                index: historyPlan.firstIndex + i,
                 entry: await serializeHistoryEntry(entry, trackingBlobs),
               })),
             );
@@ -478,7 +575,7 @@ export class DrawingApp extends LitElement {
 
           let thumbnail: Blob | null = null;
           if (this.canvas?.mainCanvas) {
-            try { thumbnail = await canvasToBlob(this.canvas.mainCanvas); } catch { /* non-critical */ }
+            try { thumbnail = await canvasToBlob(this._renderThumbnail(this.canvas.mainCanvas)); } catch { /* non-critical */ }
           }
 
           // Save state + history atomically: if either fails, restore the
@@ -488,8 +585,12 @@ export class DrawingApp extends LitElement {
             await this._backend!.state.save(stateRecord);
             if (clearExistingHistory) {
               await this._backend!.history.replaceAll(projectId, serializedEntries);
-            } else if (serializedEntries.length > 0) {
-              await this._backend!.history.putEntries(projectId, serializedEntries);
+            } else if (historyPlan.remove.length > 0 || serializedEntries.length > 0) {
+              await this._backend!.history.updateEntries(
+                projectId,
+                historyPlan.remove.map(([, saved]) => saved.index),
+                serializedEntries,
+              );
             }
           } catch (saveErr) {
             // Restore the previous state record so the project isn't left
@@ -503,12 +604,14 @@ export class DrawingApp extends LitElement {
             throw saveErr;
           }
 
-          // Advance save cursors immediately after state+history succeed.
+          // Record what is now stored immediately after state+history succeed.
           // If thumbnail/metadata fails later (e.g. QuotaExceededError), the
           // next autosave won't re-append the same history entries.
           if (this._currentProject?.id === projectId) {
-            this._lastSavedHistoryLength = historySnapshot.length;
-            this._lastSavedHistoryVersion = historyVersion;
+            this._recordSavedHistory(historyPlan, serializedEntries);
+            this._savedLayerBlobs = new Map(layerSnapshots.map((snap, i) => (
+              [snap.id, { hash: layerHashes[i], blobRef: layers[i].imageBlobRef }]
+            )));
           }
 
           // Update project metadata (thumbnail failure is non-fatal for data integrity)
@@ -534,6 +637,10 @@ export class DrawingApp extends LitElement {
           const staleRefs: BlobRef[] = oldLayerRefs.filter(r => !newLayerRefs.has(r));
           if (oldThumbRef && oldThumbRef !== newThumbRef) {
             staleRefs.push(oldThumbRef);
+          }
+          // Entries that left the undo stack no longer need their blobs.
+          if (!clearExistingHistory) {
+            for (const [, saved] of historyPlan.remove) staleRefs.push(...saved.blobRefs);
           }
           // When history is fully rewritten, the old entries' blobs are orphaned.
           if (clearExistingHistory && oldHistoryEntries.length > 0) {
@@ -794,8 +901,10 @@ export class DrawingApp extends LitElement {
     ctx.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
     this.canvas?.composite();
     this._dirty = false;
-    this._lastSavedHistoryLength = 0;
-    this._lastSavedHistoryVersion = DrawingApp.FORCE_FULL_HISTORY_SAVE;
+    // Storage may still hold history for this project (e.g. a load that
+    // failed part-way), so the next save must replace it rather than append.
+    this._trackLoadedProject([], []);
+    this._historyNeedsRewrite = true;
   }
 
   private async _loadProject(projectId: string) {
@@ -882,8 +991,7 @@ export class DrawingApp extends LitElement {
       await this.updateComplete;
       this.canvas?.setHistory(history, record.historyIndex ?? (history.length - 1));
       this._dirty = false;
-      this._lastSavedHistoryLength = history.length;
-      this._lastSavedHistoryVersion = 0;
+      this._trackLoadedProject(history, historyRecords);
       // Restore saved viewport or fall back to centering for legacy records
       if (record.zoom != null && record.panX != null && record.panY != null) {
         this.canvas?.setViewport(record.zoom, record.panX, record.panY);

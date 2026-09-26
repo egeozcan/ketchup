@@ -204,8 +204,12 @@ export class StampStrokeEngine {
     ctx.globalAlpha = 1;
   }
 
-  commit(target: CanvasRenderingContext2D) {
-    if (!this._descriptor) return;
+  /**
+   * Composite the stroke onto `target`. Returns false when no stroke was in
+   * progress; otherwise getDirtyBounds() covers every pixel it could change.
+   */
+  commit(target: CanvasRenderingContext2D): boolean {
+    if (!this._descriptor) return false;
 
     const lastSize = this._descriptor.pressureSize
       ? Math.max(1, this._descriptor.size * this._lastMappedPressure)
@@ -227,6 +231,7 @@ export class StampStrokeEngine {
     );
     this._descriptor = null;
     this._inkState = null;
+    return true;
   }
 
   cancel() {
