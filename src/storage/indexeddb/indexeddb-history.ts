@@ -66,6 +66,33 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
     });
   }
 
+  async updateEntries(projectId: string, removeIndices: number[], entries: ProjectHistoryRecord[]): Promise<void> {
+    if (removeIndices.length === 0 && entries.length === 0) return;
+    await new Promise<void>((resolve, reject) => {
+      const tx = this._db.transaction(HISTORY_STORE, 'readwrite');
+      const store = tx.objectStore(HISTORY_STORE);
+      if (removeIndices.length > 0) {
+        const remove = new Set(removeIndices);
+        const cursorReq = store.index('projectId').openCursor(IDBKeyRange.only(projectId));
+        cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result;
+          if (!cursor) return;
+          if (remove.has((cursor.value as ProjectHistoryRecord).index)) cursor.delete();
+          cursor.continue();
+        };
+        cursorReq.onerror = () => reject(mapDOMException(cursorReq.error));
+      }
+      for (const entry of entries) {
+        const { id: _id, ...rest } = entry;
+        store.add({ ...rest, projectId });
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(mapDOMException(tx.error));
+      // A quota failure at commit time aborts without an error event.
+      tx.onabort = () => reject(mapDOMException(tx.error));
+    });
+  }
+
   async deleteForProject(projectId: string): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       const tx = this._db.transaction(HISTORY_STORE, 'readwrite');

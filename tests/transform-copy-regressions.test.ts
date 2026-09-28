@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DrawingCanvas } from '../src/components/drawing-canvas.ts';
 import { TransformManager } from '../src/transform/transform-manager.ts';
-import { attachCanvasElements, makeLayer, makeState } from './helpers.ts';
+import { attachCanvasElements, makeCanvas, makeLayer, makeState } from './helpers.ts';
 
 function setupTransformedCanvas() {
   const canvas = new DrawingCanvas();
@@ -21,7 +21,7 @@ function setupTransformedCanvas() {
   (canvas as any).composite = vi.fn();
   (canvas as any).requestUpdate = vi.fn();
   (canvas as any)._writeToSystemClipboard = vi.fn();
-  (canvas as any)._beforeDrawData = new ImageData(100, 100);
+  (canvas as any)._beforeDrawCanvas = makeCanvas(100, 100);
 
   const transform = new TransformManager(
     new ImageData(10, 10),

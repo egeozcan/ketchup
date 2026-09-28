@@ -127,6 +127,11 @@ class MockHistoryStore implements ProjectHistoryStore {
   async replaceAll(projectId: string, entries: ProjectHistoryRecord[]): Promise<void> {
     this._entries.set(projectId, [...entries]);
   }
+  async updateEntries(projectId: string, removeIndices: number[], entries: ProjectHistoryRecord[]): Promise<void> {
+    const remove = new Set(removeIndices);
+    const kept = (this._entries.get(projectId) ?? []).filter((e) => !remove.has(e.index));
+    this._entries.set(projectId, [...kept, ...entries]);
+  }
   async deleteForProject(projectId: string): Promise<void> {
     this._entries.delete(projectId);
   }

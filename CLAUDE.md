@@ -40,7 +40,7 @@ Each layer owns an offscreen `HTMLCanvasElement` (created via `document.createEl
 
 ### History
 
-Uses a discriminated union `HistoryEntry` type (max 50 entries) supporting: `draw` (per-layer ImageData before/after), `add-layer`, `delete-layer`, `reorder`, `visibility`, `opacity`, and `rename`. Drawing history is captured in `drawing-canvas.ts` via `_captureBeforeDraw()`/`_pushDrawHistory()`. Layer structural operations are pushed by `drawing-app.ts` via `pushLayerOperation()`. Undo/redo of structural operations dispatches `layer-undo` custom events from canvas back to app.
+Uses a discriminated union `HistoryEntry` type (max 50 entries) supporting: `patch` (per-layer ImageData before/after of only the changed rectangle; legacy full-layer `draw`/`transform` entries still load and undo), `add-layer`, `delete-layer`, `reorder`, `visibility`, `opacity`, and `rename`. Drawing history is captured in `drawing-canvas.ts` via `_captureBeforeDraw()` (a canvas copy of the layer) and `_pushDrawHistory()` (diffs against it, reading back only the brush stroke's dirty bounds when known). `drawing-app.ts` persists history incrementally: each save serializes only new entries and deletes the ones that left the stack, and layers whose content hash is unchanged keep their stored blob. Layer structural operations are pushed by `drawing-app.ts` via `pushLayerOperation()`. Undo/redo of structural operations dispatches `layer-undo` custom events from canvas back to app.
 
 ### Persistence
 

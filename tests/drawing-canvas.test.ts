@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DrawingCanvas } from '../src/components/drawing-canvas.ts';
 import {
   attachCanvasElements,
+  makeCanvas,
   makeLayer,
   makeState,
   makeTransformManagerStub,
@@ -227,7 +228,7 @@ describe('DrawingCanvas', () => {
     expect(drawImage).toHaveBeenCalledWith(img, 40, 50, 120, 60);
   });
 
-  it('records an unchanged newly inserted stamp as a bounded patch', () => {
+  it('records a newly inserted stamp as a patch of only the pixels it changed', () => {
     const { canvas, activeLayer } = setupCanvas({ width: 100, height: 100 });
     const layerCtx = activeLayer.canvas.getContext('2d')!;
     const before = new ImageData(20, 10);
@@ -244,16 +245,14 @@ describe('DrawingCanvas', () => {
 
     canvas.commitTransform();
 
-    expect((canvas as any)._history).toEqual([
-      expect.objectContaining({
-        type: 'patch',
-        layerId: activeLayer.id,
-        x: 10,
-        y: 15,
-        before,
-        after,
-      }),
+    const history = (canvas as any)._history;
+    expect(history).toEqual([
+      expect.objectContaining({ type: 'patch', layerId: activeLayer.id, x: 10, y: 15 }),
     ]);
+    // Only pixel (0,0) of the 20x10 box changed, so only it is stored.
+    expect([history[0].before.width, history[0].before.height]).toEqual([1, 1]);
+    expect(Array.from(history[0].before.data)).toEqual([0, 0, 0, 0]);
+    expect(Array.from(history[0].after.data)).toEqual([0, 0, 0, 255]);
     expect(layerCtx.getImageData).toHaveBeenNthCalledWith(1, 10, 15, 20, 10);
     expect(layerCtx.getImageData).toHaveBeenNthCalledWith(2, 10, 15, 20, 10);
   });
@@ -322,7 +321,7 @@ describe('DrawingCanvas', () => {
     (canvas as any)._writeToSystemClipboard = vi.fn();
 
     canvas.duplicateInPlace();
-    expect((canvas as any)._beforeDrawData).not.toBeNull();
+    expect((canvas as any)._beforeDrawCanvas).not.toBeNull();
 
     const historyBeforeDelete = (canvas as any)._history.length;
     canvas.deleteSelection();
@@ -343,7 +342,7 @@ describe('DrawingCanvas', () => {
     await (canvas as any)._handleExternalImage(img, 'Imported Image');
 
     expect(captureBeforeDraw).toHaveBeenCalledTimes(1);
-    expect((canvas as any)._beforeDrawData).not.toBeNull();
+    expect((canvas as any)._beforeDrawCanvas).not.toBeNull();
   });
 
   it('reports canUndo when a transform is active with empty history', () => {
@@ -367,7 +366,7 @@ describe('DrawingCanvas', () => {
     const { canvas } = setupCanvas();
     (canvas as any)._history = [];
     (canvas as any)._historyIndex = -1;
-    (canvas as any)._beforeDrawData = new ImageData(100, 100);
+    (canvas as any)._beforeDrawCanvas = makeCanvas(100, 100);
     (canvas as any)._transformManager = makeTransformManagerStub({
       getSourceRect: vi.fn(() => ({ x: 10, y: 10, w: 20, h: 20 })),
     });
@@ -387,7 +386,7 @@ describe('DrawingCanvas', () => {
       { type: 'draw', layerId: activeLayer.id, before: image(), after: image() },
     ];
     (canvas as any)._historyIndex = 1;
-    (canvas as any)._beforeDrawData = new ImageData(100, 100);
+    (canvas as any)._beforeDrawCanvas = makeCanvas(100, 100);
     (canvas as any)._transformManager = makeTransformManagerStub({
       getSourceRect: vi.fn(() => ({ x: 10, y: 10, w: 20, h: 20 })),
     });
@@ -398,9 +397,12 @@ describe('DrawingCanvas', () => {
   });
 
   it('preserves the pre-lift image data when clearCanvas commits an active transform', () => {
-    const { canvas } = setupCanvas();
-    const preLiftState = new ImageData(100, 100);
-    (canvas as any)._beforeDrawData = preLiftState;
+    const { canvas, activeLayer } = setupCanvas();
+    const preLift = makeCanvas(100, 100);
+    const preLiftPixels = new ImageData(100, 100);
+    preLiftPixels.data[(20 * 100 + 30) * 4 + 3] = 255;
+    vi.spyOn(preLift.getContext('2d')!, 'getImageData').mockReturnValueOnce(preLiftPixels);
+    (canvas as any)._beforeDrawCanvas = preLift;
     (canvas as any)._transformManager = makeTransformManagerStub({
       hasChanged: vi.fn(() => true),
     });
@@ -408,8 +410,69 @@ describe('DrawingCanvas', () => {
     canvas.clearCanvas();
 
     const history = (canvas as any)._history;
-    expect(history[0].type).toBe('transform');
-    expect(history[0].before).toBe(preLiftState);
+    expect(history[0]).toMatchObject({ type: 'patch', layerId: activeLayer.id, x: 30, y: 20 });
+    expect(history[0].before.width).toBe(1);
+    expect(history[0].before.data[3]).toBe(255);
+  });
+
+  it('records a brush stroke as a patch covering only the pixels it changed', () => {
+    const { canvas, activeLayer } = setupCanvas({ width: 200, height: 150, stateOverrides: { activeTool: 'pencil' } });
+    const layerCtx = activeLayer.canvas.getContext('2d')!;
+    (canvas as any)._panX = 0;
+    (canvas as any)._panY = 0;
+    (canvas as any)._zoom = 1;
+
+    (canvas as any)._onPointerDown({ button: 0, clientX: 40, clientY: 50, pointerId: 1 } as PointerEvent);
+    (canvas as any)._onPointerMove({ clientX: 60, clientY: 55, pointerId: 1 } as PointerEvent);
+    const bounds = { x: 30, y: 40, w: 40, h: 25 };
+    vi.spyOn((canvas as any)._engine, 'getDirtyBounds').mockReturnValue(bounds);
+    const snapshotRead = vi.spyOn((canvas as any)._beforeDrawCanvas.getContext('2d'), 'getImageData');
+    const layerRead = vi.spyOn(layerCtx, 'getImageData').mockImplementation(((x: number, y: number, w: number, h: number) => {
+      const img = new ImageData(w, h);
+      // Pixel (45, 52) in document space is the only one the stroke changed.
+      img.data[((52 - y) * w + (45 - x)) * 4 + 3] = 255;
+      return img;
+    }) as typeof layerCtx.getImageData);
+
+    (canvas as any)._onPointerUp({ clientX: 60, clientY: 55, pointerId: 1 } as PointerEvent);
+
+    // Only the stroke's padded footprint is read back, never the whole document.
+    expect(snapshotRead).toHaveBeenCalledWith(28, 38, 44, 29);
+    expect(layerRead).toHaveBeenCalledWith(28, 38, 44, 29);
+    expect((canvas as any)._history).toHaveLength(1);
+    expect((canvas as any)._history[0]).toMatchObject({ type: 'patch', layerId: activeLayer.id, x: 45, y: 52 });
+    expect((canvas as any)._history[0].after.width).toBe(1);
+    expect((canvas as any)._history[0].after.height).toBe(1);
+    expect((canvas as any)._beforeDrawCanvas).toBeNull();
+  });
+
+  it('does not record a stroke that left the layer unchanged', () => {
+    const { canvas } = setupCanvas({ stateOverrides: { activeTool: 'pencil' } });
+    (canvas as any)._panX = 0;
+    (canvas as any)._panY = 0;
+    (canvas as any)._zoom = 1;
+
+    (canvas as any)._onPointerDown({ button: 0, clientX: 40, clientY: 50, pointerId: 1 } as PointerEvent);
+    (canvas as any)._onPointerUp({ clientX: 40, clientY: 50, pointerId: 1 } as PointerEvent);
+
+    expect((canvas as any)._history).toHaveLength(0);
+  });
+
+  it('restores the before snapshot when a stroke is cancelled', () => {
+    const { canvas, activeLayer } = setupCanvas({ stateOverrides: { activeTool: 'pencil' } });
+    const layerCtx = activeLayer.canvas.getContext('2d')!;
+    (canvas as any)._panX = 0;
+    (canvas as any)._panY = 0;
+    (canvas as any)._zoom = 1;
+
+    (canvas as any)._onPointerDown({ button: 0, clientX: 40, clientY: 50, pointerId: 1 } as PointerEvent);
+    const snapshot = (canvas as any)._beforeDrawCanvas;
+    const drawImage = vi.spyOn(layerCtx, 'drawImage');
+    (canvas as any)._onPointerCancel({ pointerId: 1 } as PointerEvent);
+
+    expect(drawImage).toHaveBeenCalledWith(snapshot, 0, 0);
+    expect((canvas as any)._beforeDrawCanvas).toBeNull();
+    expect((canvas as any)._history).toHaveLength(0);
   });
 
   it('cancelExternalFloat removes the pasted layer history without orphaning entries', () => {
@@ -492,7 +555,7 @@ describe('DrawingCanvas', () => {
     (canvas as any)._onPointerUp({ clientX: 50, clientY: 50, pointerId: 1 } as PointerEvent);
 
     expect((canvas as any)._drawing).toBe(false);
-    expect((canvas as any)._beforeDrawData).toBeNull();
+    expect((canvas as any)._beforeDrawCanvas).toBeNull();
   });
 
   it('clearSelection clears _drawing so stale strokes do not leak across tools', () => {
@@ -516,13 +579,74 @@ describe('DrawingCanvas', () => {
     (canvas as any)._zoom = 1;
 
     (canvas as any)._onPointerDown({ button: 0, clientX: 10, clientY: 10, pointerId: 1 } as PointerEvent);
-    const preBrushData = (canvas as any)._beforeDrawData;
+    // Pre-stroke snapshot with pixel (10,10) opaque, read back over whatever
+    // region the stroke covers.
+    const snapshotCtx: CanvasRenderingContext2D = (canvas as any)._beforeDrawCanvas.getContext('2d');
+    vi.spyOn(snapshotCtx, 'getImageData')
+      .mockImplementationOnce((x: number, y: number, w: number, h: number) => {
+        const img = new ImageData(w, h);
+        const px = 10 - x;
+        const py = 10 - y;
+        if (px >= 0 && py >= 0 && px < w && py < h) img.data[(py * w + px) * 4 + 3] = 255;
+        return img;
+      });
+    const commit = vi.spyOn((canvas as any)._engine, 'commit');
 
     canvas.clearCanvas();
 
+    // The stroke is committed to the layer rather than left in the engine.
+    expect(commit).toHaveBeenCalledTimes(1);
     expect((canvas as any)._drawing).toBe(false);
     expect((canvas as any)._history.length).toBe(2);
-    expect((canvas as any)._history[0].before).toBe(preBrushData);
+    // The stroke's entry was recorded against the pre-stroke snapshot.
+    expect((canvas as any)._history[0]).toMatchObject({ type: 'patch', x: 10, y: 10 });
+    expect((canvas as any)._history[0].before.data[3]).toBe(255);
+  });
+
+  it('clearSelection commits an in-progress brush stroke as its own entry', () => {
+    const { canvas, activeLayer } = setupCanvas({ stateOverrides: { activeTool: 'pencil' } });
+    (canvas as any)._panX = 0;
+    (canvas as any)._panY = 0;
+    (canvas as any)._zoom = 1;
+
+    (canvas as any)._onPointerDown({ button: 0, clientX: 10, clientY: 10, pointerId: 1 } as PointerEvent);
+    const snapshotCtx: CanvasRenderingContext2D = (canvas as any)._beforeDrawCanvas.getContext('2d');
+    vi.spyOn(snapshotCtx, 'getImageData')
+      .mockImplementationOnce((x: number, y: number, w: number, h: number) => {
+        const img = new ImageData(w, h);
+        const px = 10 - x;
+        const py = 10 - y;
+        if (px >= 0 && py >= 0 && px < w && py < h) img.data[(py * w + px) * 4 + 3] = 255;
+        return img;
+      });
+
+    canvas.clearSelection();
+
+    expect((canvas as any)._drawing).toBe(false);
+    expect((canvas as any)._history).toEqual([expect.objectContaining({ type: 'patch', x: 10, y: 10 })]);
+    // Nothing is left in the engine to land on the layer, unrecorded, later.
+    expect((canvas as any)._engine.commit(activeLayer.canvas.getContext('2d'))).toBe(false);
+  });
+
+  it('undo and redo skip a forced no-op patch but apply a real single-pixel one', () => {
+    const { canvas, activeLayer } = setupCanvas({ width: 100, height: 100 });
+    const changedBefore = new ImageData(1, 1);
+    const changedAfter = new ImageData(1, 1);
+    changedAfter.data[3] = 255;
+    (canvas as any)._history = [
+      { type: 'patch', layerId: activeLayer.id, x: 5, y: 5, before: changedBefore, after: changedAfter },
+      { type: 'patch', layerId: activeLayer.id, x: 0, y: 0, before: new ImageData(1, 1), after: new ImageData(1, 1) },
+    ];
+    (canvas as any)._historyIndex = 1;
+    const putSpy = vi.spyOn(activeLayer.canvas.getContext('2d')!, 'putImageData');
+
+    canvas.undo();
+    canvas.undo();
+    canvas.redo();
+    canvas.redo();
+
+    expect(putSpy.mock.calls).toEqual([[changedBefore, 5, 5], [changedAfter, 5, 5]]);
+    expect((canvas as any)._historyIndex).toBe(1);
   });
 
   it('undo finalizes an in-progress brush stroke before undoing history', () => {
@@ -552,13 +676,15 @@ describe('DrawingCanvas', () => {
     (canvas as any)._zoom = 1;
 
     (canvas as any)._onPointerDown({ button: 0, clientX: 10, clientY: 10, pointerId: 1 } as PointerEvent);
-    const preBrushData = (canvas as any)._beforeDrawData;
+    const preBrushSnapshot = (canvas as any)._beforeDrawCanvas;
+    const capture = vi.spyOn(canvas as any, '_captureBeforeDraw');
     (canvas as any)._clipboard = new ImageData(20, 20);
     (canvas as any)._clipboardOrigin = { x: 50, y: 50 };
 
     canvas.pasteSelection();
 
-    expect((canvas as any)._beforeDrawData).toBe(preBrushData);
+    expect(capture).not.toHaveBeenCalled();
+    expect((canvas as any)._beforeDrawCanvas).toBe(preBrushSnapshot);
   });
 
   it('does not zoom when Ctrl+wheel has deltaY === 0', () => {

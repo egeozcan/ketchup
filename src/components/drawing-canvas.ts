@@ -17,8 +17,18 @@ import { drawCropOverlay, hitTestCropHandle, parseAspectRatio, constrainCropToRa
 import { drawText, measureTextBlock, buildFontString, LINE_HEIGHT } from '../tools/text.js';
 import { TransformManager } from '../transform/transform-manager.js';
 import { detectContentBounds } from '../transform/transform-math.js';
+import { diffBounds, cropImageData, type PixelRect } from '../utils/image-diff.js';
 import './resize-dialog.js';
 import type { ResizeDialog } from './resize-dialog.js';
+
+/**
+ * A forced entry for an operation that changed nothing stores one identical
+ * pixel twice. Writing it back could only revert later, unrecorded changes to
+ * that pixel, so undo/redo skip it.
+ */
+function isNoOpPatch(entry: Extract<HistoryEntry, { type: 'patch' }>): boolean {
+  return entry.before.width === 1 && entry.before.height === 1 && !diffBounds(entry.before, entry.after);
+}
 
 @customElement('drawing-canvas')
 export class DrawingCanvas extends LitElement {
@@ -316,28 +326,22 @@ export class DrawingCanvas extends LitElement {
 
     if (isInsertion && patch) {
       const after = layerCtx.getImageData(patch.x, patch.y, patch.w, patch.h);
-      if (!this._imageDataEqual(patch.before, after)) {
+      const changed = diffBounds(patch.before, after);
+      if (changed) {
         this._pushHistoryEntry({
           type: 'patch',
           layerId: layer.id,
-          x: patch.x,
-          y: patch.y,
-          before: patch.before,
-          after,
+          x: patch.x + changed.x,
+          y: patch.y + changed.y,
+          before: cropImageData(patch.before, changed),
+          after: cropImageData(after, changed),
         });
       }
-    } else if (this._transformManager.hasChanged() && this._beforeDrawData) {
-      const after = layerCtx.getImageData(
-        0, 0, layer.canvas.width, layer.canvas.height,
-      );
-      this._pushHistoryEntry({
-        type: 'transform',
-        layerId: layer.id,
-        before: this._beforeDrawData,
-        after,
-      });
+    } else if (this._transformManager.hasChanged() && this._beforeDrawCanvas) {
+      const changed = this._readChangedPatch(layerCtx, undefined, true);
+      if (changed) this._pushHistoryEntry({ type: 'patch', layerId: layer.id, ...changed });
     }
-    this._beforeDrawData = null;
+    this._beforeDrawCanvas = null;
     this._transformContentMode = 'lifted';
     this._floatIsExternalImage = false;
 
@@ -370,8 +374,8 @@ export class DrawingCanvas extends LitElement {
 
     if (this._transformContentMode === 'inserted') {
       this._transformManager.cancel();
-    } else if (this._beforeDrawData) {
-      ctx.putImageData(this._beforeDrawData, 0, 0);
+    } else if (this._beforeDrawCanvas) {
+      this._restoreBeforeDraw(ctx);
     } else {
       const originalData = this._transformManager.cancel();
       const srcRect = this._transformManager.getSourceRect();
@@ -380,7 +384,7 @@ export class DrawingCanvas extends LitElement {
 
     this._transformManager.dispose();
     this._transformManager = null;
-    this._beforeDrawData = null;
+    this._beforeDrawCanvas = null;
     this._transformContentMode = 'lifted';
     this.previewCanvas.getContext('2d')!.clearRect(
       0, 0, this.previewCanvas.width, this.previewCanvas.height,
@@ -712,59 +716,130 @@ export class DrawingCanvas extends LitElement {
   private _history: HistoryEntry[] = [];
   private _historyIndex = -1;
   private _maxHistory = 50;
-  private _historyVersion = 0;
 
   // --- Public history access for persistence ---
   /** Returns a shallow copy of the history array. Note: entries contain shared
-   *  mutable references (e.g. ImageData in 'draw' entries). Callers that need
+   *  mutable references (e.g. ImageData in 'patch' entries). Callers that need
    *  isolation should snapshot data synchronously before any async work. */
   public getHistory(): HistoryEntry[] { return [...this._history]; }
   public getHistoryIndex(): number { return this._historyIndex; }
-  public getHistoryVersion(): number { return this._historyVersion; }
   public setHistory(entries: HistoryEntry[], index: number) {
     this._history = entries;
     this._historyIndex = Math.max(-1, Math.min(index, entries.length - 1));
-    this._historyVersion = 0;
     this._notifyHistory();
   }
 
-  private _beforeDrawData: ImageData | null = null;
+  /**
+   * The active layer as it was when the current undoable operation began, or
+   * null when none is pending. It is a canvas copy rather than an ImageData
+   * readback, so starting an operation never stalls on a full-document
+   * getImageData; only the region that changed is read back when the history
+   * entry is recorded.
+   */
+  private _beforeDrawCanvas: HTMLCanvasElement | null = null;
+  /** Reused backing store for _beforeDrawCanvas. */
+  private _beforeDrawBuffer: HTMLCanvasElement | null = null;
 
   /** Call before a drawing operation starts (pointerdown) */
   private _captureBeforeDraw() {
     const ctx = this._getActiveLayerCtx();
     if (!ctx) return;
-    this._beforeDrawData = ctx.getImageData(0, 0, this._docWidth, this._docHeight);
+    const { width, height } = ctx.canvas;
+    let buffer = this._beforeDrawBuffer;
+    if (!buffer || buffer.width !== width || buffer.height !== height) {
+      buffer = document.createElement('canvas');
+      buffer.width = width;
+      buffer.height = height;
+      this._beforeDrawBuffer = buffer;
+    }
+    const bufferCtx = buffer.getContext('2d')!;
+    bufferCtx.clearRect(0, 0, width, height);
+    bufferCtx.drawImage(ctx.canvas, 0, 0);
+    this._beforeDrawCanvas = buffer;
   }
 
-  /** Call after a drawing operation completes (pointerup) */
-  private _pushDrawHistory(force = false) {
+  /** Put the pixels captured by _captureBeforeDraw() back onto `ctx`. */
+  private _restoreBeforeDraw(ctx: CanvasRenderingContext2D) {
+    const snapshot = this._beforeDrawCanvas;
+    if (!snapshot) return;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.drawImage(snapshot, 0, 0);
+    ctx.restore();
+  }
+
+  /**
+   * Call after a drawing operation completes (pointerup). Records only the
+   * rectangle that changed, not the whole layer. `region` bounds where the
+   * operation can have drawn, when the caller knows it, so only that much of
+   * the document is read back and compared.
+   */
+  private _pushDrawHistory(force = false, region?: PixelRect) {
     const state = this._ctx.value?.state;
     const ctx = this._getActiveLayerCtx();
-    if (!ctx || !state || !this._beforeDrawData) return;
-    const after = ctx.getImageData(0, 0, this._docWidth, this._docHeight);
-    // Skip no-op: if before and after are identical, discard without pushing.
-    if (!force) {
-      if (this._imageDataEqual(this._beforeDrawData, after)) {
-        this._beforeDrawData = null;
-        return;
-      }
-    }
-    this._pushHistoryEntry({
-      type: 'draw',
-      layerId: state.activeLayerId,
-      before: this._beforeDrawData,
-      after,
-    });
-    this._beforeDrawData = null;
+    if (!ctx || !state || !this._beforeDrawCanvas) return;
+    const patch = this._readChangedPatch(ctx, region, force);
+    this._beforeDrawCanvas = null;
+    if (!patch) return;
+    this._pushHistoryEntry({ type: 'patch', layerId: state.activeLayerId, ...patch });
   }
 
-  private _imageDataEqual(a: ImageData, b: ImageData): boolean {
-    if (a.width !== b.width || a.height !== b.height || a.data.length !== b.data.length) return false;
-    for (let i = 0; i < a.data.length; i++) {
-      if (a.data[i] !== b.data[i]) return false;
+  /**
+   * Compare the captured before-snapshot with the layer inside `region`
+   * (default: the whole document) and return the smallest before/after patch
+   * covering every changed pixel. Returns null when nothing changed, unless
+   * `force` asks for an entry anyway, in which case it is a no-op 1x1 patch.
+   */
+  private _readChangedPatch(
+    ctx: CanvasRenderingContext2D,
+    region: PixelRect | undefined,
+    force: boolean,
+  ): { x: number; y: number; before: ImageData; after: ImageData } | null {
+    const snapshot = this._beforeDrawCanvas!;
+    const width = Math.min(snapshot.width, ctx.canvas.width);
+    const height = Math.min(snapshot.height, ctx.canvas.height);
+    const r = region ?? { x: 0, y: 0, w: width, h: height };
+    const x = Math.max(0, Math.floor(r.x));
+    const y = Math.max(0, Math.floor(r.y));
+    const w = Math.min(width, Math.ceil(r.x + r.w)) - x;
+    const h = Math.min(height, Math.ceil(r.y + r.h)) - y;
+    const snapshotCtx = snapshot.getContext('2d')!;
+
+    let changed: PixelRect | null = null;
+    let before: ImageData | null = null;
+    let after: ImageData | null = null;
+    if (w > 0 && h > 0) {
+      before = snapshotCtx.getImageData(x, y, w, h);
+      after = ctx.getImageData(x, y, w, h);
+      changed = diffBounds(before, after);
     }
-    return true;
+    if (changed && before && after) {
+      return {
+        x: x + changed.x,
+        y: y + changed.y,
+        before: cropImageData(before, changed),
+        after: cropImageData(after, changed),
+      };
+    }
+    if (!force || width <= 0 || height <= 0) return null;
+    return { x: 0, y: 0, before: snapshotCtx.getImageData(0, 0, 1, 1), after: ctx.getImageData(0, 0, 1, 1) };
+  }
+
+  /**
+   * Commit the in-progress brush stroke to the layer. Returns the region it
+   * can have changed, for _pushDrawHistory(), or undefined when no stroke was
+   * in progress (the change, if any, is then not bounded by a stroke).
+   */
+  private _commitStroke(layerCtx: CanvasRenderingContext2D): PixelRect | undefined {
+    if (!this._engine.commit(layerCtx)) return undefined;
+    const bounds = this._engine.getDirtyBounds();
+    if (!bounds) return { x: 0, y: 0, w: 0, h: 0 };
+    // Margin for anti-aliased stamp edges.
+    const pad = 2;
+    return { x: bounds.x - pad, y: bounds.y - pad, w: bounds.w + pad * 2, h: bounds.h + pad * 2 };
   }
 
   /** Called by drawing-app for layer structural operations */
@@ -773,15 +848,10 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _pushHistoryEntry(entry: HistoryEntry) {
-    const prevLength = this._history.length;
     this._history = this._history.slice(0, this._historyIndex + 1);
-    if (this._history.length < prevLength) {
-      this._historyVersion++;
-    }
     this._history.push(entry);
     if (this._history.length > this._maxHistory) {
       this._history.shift();
-      this._historyVersion++;
     } else {
       this._historyIndex++;
     }
@@ -854,19 +924,19 @@ export class DrawingCanvas extends LitElement {
   public undo() {
     // Finalize any in-progress text/brush/shape/move so it becomes its own
     // history entry before we undo. Without this, the undo modifies the
-    // layer under the stroke, corrupting _beforeDrawData and the history.
+    // layer under the stroke, corrupting _beforeDrawCanvas and the history.
     if (this._textEditing) {
       this._commitText();
     }
     if (this._drawing) {
       // Commit the engine's stroke buffer to the layer before capturing history
       const layerCtx = this._getActiveLayerCtx();
-      if (layerCtx) this._engine.commit(layerCtx);
+      const region = layerCtx ? this._commitStroke(layerCtx) : undefined;
       this._drawing = false;
       this._lastPoint = null;
       this._startPoint = null;
-      const hadBeforeData = this._beforeDrawData !== null;
-      this._pushDrawHistory();
+      const hadBeforeData = this._beforeDrawCanvas !== null;
+      this._pushDrawHistory(false, region);
       if (this.previewCanvas) {
         this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
       }
@@ -898,12 +968,12 @@ export class DrawingCanvas extends LitElement {
     }
     if (this._drawing) {
       const layerCtx = this._getActiveLayerCtx();
-      if (layerCtx) this._engine.commit(layerCtx);
+      const region = layerCtx ? this._commitStroke(layerCtx) : undefined;
       this._drawing = false;
       this._lastPoint = null;
       this._startPoint = null;
-      const hadBeforeData = this._beforeDrawData !== null;
-      this._pushDrawHistory();
+      const hadBeforeData = this._beforeDrawCanvas !== null;
+      this._pushDrawHistory(false, region);
       if (this.previewCanvas) {
         this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
       }
@@ -939,7 +1009,7 @@ export class DrawingCanvas extends LitElement {
       }
       case 'patch': {
         const layer = state.layers.find(l => l.id === entry.layerId);
-        if (layer) layer.canvas.getContext('2d')!.putImageData(entry.before, entry.x, entry.y);
+        if (layer && !isNoOpPatch(entry)) layer.canvas.getContext('2d')!.putImageData(entry.before, entry.x, entry.y);
         break;
       }
       case 'add-layer': {
@@ -1045,7 +1115,7 @@ export class DrawingCanvas extends LitElement {
       }
       case 'patch': {
         const layer = state.layers.find(l => l.id === entry.layerId);
-        if (layer) layer.canvas.getContext('2d')!.putImageData(entry.after, entry.x, entry.y);
+        if (layer && !isNoOpPatch(entry)) layer.canvas.getContext('2d')!.putImageData(entry.after, entry.x, entry.y);
         break;
       }
       case 'add-layer': {
@@ -1142,10 +1212,12 @@ export class DrawingCanvas extends LitElement {
   public clearCanvas() {
     // Finalize any in-progress brush stroke before clearing
     if (this._drawing) {
+      const layerCtx = this._getActiveLayerCtx();
+      const region = layerCtx ? this._commitStroke(layerCtx) : undefined;
       this._drawing = false;
       this._lastPoint = null;
       this._startPoint = null;
-      this._pushDrawHistory(true);
+      this._pushDrawHistory(true, region);
     }
     this.clearSelection();
     this._captureBeforeDraw();
@@ -1737,7 +1809,7 @@ export class DrawingCanvas extends LitElement {
             this._pushDrawHistory();
             this.composite();
           } else {
-            this._beforeDrawData = null;
+            this._beforeDrawCanvas = null;
           }
         }
       }
@@ -2014,11 +2086,11 @@ export class DrawingCanvas extends LitElement {
     if (this._drawing && activeTool !== 'pencil' &&
         activeTool !== 'eraser' && !isShapeTool(activeTool)) {
       const layerCtx = this._getActiveLayerCtx();
-      if (layerCtx) this._engine.commit(layerCtx);
+      const region = layerCtx ? this._commitStroke(layerCtx) : undefined;
       this._drawing = false;
       this._lastPoint = null;
       this._startPoint = null;
-      this._pushDrawHistory(true);
+      this._pushDrawHistory(true, region);
       this.composite();
       return;
     }
@@ -2034,17 +2106,11 @@ export class DrawingCanvas extends LitElement {
     }
 
     if (activeTool === 'move' && this._moveTempCanvas) {
-      const p = this._getDocPoint(e);
-      const dx = Math.round(p.x - this._moveStartPoint!.x);
-      const dy = Math.round(p.y - this._moveStartPoint!.y);
       this._moveTempCanvas = null;
       this._moveStartPoint = null;
-      if (dx === 0 && dy === 0) {
-        // Click without drag — discard the no-op history entry
-        this._beforeDrawData = null;
-      } else {
-        this._pushDrawHistory();
-      }
+      // Records the layer as last rendered; a click without a drag (or a drag
+      // back to the start) changes nothing and records nothing.
+      this._pushDrawHistory();
       this.composite();
       return;
     }
@@ -2082,17 +2148,18 @@ export class DrawingCanvas extends LitElement {
     }
 
     // Commit engine stroke buffer to layer before capturing history
+    let region: PixelRect | undefined;
     if (activeTool === 'pencil' || activeTool === 'eraser') {
       const layerCtx = this._getActiveLayerCtx();
       if (layerCtx) {
-        this._engine.commit(layerCtx);
+        region = this._commitStroke(layerCtx);
       }
     }
 
     this._drawing = false;
     this._lastPoint = null;
     this._startPoint = null;
-    this._pushDrawHistory();
+    this._pushDrawHistory(false, region);
     this.composite();
   }
 
@@ -2149,12 +2216,12 @@ export class DrawingCanvas extends LitElement {
       this._lastPoint = null;
       this._startPoint = null;
       // Restore layer to before the stroke
-      if (this._beforeDrawData) {
+      if (this._beforeDrawCanvas) {
         const layerCtx = this._getActiveLayerCtx();
         if (layerCtx) {
-          layerCtx.putImageData(this._beforeDrawData, 0, 0);
+          this._restoreBeforeDraw(layerCtx);
         }
-        this._beforeDrawData = null;
+        this._beforeDrawCanvas = null;
       }
       // Clear shape preview
       this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
@@ -2168,12 +2235,12 @@ export class DrawingCanvas extends LitElement {
 
     // Cancel move tool drag
     if (this._moveTempCanvas) {
-      if (this._beforeDrawData) {
+      if (this._beforeDrawCanvas) {
         const layerCtx = this._getActiveLayerCtx();
         if (layerCtx) {
-          layerCtx.putImageData(this._beforeDrawData, 0, 0);
+          this._restoreBeforeDraw(layerCtx);
         }
-        this._beforeDrawData = null;
+        this._beforeDrawCanvas = null;
       }
       this._moveTempCanvas = null;
       this._moveStartPoint = null;
@@ -2785,7 +2852,7 @@ export class DrawingCanvas extends LitElement {
         this._pushDrawHistory(true);
         this.composite();
       } else {
-        this._beforeDrawData = null;
+        this._beforeDrawCanvas = null;
       }
     }
   }
@@ -2795,7 +2862,7 @@ export class DrawingCanvas extends LitElement {
     if (this._transformManager) this.commitTransform();
     // Keep the pre-paste snapshot until the float is either committed or
     // deleted. Deleting a pasted float is a deliberate, undoable action.
-    if (!this._beforeDrawData) this._captureBeforeDraw();
+    if (!this._beforeDrawCanvas) this._captureBeforeDraw();
     const w = this._clipboard.width;
     const h = this._clipboard.height;
 
@@ -2970,13 +3037,13 @@ export class DrawingCanvas extends LitElement {
     // A newly inserted stamp has no pre-existing layer mutation, so Delete is
     // equivalent to cancelling it. Pasted floats retain a before snapshot so
     // their deletion stays as an explicit undo step.
-    if (this._transformContentMode === 'inserted' && !this._beforeDrawData) {
+    if (this._transformContentMode === 'inserted' && !this._beforeDrawCanvas) {
       this.cancelTransform();
       return;
     }
     // Cancel the transform (discards the lifted content, restoring before-draw state
     // if available). Then push a history entry for the deletion.
-    if (!this._beforeDrawData) {
+    if (!this._beforeDrawCanvas) {
       this._captureBeforeDraw();
     }
     // Discard the transform content by NOT putting it back on the layer.
@@ -3005,10 +3072,14 @@ export class DrawingCanvas extends LitElement {
     // Finalize any in-progress brush/shape stroke so _drawing doesn't
     // leak into the next tool and cause stale history entries.
     if (this._drawing) {
+      // Commit the brush stroke too; left in the engine, it would land on the
+      // layer at the next commit with no history entry of its own.
+      const layerCtx = this._getActiveLayerCtx();
+      const region = layerCtx ? this._commitStroke(layerCtx) : undefined;
       this._drawing = false;
       this._lastPoint = null;
       this._startPoint = null;
-      this._pushDrawHistory();
+      this._pushDrawHistory(false, region);
       // Clear the preview canvas — shape tools draw live previews there
       // that would otherwise persist as ghost outlines.
       if (this.previewCanvas) {
@@ -3047,7 +3118,7 @@ export class DrawingCanvas extends LitElement {
     this._floatIsExternalImage = false;
     this._transformContentMode = 'lifted';
     this._selectionDrawing = false;
-    this._beforeDrawData = null;
+    this._beforeDrawCanvas = null;
     if (this.previewCanvas) {
       this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
     }
@@ -3074,7 +3145,6 @@ export class DrawingCanvas extends LitElement {
         });
         this._history = [...before, ...kept];
         this._historyIndex = this._history.length - 1;
-        this._historyVersion++;
       }
     }
 
@@ -3448,7 +3518,7 @@ export class DrawingCanvas extends LitElement {
       this._pushDrawHistory();
       this.composite();
     } else {
-      this._beforeDrawData = null;
+      this._beforeDrawCanvas = null;
     }
     this._endTextEditing();
   }

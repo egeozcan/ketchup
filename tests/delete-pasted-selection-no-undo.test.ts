@@ -7,7 +7,7 @@ import { attachCanvasElements, makeState } from './helpers.ts';
  * a history entry, making the delete irreversible.
  *
  * Root cause: `deleteSelection()` calls `_pushDrawHistory()` without `force`.
- * The no-op detection inside `_pushDrawHistory()` compares `_beforeDrawData`
+ * The no-op detection inside `_pushDrawHistory()` compares `_beforeDrawCanvas`
  * (captured at paste time) with the current layer pixel data. Because a pasted
  * float is an overlay that has NOT modified the underlying layer canvas, the
  * before and after ImageData are byte-identical. The no-op check causes the
@@ -94,8 +94,8 @@ describe('deleteSelection on a pasted float should push a history entry', () => 
     expect((canvas as any)._transformManager).not.toBeNull();
     expect((canvas as any).getTransformValues()).toMatchObject({ x: 100, y: 100, width: 50, height: 50 });
 
-    // Verify _beforeDrawData was captured
-    expect((canvas as any)._beforeDrawData).not.toBeNull();
+    // Verify _beforeDrawCanvas was captured
+    expect((canvas as any)._beforeDrawCanvas).not.toBeNull();
 
     // Record history state before delete
     const historyLengthBeforeDelete = (canvas as any)._history.length;

@@ -117,9 +117,10 @@ export function collectBlobRefsFromEntry(
       refs.add(entry.layer.imageData.blobRef);
       break;
     case 'crop':
+    case 'merge':
       for (const l of entry.beforeLayers) refs.add(l.imageData.blobRef);
       for (const l of entry.afterLayers) refs.add(l.imageData.blobRef);
       break;
-    // reorder, visibility, opacity, rename — no blobs
+    // reorder, visibility, opacity, rename, blend-mode — no blobs
   }
 }
