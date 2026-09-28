@@ -190,6 +190,16 @@ export class DrawingApp extends LitElement {
    * the others keep their stored PNG instead of being re-encoded.
    */
   private _savedLayerBlobs = new Map<string, { hash: string; blobRef: BlobRef }>();
+  /** Project the bookkeeping above describes; a save to any other project rewrites its history. */
+  private _trackedProjectId: string | null = null;
+  /** Bumped whenever the bookkeeping is reset for a newly loaded project. */
+  private _trackingGeneration = 0;
+  /**
+   * Project loads in progress. While `_currentProject` already names the new
+   * project but the canvas still holds the old one, a save would write the old
+   * project's layers and history into the new one, so saves wait.
+   */
+  private _projectLoads = 0;
 
   @query('drawing-canvas') canvas!: DrawingCanvas;
 
@@ -343,9 +353,11 @@ export class DrawingApp extends LitElement {
    * entries no longer lead the stack in stored order (not expected, since the
    * stack only drops entries from either end or filters them in place).
    */
-  private _planHistorySave(entries: HistoryEntry[]) {
+  private _planHistorySave(projectId: string, entries: HistoryEntry[]) {
     const saved = this._savedHistory;
-    let rewrite = this._historyNeedsRewrite;
+    let rewrite = this._historyNeedsRewrite ||
+      this._trackedProjectId !== projectId ||
+      !this._backend?.history.updateEntries;
     if (!rewrite) {
       let lastIndex = -1;
       let sawUnsaved = false;
@@ -375,9 +387,11 @@ export class DrawingApp extends LitElement {
 
   /** Update the stored-history bookkeeping once a planned history save has been written. */
   private _recordSavedHistory(
+    projectId: string,
     plan: ReturnType<DrawingApp['_planHistorySave']>,
     records: ProjectHistoryRecord[],
   ) {
+    this._trackedProjectId = projectId;
     if (plan.rewrite) this._savedHistory.clear();
     for (const [entry] of plan.remove) this._savedHistory.delete(entry);
     plan.add.forEach((entry, i) => {
@@ -390,7 +404,14 @@ export class DrawingApp extends LitElement {
   }
 
   /** Reset stored-history and layer-blob bookkeeping to match a freshly loaded project. */
-  private _trackLoadedProject(history: HistoryEntry[], records: ProjectHistoryRecord[]) {
+  private _trackLoadedProject(
+    projectId: string | null,
+    history: HistoryEntry[],
+    records: ProjectHistoryRecord[],
+    layerBlobs = new Map<string, { hash: string; blobRef: BlobRef }>(),
+  ) {
+    this._trackedProjectId = projectId;
+    this._trackingGeneration++;
     this._savedHistory = new Map(history.map((entry, i) => {
       const refs = new Set<BlobRef>();
       collectBlobRefsFromEntry(records[i].entry, refs);
@@ -398,7 +419,22 @@ export class DrawingApp extends LitElement {
     }));
     this._nextHistoryRecordIndex = records.reduce((next, r) => Math.max(next, r.index + 1), 0);
     this._historyNeedsRewrite = false;
-    this._savedLayerBlobs = new Map();
+    this._savedLayerBlobs = layerBlobs;
+  }
+
+  /**
+   * Make `meta` the current project and run `load` to bring its content in.
+   * No save runs until the load finishes, since until then the canvas still
+   * holds the previous project.
+   */
+  private async _enterProject(meta: StorageProjectMeta, load: () => Promise<void>) {
+    this._projectLoads++;
+    try {
+      this._currentProject = meta;
+      await load();
+    } finally {
+      this._projectLoads--;
+    }
   }
 
   /** Downscale the display canvas to a project thumbnail; encoding the full viewport each save is wasted work. */
@@ -417,7 +453,7 @@ export class DrawingApp extends LitElement {
       if (this._dirty) this._saveRequested = true;
       return this._savePromise;
     }
-    if (!this._currentProject || !this._dirty) return;
+    if (!this._currentProject || !this._dirty || this._projectLoads > 0) return;
     if (!this._backend) return;
 
     this._savePromise = (async () => {
@@ -425,7 +461,7 @@ export class DrawingApp extends LitElement {
       this._saving = true;
       let flushingThisRun = flushing;
       try {
-        while (this._currentProject && this._dirty) {
+        while (this._currentProject && this._dirty && this._projectLoads === 0) {
           const projectId = this._currentProject.id;
           const dirtyVersionAtSnapshot = this._dirtyVersion;
           const saveStartTime = Date.now();
@@ -491,7 +527,8 @@ export class DrawingApp extends LitElement {
           const viewport = this.canvas?.getViewport() ?? { zoom: 1, panX: 0, panY: 0 };
           const historySnapshot = this.canvas?.getHistory() ?? [];
           const historyIndex = this.canvas?.getHistoryIndex() ?? -1;
-          const historyPlan = this._planHistorySave(historySnapshot);
+          const trackingGeneration = this._trackingGeneration;
+          const historyPlan = this._planHistorySave(projectId, historySnapshot);
           const clearExistingHistory = historyPlan.rewrite;
 
           // Capture old blob refs before serializing new ones, so we can reclaim them after save.
@@ -586,7 +623,8 @@ export class DrawingApp extends LitElement {
             if (clearExistingHistory) {
               await this._backend!.history.replaceAll(projectId, serializedEntries);
             } else if (historyPlan.remove.length > 0 || serializedEntries.length > 0) {
-              await this._backend!.history.updateEntries(
+              // _planHistorySave only plans an incremental save when updateEntries exists.
+              await this._backend!.history.updateEntries!(
                 projectId,
                 historyPlan.remove.map(([, saved]) => saved.index),
                 serializedEntries,
@@ -607,8 +645,8 @@ export class DrawingApp extends LitElement {
           // Record what is now stored immediately after state+history succeed.
           // If thumbnail/metadata fails later (e.g. QuotaExceededError), the
           // next autosave won't re-append the same history entries.
-          if (this._currentProject?.id === projectId) {
-            this._recordSavedHistory(historyPlan, serializedEntries);
+          if (this._currentProject?.id === projectId && this._trackingGeneration === trackingGeneration) {
+            this._recordSavedHistory(projectId, historyPlan, serializedEntries);
             this._savedLayerBlobs = new Map(layerSnapshots.map((snap, i) => (
               [snap.id, { hash: layerHashes[i], blobRef: layers[i].imageBlobRef }]
             )));
@@ -903,7 +941,7 @@ export class DrawingApp extends LitElement {
     this._dirty = false;
     // Storage may still hold history for this project (e.g. a load that
     // failed part-way), so the next save must replace it rather than append.
-    this._trackLoadedProject([], []);
+    this._trackLoadedProject(this._currentProject?.id ?? null, [], []);
     this._historyNeedsRewrite = true;
   }
 
@@ -937,6 +975,13 @@ export class DrawingApp extends LitElement {
       const history = await Promise.all(
         historyRecords.map(r => deserializeHistoryEntry(r.entry, blobs)),
       );
+      // The stored PNGs are what these layers were just decoded from, so a
+      // layer still holding the same pixels at the next save can keep its blob.
+      const layerBlobs = new Map(layers.map((layer, i) => {
+        const imageData = layer.canvas.getContext('2d')!
+          .getImageData(0, 0, layer.canvas.width, layer.canvas.height);
+        return [layer.id, { hash: hashImageData(imageData), blobRef: record.layers[i].imageBlobRef }];
+      }));
 
       // Restore layer counter to max existing layer number
       const maxNum = layers.reduce((max, l) => {
@@ -991,7 +1036,7 @@ export class DrawingApp extends LitElement {
       await this.updateComplete;
       this.canvas?.setHistory(history, record.historyIndex ?? (history.length - 1));
       this._dirty = false;
-      this._trackLoadedProject(history, historyRecords);
+      this._trackLoadedProject(projectId, history, historyRecords, layerBlobs);
       // Restore saved viewport or fall back to centering for legacy records
       if (record.zoom != null && record.panX != null && record.panY != null) {
         this.canvas?.setViewport(record.zoom, record.panX, record.panY);
@@ -1318,8 +1363,7 @@ export class DrawingApp extends LitElement {
           }
           const meta = this._projectList.find(p => p.id === id);
           if (!meta) return;
-          this._currentProject = meta;
-          await this._loadProject(id);
+          await this._enterProject(meta, () => this._loadProject(id));
         };
         doSwitch().catch(err => console.error('Switch project failed:', err));
       },
@@ -1330,9 +1374,10 @@ export class DrawingApp extends LitElement {
             await this._flushPendingSaveAndWait();
           }
           const meta = await this._backend!.projects.create({ name, thumbnailRef: null });
-          this._currentProject = meta;
-          this._projectList = await this._backend!.projects.list();
-          await this._resetToFreshProject(width, height);
+          await this._enterProject(meta, async () => {
+            this._projectList = await this._backend!.projects.list();
+            await this._resetToFreshProject(width, height);
+          });
           this._markDirty();
         };
         doCreate().catch(err => console.error('Create project failed:', err));
@@ -1347,13 +1392,12 @@ export class DrawingApp extends LitElement {
           this._projectList = await this._backend!.projects.list();
           if (id === this._currentProject?.id) {
             if (this._projectList.length > 0) {
-              this._currentProject = this._projectList[0];
-              await this._loadProject(this._currentProject.id);
+              const next = this._projectList[0];
+              await this._enterProject(next, () => this._loadProject(next.id));
             } else {
               const meta = await this._backend!.projects.create({ name: 'Untitled', thumbnailRef: null });
-              this._currentProject = meta;
               this._projectList = [meta];
-              await this._resetToFreshProject();
+              await this._enterProject(meta, () => this._resetToFreshProject());
               this._markDirty();
             }
           }
@@ -1585,8 +1629,8 @@ export class DrawingApp extends LitElement {
   private async _bootstrapProjects() {
     this._projectList = await this._backend!.projects.list();
     if (this._projectList.length > 0) {
-      this._currentProject = this._projectList[0];
-      await this._loadProject(this._currentProject.id);
+      const first = this._projectList[0];
+      await this._enterProject(first, () => this._loadProject(first.id));
     } else {
       const meta = await this._backend!.projects.create({ name: 'Untitled', thumbnailRef: null });
       this._currentProject = meta;

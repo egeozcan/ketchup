@@ -88,6 +88,8 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
       }
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(mapDOMException(tx.error));
+      // A quota failure at commit time aborts without an error event.
+      tx.onabort = () => reject(mapDOMException(tx.error));
     });
   }
 

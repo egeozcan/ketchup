@@ -21,6 +21,15 @@ import { diffBounds, cropImageData, type PixelRect } from '../utils/image-diff.j
 import './resize-dialog.js';
 import type { ResizeDialog } from './resize-dialog.js';
 
+/**
+ * A forced entry for an operation that changed nothing stores one identical
+ * pixel twice. Writing it back could only revert later, unrecorded changes to
+ * that pixel, so undo/redo skip it.
+ */
+function isNoOpPatch(entry: Extract<HistoryEntry, { type: 'patch' }>): boolean {
+  return entry.before.width === 1 && entry.before.height === 1 && !diffBounds(entry.before, entry.after);
+}
+
 @customElement('drawing-canvas')
 export class DrawingCanvas extends LitElement {
   static override styles = css`
@@ -317,14 +326,15 @@ export class DrawingCanvas extends LitElement {
 
     if (isInsertion && patch) {
       const after = layerCtx.getImageData(patch.x, patch.y, patch.w, patch.h);
-      if (diffBounds(patch.before, after)) {
+      const changed = diffBounds(patch.before, after);
+      if (changed) {
         this._pushHistoryEntry({
           type: 'patch',
           layerId: layer.id,
-          x: patch.x,
-          y: patch.y,
-          before: patch.before,
-          after,
+          x: patch.x + changed.x,
+          y: patch.y + changed.y,
+          before: cropImageData(patch.before, changed),
+          after: cropImageData(after, changed),
         });
       }
     } else if (this._transformManager.hasChanged() && this._beforeDrawCanvas) {
@@ -999,7 +1009,7 @@ export class DrawingCanvas extends LitElement {
       }
       case 'patch': {
         const layer = state.layers.find(l => l.id === entry.layerId);
-        if (layer) layer.canvas.getContext('2d')!.putImageData(entry.before, entry.x, entry.y);
+        if (layer && !isNoOpPatch(entry)) layer.canvas.getContext('2d')!.putImageData(entry.before, entry.x, entry.y);
         break;
       }
       case 'add-layer': {
@@ -1105,7 +1115,7 @@ export class DrawingCanvas extends LitElement {
       }
       case 'patch': {
         const layer = state.layers.find(l => l.id === entry.layerId);
-        if (layer) layer.canvas.getContext('2d')!.putImageData(entry.after, entry.x, entry.y);
+        if (layer && !isNoOpPatch(entry)) layer.canvas.getContext('2d')!.putImageData(entry.after, entry.x, entry.y);
         break;
       }
       case 'add-layer': {
@@ -1202,10 +1212,12 @@ export class DrawingCanvas extends LitElement {
   public clearCanvas() {
     // Finalize any in-progress brush stroke before clearing
     if (this._drawing) {
+      const layerCtx = this._getActiveLayerCtx();
+      const region = layerCtx ? this._commitStroke(layerCtx) : undefined;
       this._drawing = false;
       this._lastPoint = null;
       this._startPoint = null;
-      this._pushDrawHistory(true);
+      this._pushDrawHistory(true, region);
     }
     this.clearSelection();
     this._captureBeforeDraw();
@@ -2094,17 +2106,11 @@ export class DrawingCanvas extends LitElement {
     }
 
     if (activeTool === 'move' && this._moveTempCanvas) {
-      const p = this._getDocPoint(e);
-      const dx = Math.round(p.x - this._moveStartPoint!.x);
-      const dy = Math.round(p.y - this._moveStartPoint!.y);
       this._moveTempCanvas = null;
       this._moveStartPoint = null;
-      if (dx === 0 && dy === 0) {
-        // Click without drag — discard the no-op history entry
-        this._beforeDrawCanvas = null;
-      } else {
-        this._pushDrawHistory();
-      }
+      // Records the layer as last rendered; a click without a drag (or a drag
+      // back to the start) changes nothing and records nothing.
+      this._pushDrawHistory();
       this.composite();
       return;
     }
@@ -3066,10 +3072,14 @@ export class DrawingCanvas extends LitElement {
     // Finalize any in-progress brush/shape stroke so _drawing doesn't
     // leak into the next tool and cause stale history entries.
     if (this._drawing) {
+      // Commit the brush stroke too; left in the engine, it would land on the
+      // layer at the next commit with no history entry of its own.
+      const layerCtx = this._getActiveLayerCtx();
+      const region = layerCtx ? this._commitStroke(layerCtx) : undefined;
       this._drawing = false;
       this._lastPoint = null;
       this._startPoint = null;
-      this._pushDrawHistory();
+      this._pushDrawHistory(false, region);
       // Clear the preview canvas — shape tools draw live previews there
       // that would otherwise persist as ghost outlines.
       if (this.previewCanvas) {

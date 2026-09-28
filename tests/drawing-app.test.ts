@@ -588,7 +588,7 @@ describe('DrawingApp', () => {
         get: vi.fn(async () => null),
         save: vi.fn(async (record: any) => { savedRecord = record; }),
       },
-      history: { replaceAll: vi.fn(async () => {}), putEntries: vi.fn(async () => {}) },
+      history: { getEntries: vi.fn(async () => []), replaceAll: vi.fn(async () => {}), putEntries: vi.fn(async () => {}) },
       projects: {
         get: vi.fn(async () => ({ id: 'p1', name: 'P', createdAt: 0, updatedAt: 0, thumbnailRef: null })),
         update: vi.fn(async () => ({ id: 'p1', name: 'P', createdAt: 0, updatedAt: 0, thumbnailRef: null })),
@@ -676,7 +676,7 @@ describe('DrawingApp', () => {
         get: vi.fn(async () => null),
         save: vi.fn(async (record: any) => { savedRecord = record; }),
       },
-      history: { replaceAll: vi.fn(async () => {}), putEntries: vi.fn(async () => {}) },
+      history: { getEntries: vi.fn(async () => []), replaceAll: vi.fn(async () => {}), putEntries: vi.fn(async () => {}) },
       projects: {
         get: vi.fn(async () => ({ id: 'p1', name: 'P', createdAt: 0, updatedAt: 0, thumbnailRef: null })),
         update: vi.fn(async () => ({ id: 'p1', name: 'P', createdAt: 0, updatedAt: 0, thumbnailRef: null })),

@@ -26,6 +26,7 @@ async function setupApp() {
     value: makeAppCanvasStub({
       getHistory: vi.fn(() => [...history]),
       getHistoryIndex: vi.fn(() => history.length - 1),
+      setViewport: vi.fn(),
     }),
   });
   const save = async (entries: HistoryEntry[]) => {
@@ -112,7 +113,7 @@ describe('incremental history persistence', () => {
       entry: await serialization.serializeHistoryEntry(entry, backend.blobs),
     })));
     await backend.history.replaceAll(project.id, loaded);
-    (app as any)._trackLoadedProject([a, b], loaded);
+    (app as any)._trackLoadedProject(project.id, [a, b], loaded);
 
     await save([a, b, c]);
 
@@ -158,6 +159,89 @@ describe('incremental history persistence', () => {
     expect(serializeLayer).toHaveBeenCalledTimes(2);
     expect(after.layers[0].imageBlobRef).not.toBe(firstRef);
     expect(await blobExists(backend, firstRef)).toBe(false);
+  });
+
+  it('keeps the stored layer blobs of a project it just loaded', async () => {
+    const { app, backend, project, save } = await setupApp();
+    await save([]);
+    const ref = (await backend.state.get(project.id))!.layers[0].imageBlobRef;
+    // Never attached to a document, the element would wait forever for a render.
+    Object.defineProperty(app, 'updateComplete', { get: () => Promise.resolve(true) });
+    await (app as any)._loadProject(project.id);
+    const serializeLayer = vi.spyOn(serialization, 'serializeLayerFromImageData');
+
+    await save([]);
+
+    expect(serializeLayer).not.toHaveBeenCalled();
+    expect((await backend.state.get(project.id))!.layers[0].imageBlobRef).toBe(ref);
+  });
+
+  it('does not save while the next project is still loading', async () => {
+    const { app, backend, save, stored } = await setupApp();
+    const [a, b, c, d] = [patch(1), patch(2), patch(3), patch(4)];
+    await save([a, b, c]);
+    const storedA = await stored();
+    const projectB = await backend.projects.create({ name: 'B', thumbnailRef: null });
+    let finishLoad!: () => void;
+    const loading = (app as any)._enterProject(projectB, () => new Promise<void>(r => { finishLoad = r; }));
+
+    // An autosave fires before B's content is in, while the canvas still holds A.
+    await save([b, c, d]);
+
+    expect(await backend.state.get(projectB.id)).toBeNull();
+    expect(await backend.history.getEntries(projectB.id)).toEqual([]);
+    expect(await stored()).toEqual(storedA);
+    for (const record of storedA) {
+      for (const ref of refsOf(record.entry)) expect(await blobExists(backend, ref)).toBe(true);
+    }
+    finishLoad();
+    await loading;
+  });
+
+  it("rewrites a project's history rather than applying another project's bookkeeping", async () => {
+    const { app, backend, save, stored } = await setupApp();
+    const [a, b, c, d] = [patch(1), patch(2), patch(3), patch(4)];
+    await save([a, b, c]);
+    const storedA = await stored();
+    const projectB = await backend.projects.create({ name: 'B', thumbnailRef: null });
+    (app as any)._currentProject = projectB;
+
+    await save([b, c, d]);
+
+    const recordsB = await backend.history.getEntries(projectB.id);
+    expect(recordsB.map(r => r.index)).toEqual([0, 1, 2]);
+    expect(recordsB.map(r => (r.entry as { x: number }).x)).toEqual([2, 3, 4]);
+    expect(await stored()).toEqual(storedA);
+    for (const record of storedA) {
+      for (const ref of refsOf(record.entry)) expect(await blobExists(backend, ref)).toBe(true);
+    }
+  });
+
+  it('rewrites history when stored entries no longer lead the stack in order', async () => {
+    const { backend, save, stored } = await setupApp();
+    const [a, b, c] = [patch(1), patch(2), patch(3)];
+    await save([a, b]);
+    const replaceAll = vi.spyOn(backend.history, 'replaceAll');
+
+    await save([b, a, c]);
+
+    expect(replaceAll).toHaveBeenCalledTimes(1);
+    expect((await stored()).map(r => (r.entry as { x: number }).x)).toEqual([2, 1, 3]);
+  });
+
+  it('saves through replaceAll when the backend has no updateEntries', async () => {
+    const { backend, save, stored } = await setupApp();
+    (backend.history as { updateEntries?: unknown }).updateEntries = undefined;
+    const [a, b, c] = [patch(1), patch(2), patch(3)];
+    await save([a, b]);
+    const evicted = (await stored())[0];
+
+    await save([b, c]);
+
+    expect((await stored()).map(r => (r.entry as { x: number }).x)).toEqual([2, 3]);
+    for (const ref of refsOf(evicted.entry)) {
+      expect(await blobExists(backend, ref)).toBe(false);
+    }
   });
 });
 
