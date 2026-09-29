@@ -31,13 +31,13 @@ export class IndexedDBStampStore implements StampStore {
     });
   }
 
-  async add(projectId: string, data: Blob | ArrayBuffer): Promise<StampEntry> {
+  async add(projectId: string, data: Blob | ArrayBuffer, createdAt = Date.now()): Promise<StampEntry> {
     const blobRef = await this._blobs.put(data);
     const entry: StampEntry = {
       id: generateUUID(),
       projectId,
       blobRef,
-      createdAt: Date.now(),
+      createdAt,
     };
     await new Promise<void>((resolve, reject) => {
       const tx = this._db.transaction(STAMPS_STORE, 'readwrite');

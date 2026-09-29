@@ -39,6 +39,9 @@ export { ProjectService, collectBlobRefsFromEntry } from './project-service.js';
 // Context
 export { storageBackendContext, projectServiceContext } from './storage-context.js';
 
+// In-memory adapter (embedded hosts, tests)
+export { MemoryBackend } from './memory/index.js';
+
 // Default adapter
 export { IndexedDBBackend } from './indexeddb/index.js';
 export type { IndexedDBBackendOptions } from './indexeddb/index.js';

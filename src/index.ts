@@ -5,3 +5,5 @@ export { ToolSettings } from './components/tool-settings.js';
 export { drawingContext } from './contexts/drawing-context.js';
 export type { DrawingContextValue } from './contexts/drawing-context.js';
 export type { ToolType, Point, DrawingState } from './types.js';
+export { IndexedDBBackend, MemoryBackend } from './storage/index.js';
+export type { StorageBackend } from './storage/index.js';

@@ -409,6 +409,11 @@ export class AppToolbar extends LitElement {
     return this._ctx.value!;
   }
 
+  /** Embedded, Save hands the image to the host page; standalone, it downloads a PNG. */
+  private get _saveLabel(): string {
+    return this.ctx.embedded ? 'Save' : 'Export as PNG';
+  }
+
   private _onFullscreenChange = () => {
     this._isFullscreen = !!document.fullscreenElement;
   };
@@ -515,7 +520,7 @@ export class AppToolbar extends LitElement {
         >
           ${actionIcons.redo}
         </button>
-        <button title="Export as PNG" aria-label="Export as PNG" @click=${() => this.ctx.saveCanvas()}>
+        <button title=${this._saveLabel} aria-label=${this._saveLabel} @click=${() => this.ctx.saveCanvas()}>
           ${actionIcons.save}
         </button>
         <button title="Clear layer" aria-label="Clear layer" @click=${() => this.ctx.clearCanvas()}>
@@ -604,7 +609,8 @@ export class AppToolbar extends LitElement {
 
           <button
             class="child-tool-btn"
-            title="Save picture"
+            title=${this._saveLabel}
+            aria-label=${this._saveLabel}
             @click=${() => this.ctx.saveCanvas()}
           >${actionIcons.save}</button>
           <button
@@ -737,6 +743,7 @@ export class AppToolbar extends LitElement {
           if (groupIndex !== -1) this._onMobileToolTap(toolGroups[groupIndex], groupIndex);
         }}>Tool settings</button>
         <div class="popover-divider"></div>
+        ${!this.ctx.embedded ? html`
         <span class="popover-label">Projects</span>
         <div class="project-list">
           ${this.ctx.projectList.map(p => html`
@@ -754,7 +761,8 @@ export class AppToolbar extends LitElement {
           New Project
         </button>
         <div class="popover-divider"></div>
-        <button class="menu-btn" @click=${() => { this.ctx.saveCanvas(); this._closePopover(); }}>${actionIcons.save} Export as PNG</button>
+        ` : ''}
+        <button class="menu-btn" @click=${() => { this.ctx.saveCanvas(); this._closePopover(); }}>${actionIcons.save} ${this._saveLabel}</button>
         <button class="menu-btn" @click=${() => { this.ctx.clearCanvas(); this._closePopover(); }}>${actionIcons.clear} Clear layer</button>
         <div class="popover-divider"></div>
         <button class="menu-btn" @click=${this._toggleFullscreen}>

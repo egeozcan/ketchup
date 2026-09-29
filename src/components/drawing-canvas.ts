@@ -249,6 +249,18 @@ export class DrawingCanvas extends LitElement {
     return this._transformManager !== null;
   }
 
+  /** True while the text tool holds typed text that is not on a layer yet. */
+  hasPendingText(): boolean {
+    return this._textEditing && !!this._textAreaEl?.value;
+  }
+
+  private _dispatchPendingTextChange() {
+    // Heard by drawing-app on this element; not part of the host API.
+    this.dispatchEvent(new CustomEvent('pending-text-change', {
+      detail: { pending: this.hasPendingText() },
+    }));
+  }
+
   enterTransformMode(): void {
     if (this._transformManager) return;
     const state = this._ctx.value?.state;
@@ -728,6 +740,8 @@ export class DrawingCanvas extends LitElement {
   private _history: HistoryEntry[] = [];
   private _historyIndex = -1;
   private _maxHistory = 50;
+  /** Entries dropped off the bottom of the stack at the cap, ever; the states before them can no longer be undone to. */
+  private _historyTrimmed = 0;
 
   // --- Public history access for persistence ---
   /** Returns a shallow copy of the history array. Note: entries contain shared
@@ -735,6 +749,7 @@ export class DrawingCanvas extends LitElement {
    *  isolation should snapshot data synchronously before any async work. */
   public getHistory(): HistoryEntry[] { return [...this._history]; }
   public getHistoryIndex(): number { return this._historyIndex; }
+  public getHistoryTrimmedCount(): number { return this._historyTrimmed; }
   public setHistory(entries: HistoryEntry[], index: number) {
     this._history = entries;
     this._historyIndex = Math.max(-1, Math.min(index, entries.length - 1));
@@ -864,6 +879,7 @@ export class DrawingCanvas extends LitElement {
     this._history.push(entry);
     if (this._history.length > this._maxHistory) {
       this._history.shift();
+      this._historyTrimmed++;
     } else {
       this._historyIndex++;
     }
@@ -1241,14 +1257,20 @@ export class DrawingCanvas extends LitElement {
     this.composite();
   }
 
-  public saveCanvas() {
-    // Composite onto a temp canvas without checkerboard for clean export
+  /**
+   * Flattens every visible layer (plus any active transform at its layer's
+   * z-position) onto a new canvas at document size, without the checkerboard.
+   * `background` fills the canvas first; `null` keeps transparency.
+   */
+  public renderFlattened(background: string | null = '#ffffff'): HTMLCanvasElement {
     const exportCanvas = document.createElement('canvas');
     exportCanvas.width = this._docWidth;
     exportCanvas.height = this._docHeight;
     const exportCtx = exportCanvas.getContext('2d')!;
-    exportCtx.fillStyle = '#ffffff';
-    exportCtx.fillRect(0, 0, this._docWidth, this._docHeight);
+    if (background) {
+      exportCtx.fillStyle = background;
+      exportCtx.fillRect(0, 0, this._docWidth, this._docHeight);
+    }
     const state = this._ctx.value?.state;
     const layers = state?.layers ?? [];
     const activeLayerId = state?.activeLayerId ?? null;
@@ -1264,6 +1286,12 @@ export class DrawingCanvas extends LitElement {
       exportCtx.globalCompositeOperation = 'source-over';
       exportCtx.globalAlpha = 1.0;
     }
+    return exportCanvas;
+  }
+
+  public saveCanvas() {
+    // Composite onto a temp canvas without checkerboard for clean export
+    const exportCanvas = this.renderFlattened('#ffffff');
     const link = document.createElement('a');
     link.download = `${exportFileBaseName(this._ctx.value?.currentProject?.name)}.png`;
     link.href = exportCanvas.toDataURL('image/png');
@@ -2903,10 +2931,12 @@ export class DrawingCanvas extends LitElement {
     canvas.toBlob((blob) => {
       if (!blob) return;
       this._clipboardBlobSize = blob.size;
+      // Absent outside secure contexts (plain HTTP); the internal clipboard still works.
+      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') return;
       navigator.clipboard.write([
         new ClipboardItem({ 'image/png': blob }),
       ]).catch(() => {
-        // Clipboard API denied or unavailable — internal clipboard still works
+        // Clipboard API denied — internal clipboard still works
       });
     }, 'image/png');
   }
@@ -3299,10 +3329,12 @@ export class DrawingCanvas extends LitElement {
     ta.setAttribute('autocorrect', 'off');
     ta.setAttribute('autocapitalize', 'off');
     ta.setAttribute('spellcheck', 'false');
+    ta.setAttribute('aria-label', 'Text');
     ta.addEventListener('input', () => {
       if (this._textEditing) {
         this._startTextCursorBlink();
         this._renderTextPreview();
+        this._dispatchPendingTextChange();
       }
     });
     ta.addEventListener('keydown', (e) => this._onTextKeydown(e));
@@ -3610,6 +3642,7 @@ export class DrawingCanvas extends LitElement {
       this._textAreaEl.value = '';
       this._textAreaEl.blur();
     }
+    this._dispatchPendingTextChange();
     if (this.previewCanvas) {
       this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
     }

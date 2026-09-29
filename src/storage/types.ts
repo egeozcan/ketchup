@@ -179,7 +179,8 @@ export interface ProjectHistoryStore {
 
 export interface StampStore {
   list(projectId: string): Promise<StampEntry[]>;
-  add(projectId: string, data: Blob | ArrayBuffer): Promise<StampEntry>;
+  /** `createdAt` defaults to now; given, it keeps a copied stamp's place in the recent order. */
+  add(projectId: string, data: Blob | ArrayBuffer, createdAt?: number): Promise<StampEntry>;
   delete(id: string): Promise<void>;
   deleteForProject(projectId: string): Promise<void>;
 }

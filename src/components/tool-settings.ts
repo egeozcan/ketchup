@@ -409,7 +409,7 @@ export class ToolSettings extends LitElement {
       color: #ddd;
       padding: 0.125rem 0.25rem;
       font-size: 0.8125rem;
-      outline: none;
+      outline: 2px solid transparent;
     }
 
     .project-dropdown-divider {
@@ -500,7 +500,7 @@ export class ToolSettings extends LitElement {
       color: #ddd;
       padding: 0.375rem 0.5rem;
       font-size: 0.8125rem;
-      outline: none;
+      outline: 2px solid transparent;
     }
 
     .dialog-field input[type="text"]:focus {
@@ -549,7 +549,7 @@ export class ToolSettings extends LitElement {
       padding: 0.375rem 0.5rem;
       font-size: 0.8125rem;
       text-align: center;
-      outline: none;
+      outline: 2px solid transparent;
     }
 
     .dialog-size-input:focus {
@@ -812,7 +812,7 @@ export class ToolSettings extends LitElement {
       padding: 0.2rem 0.3rem;
       font-size: 0.75rem;
       text-align: center;
-      outline: none;
+      outline: 2px solid transparent;
       -moz-appearance: textfield;
     }
 
@@ -1065,7 +1065,7 @@ export class ToolSettings extends LitElement {
     }
 
     .document-size {
-      color: #888;
+      color: #aaa;
       font-size: 0.75rem;
       white-space: nowrap;
     }
@@ -1747,11 +1747,11 @@ export class ToolSettings extends LitElement {
           <span class="transform-suffix">X</span>
           <input class="transform-input" type="number" step="0.1"
             .value=${String(Math.round(x * 10) / 10)}
-            @change=${onNumericInput('x')} />
+            aria-label="X position" @change=${onNumericInput('x')} />
           <span class="transform-suffix">Y</span>
           <input class="transform-input" type="number" step="0.1"
             .value=${String(Math.round(y * 10) / 10)}
-            @change=${onNumericInput('y')} />
+            aria-label="Y position" @change=${onNumericInput('y')} />
         </div>
       </div>
       <div class="separator"></div>
@@ -1761,7 +1761,7 @@ export class ToolSettings extends LitElement {
           <span class="transform-suffix">W</span>
           <input class="transform-input" type="number" step="0.1" min="1"
             .value=${String(Math.round(width * 10) / 10)}
-            @change=${onNumericInput('width')} />
+            aria-label="Width" @change=${onNumericInput('width')} />
           <button
             class="aspect-lock-btn ${this._aspectLock ? 'active' : ''}"
             title="Lock aspect ratio"
@@ -1776,7 +1776,7 @@ export class ToolSettings extends LitElement {
           <span class="transform-suffix">H</span>
           <input class="transform-input" type="number" step="0.1" min="1"
             .value=${String(Math.round(height * 10) / 10)}
-            @change=${onNumericInput('height')} />
+            aria-label="Height" @change=${onNumericInput('height')} />
         </div>
       </div>
       <div class="separator"></div>
@@ -1785,7 +1785,7 @@ export class ToolSettings extends LitElement {
         <div class="transform-row">
           <input class="transform-input" type="number" step="0.1"
             .value=${String(Math.round(rotation * 10) / 10)}
-            @change=${onNumericInput('rotation', '°')} />
+            aria-label="Rotation in degrees" @change=${onNumericInput('rotation', '°')} />
           <span class="transform-suffix">°</span>
         </div>
       </div>
@@ -1796,12 +1796,12 @@ export class ToolSettings extends LitElement {
           <span class="transform-suffix">X</span>
           <input class="transform-input" type="number" step="0.1"
             .value=${String(Math.round(skewX * 10) / 10)}
-            @change=${onNumericInput('skewX', '°')} />
+            aria-label="Horizontal skew in degrees" @change=${onNumericInput('skewX', '°')} />
           <span class="transform-suffix">°</span>
           <span class="transform-suffix" style="margin-left:0.25rem;">Y</span>
           <input class="transform-input" type="number" step="0.1"
             .value=${String(Math.round(skewY * 10) / 10)}
-            @change=${onNumericInput('skewY', '°')} />
+            aria-label="Vertical skew in degrees" @change=${onNumericInput('skewY', '°')} />
           <span class="transform-suffix">°</span>
         </div>
       </div>
@@ -1865,7 +1865,7 @@ export class ToolSettings extends LitElement {
         </div>
         <div class="section">
           <label>Spacing</label>
-          <input type="range" min="5" max="100" .value=${String(Math.round(brush.spacing * 100))}
+          <input type="range" min="5" max="100" aria-label="Spacing" .value=${String(Math.round(brush.spacing * 100))}
             @input=${(e: Event) => this.ctx.setBrush({ spacing: Number((e.target as HTMLInputElement).value) / 100 })} />
           <span class="size-value">${Math.round(brush.spacing * 100)}%</span>
         </div>
@@ -1887,7 +1887,7 @@ export class ToolSettings extends LitElement {
         ${(brush.pressureSize || brush.pressureOpacity) ? html`
         <div class="section">
           <label title="Maps pressure-sensitive pen or stylus input; mouse input uses full pressure.">Stylus Curve</label>
-          <select class="font-select" .value=${brush.pressureCurve}
+          <select class="font-select" aria-label="Stylus curve" .value=${brush.pressureCurve}
             @change=${(e: Event) => this.ctx.setBrush({ pressureCurve: (e.target as HTMLSelectElement).value as PressureCurveName })}>
             <option value="linear">Linear</option>
             <option value="light">Light</option>
@@ -1930,7 +1930,7 @@ export class ToolSettings extends LitElement {
             </div>
             <div class="section">
               <label>Orient</label>
-              <select class="font-select" .value=${brush.tip.orientation}
+              <select class="font-select" aria-label="Tip orientation" .value=${brush.tip.orientation}
                 @change=${(e: Event) => this.ctx.setBrushTip({ orientation: (e.target as HTMLSelectElement).value as OrientationMode })}>
                 <option value="fixed">Fixed</option>
                 <option value="direction">Direction</option>
@@ -2016,6 +2016,7 @@ export class ToolSettings extends LitElement {
 
     return html`
       ${!isMobile ? html`
+        ${!this.ctx.embedded ? html`
         <div class="section project-section">
           <div class="project-dropdown-wrap">
             <button class="project-name-btn" @click=${this._toggleProjectDropdown}>
@@ -2029,6 +2030,7 @@ export class ToolSettings extends LitElement {
                     ${this._renamingProjectId === p.id ? html`
                       <input
                         class="project-rename-input"
+                        aria-label="Project name"
                         .value=${p.name}
                         @keydown=${(e: KeyboardEvent) => this._onRenameKeydown(e, p.id)}
                         @blur=${(e: FocusEvent) => this._commitRename(e, p.id)}
@@ -2058,6 +2060,7 @@ export class ToolSettings extends LitElement {
             ` : ''}
           </div>
         </div>
+        ` : nothing}
         <div class="section document-size" title="Canvas size">
           ${this.ctx.state.documentWidth} \u00d7 ${this.ctx.state.documentHeight}
         </div>
@@ -2264,6 +2267,7 @@ export class ToolSettings extends LitElement {
               <label>Font</label>
               <select
                 class="font-select"
+                aria-label="Font"
                 .value=${this.ctx.state.fontFamily}
                 @change=${(e: Event) => this.ctx.setFontFamily((e.target as HTMLSelectElement).value)}
               >
@@ -2368,7 +2372,7 @@ export class ToolSettings extends LitElement {
 
       ${this.ctx.saving
         ? html`
-            <div class="saving-indicator" aria-label="Saving">
+            <div class="saving-indicator" role="img" aria-label="Saving">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M21 12a9 9 0 1 1-6.219-8.56"></path>
               </svg>

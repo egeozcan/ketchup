@@ -87,7 +87,7 @@ export class NavigatorPanel extends LitElement {
       appearance: none;
       background: #555;
       border-radius: 2px;
-      outline: none;
+      outline: 2px solid transparent;
       min-width: 0;
     }
 
@@ -519,6 +519,7 @@ export class NavigatorPanel extends LitElement {
           <input
             type="range"
             class="zoom-slider"
+            aria-label="Zoom"
             min="0"
             max="${NavigatorPanel.SLIDER_MAX}"
             step="1"
@@ -529,6 +530,7 @@ export class NavigatorPanel extends LitElement {
           <input
             type="text"
             class="zoom-input"
+            aria-label="Zoom percentage"
             .value=${displayValue}
             @focus=${this._onZoomInputFocus}
             @blur=${this._onZoomInputBlur}

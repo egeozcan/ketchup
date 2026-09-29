@@ -46,6 +46,10 @@ Uses a discriminated union `HistoryEntry` type (max 50 entries) supporting: `pat
 
 `stamp-store.ts` stores recent stamp images as Blobs (max 20 per project, auto-pruned) in the `project-stamps` object store within the `ketchup-projects` database, scoped by project ID.
 
+### Embedding
+
+`drawing-app` doubles as an embeddable editor for pages that keep the image themselves. The `embedded` flag (read at connect) switches the default backend to `MemoryBackend` (which `_markDirty` then never autosaves, `_autosave`), hides project management in `tool-settings`/`app-toolbar` (via `embedded` on the context), and turns Save and Ctrl/Cmd+S into a `save-request` event. The host API on `DrawingApp` is `whenReady`, `openImage`, `newDocument`, `exportImage`, `modified`/`markSaved` and the `modified-change` event; `modified` compares the undo stack's top entry (and, for an empty top, `DrawingCanvas.getHistoryTrimmedCount()`) with the mark recorded at the last save; `markSaved(blob)` records the mark `exportImage` took for that Blob (the last export's without one), so edits made during the host's upload stay modified; each mark carries `_documentGeneration`, bumped by `_markSaved` whenever a document is opened, and a mark from an earlier document is ignored. Typed text not yet committed (`DrawingCanvas.hasPendingText()`, `pending-text-change`) counts as modified. `openImage`/`newDocument` are serialized through `_replaceDocumentInTurn`, and `exportImage` renders in a turn of that same queue, so it sees the document open when it was called. `_enterProject` calls `_markSaved` after every load, so marks never outlive their document. Embedded replacement carries recent stamps to the new project (`_carryStamps`) before deleting the old one. `npm run build:lib` (`vite.lib.config.ts`) bundles `src/index.ts` into `dist-lib/ketchup.js`. See README "Embedding".
+
 ### Deployment
 
 Vite base path is `/ketchup/` (configured in `vite.config.ts`) for GitHub Pages.
