@@ -2,10 +2,10 @@
  * Flood fill using a scanline approach for performance.
  *
  * The work stack holds flat (x, y) pairs and only span seeds are pushed: after a
- * run is filled, the rows above and below are scanned once and a seed is pushed
- * per contiguous matching segment, not per pixel. Filling a large empty layer
- * therefore touches a few thousand stack entries instead of allocating a tuple
- * for every pixel twice over.
+ * span is filled, the rows above and below are scanned once and a seed is pushed
+ * per contiguous matching run, not per pixel. A run can occasionally be seeded
+ * by more than one span; the duplicate is discarded by the `visited` check when
+ * popped, so it costs a stack slot but never changes the result.
  */
 export function floodFill(
   ctx: CanvasRenderingContext2D,

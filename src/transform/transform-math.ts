@@ -118,6 +118,7 @@ export function constrainToAxis(point: Point, origin: Point): Point {
  */
 export function detectContentBounds(imageData: ImageData): TransformRect | null {
   const { data, width, height } = imageData;
+  // minY < 0 means no opaque row has been seen yet (i.e. fully transparent).
   let minX = width, minY = -1, maxX = -1, maxY = -1;
 
   // Per row, only the first and last opaque pixels matter; columns already
