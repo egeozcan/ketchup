@@ -19,6 +19,9 @@ const projectActionIcons = {
   delete: svg`<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`,
 };
 
+/** Icon for the desktop "Brush settings" panel trigger. */
+const slidersIcon = svg`<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>`;
+
 const documentPresets = [
   { label: '800 \u00d7 600', width: 800, height: 600 },
   { label: '1024 \u00d7 768', width: 1024, height: 768 },
@@ -879,6 +882,194 @@ export class ToolSettings extends LitElement {
       color: #5b8cf7;
     }
 
+    /* ── Desktop settings panels (color, brush) ── */
+    .panel-wrap {
+      position: relative;
+    }
+
+    .panel-trigger {
+      display: flex;
+      align-items: center;
+      gap: 0.375rem;
+      height: 2rem;
+      padding: 0 0.5rem;
+      background: #2a2a2a;
+      border: 1px solid #555;
+      border-radius: 0.375rem;
+      color: #ddd;
+      cursor: pointer;
+      font-size: 0.8125rem;
+      white-space: nowrap;
+    }
+
+    .panel-trigger:hover,
+    .panel-trigger.open {
+      border-color: #888;
+    }
+
+    .panel-trigger:focus-visible,
+    .advanced-toggle:focus-visible {
+      outline: 2px solid #5b8cf7;
+      outline-offset: 1px;
+    }
+
+    .panel-trigger .chevron {
+      font-size: 0.625rem;
+      color: #888;
+    }
+
+    .color-chip {
+      width: 1.25rem;
+      height: 1.25rem;
+      border-radius: 0.1875rem;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.25);
+    }
+
+    .settings-panel {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      margin-top: 0.25rem;
+      z-index: 100;
+      background: #3a3a3a;
+      border: 1px solid #555;
+      border-radius: 0.5rem;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      padding: 0.75rem;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .color-panel .color-grid {
+      /* Nine swatches per row, matching the two-row palette. */
+      width: calc(9 * 1.5rem + 8 * 0.1875rem);
+      max-width: none;
+    }
+
+    .custom-color {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      cursor: pointer;
+    }
+
+    .custom-color:hover {
+      color: #ddd;
+    }
+
+    .brush-panel {
+      width: 20rem;
+      max-height: calc(100vh - 6rem);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .panel-heading {
+      color: #999;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-top: 0.25rem;
+    }
+
+    .panel-heading:first-child {
+      margin-top: 0;
+    }
+
+    /* Slider rows line up as label | slider | value columns. */
+    .brush-panel .section {
+      display: grid;
+      grid-template-columns: 5.5rem minmax(0, 1fr) 3rem;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .brush-panel .section > input[type="range"] {
+      width: 100%;
+    }
+
+    .brush-panel .section > .size-value {
+      text-align: right;
+    }
+
+    .brush-panel .section > .checkbox-label {
+      grid-column: 1 / -1;
+    }
+
+    .brush-panel .section > select {
+      grid-column: 2 / -1;
+      justify-self: start;
+    }
+
+    .brush-panel .section > .pill-row {
+      grid-column: 2 / -1;
+    }
+
+    .advanced-group {
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .brush-panel .advanced-group {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0.5rem;
+    }
+
+    .advanced-toggle {
+      background: none;
+      border: none;
+      padding: 0.125rem 0;
+      color: #aaa;
+      cursor: pointer;
+      font-size: 0.8125rem;
+      text-align: left;
+      border-radius: 0.25rem;
+    }
+
+    .advanced-toggle:hover {
+      color: #ddd;
+    }
+
+    .brush-panel .advanced-toggle {
+      grid-column: 1 / -1;
+      color: #999;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-top: 0.25rem;
+    }
+
+    /* Narrower desktop windows: keep the bar on one row. */
+    @media (max-width: 1180px) {
+      :host(:not([mobile])) {
+        column-gap: 0.75rem;
+      }
+
+      :host(:not([mobile])) input[type="range"] {
+        width: 5rem;
+      }
+
+      :host(:not([mobile])) .brush-panel input[type="range"] {
+        width: 100%;
+      }
+
+      :host(:not([mobile])) .brush-trigger-label {
+        display: none;
+      }
+    }
+
+    .document-size {
+      color: #888;
+      font-size: 0.75rem;
+      white-space: nowrap;
+    }
+
     /* ── Inside mobile popover ─────────────────── */
     :host([mobile]) {
       flex-direction: column;
@@ -917,6 +1108,9 @@ export class ToolSettings extends LitElement {
   @state() private _projectDropdownOpen = false;
   @state() private _advancedOpen = false;
   @state() private _brushDropdownOpen = false;
+  /** Which desktop settings panel (color or brush) is open, if any. */
+  @state() private _openPanel: 'color' | 'brush' | null = null;
+  private _refocusAfterClose = false;
   private _previewCache = new Map<string, string>();
   private _customPreviewKey = '';
   private _customPreviewUrl = '';
@@ -951,6 +1145,15 @@ export class ToolSettings extends LitElement {
 
   override willUpdate() {
     this.toggleAttribute('mobile', this._ctx.value?.isMobile ?? false);
+    // A tool or layout switch can remove the open panel's trigger; drop the
+    // panel and its outside-press listener with it.
+    if (this._openPanel && !this._panelAvailable(this._openPanel)) {
+      // A shortcut pressed inside the panel would otherwise drop focus to
+      // <body>, where later shortcuts no longer reach the app.
+      const wrap = this._openPanelWrap();
+      this._refocusAfterClose = !!wrap && wrap.contains(this.shadowRoot!.activeElement);
+      this._closePanel();
+    }
     const projectId = this._ctx.value?.currentProject?.id ?? null;
     if (projectId && projectId !== this._lastProjectId) {
       this._lastProjectId = projectId;
@@ -969,6 +1172,7 @@ export class ToolSettings extends LitElement {
     super.disconnectedCallback();
     this._closeDropdown();
     document.removeEventListener('click', this._onBrushDropdownOutsideClick);
+    this._closePanel();
     this._stampLoadVersion++;
     this._thumbUrls.clear();
   }
@@ -1365,6 +1569,121 @@ export class ToolSettings extends LitElement {
     return canvas.toDataURL();
   }
 
+  override updated() {
+    if (this._refocusAfterClose) {
+      this._refocusAfterClose = false;
+      this.shadowRoot?.querySelector<HTMLElement>('.panel-trigger, .project-name-btn')?.focus();
+    }
+    this._clampOpenPanel();
+  }
+
+  /** Keep the open panel inside the window; the bar's last item sits near the right edge. */
+  private _clampOpenPanel() {
+    const panel = this._openPanelWrap()?.querySelector<HTMLElement>('.settings-panel');
+    if (!panel) return;
+    panel.style.left = '';
+    const margin = 8;
+    const rect = panel.getBoundingClientRect();
+    const overflow = rect.right - (window.innerWidth - margin);
+    if (overflow > 0) {
+      // Shift left, but never past the window's left edge.
+      panel.style.left = `${-Math.min(overflow, Math.max(0, rect.left - margin))}px`;
+    }
+  }
+
+  /** Whether the desktop bar currently renders the given panel's trigger. */
+  private _panelAvailable(panel: 'color' | 'brush'): boolean {
+    const ctx = this._ctx.value;
+    if (!ctx || ctx.isMobile) return false;
+    const tool = ctx.state.activeTool;
+    if (panel === 'brush') return tool === 'pencil' || tool === 'eraser';
+    return tool !== 'select' && tool !== 'eraser' && tool !== 'stamp';
+  }
+
+  private _togglePanel(panel: 'color' | 'brush') {
+    if (this._openPanel === panel) {
+      this._closePanel();
+      return;
+    }
+    this._openPanel = panel;
+    document.addEventListener('pointerdown', this._onPanelOutsidePointer, true);
+    document.addEventListener('keydown', this._onPanelEscape, true);
+    window.addEventListener('resize', this._onPanelResize);
+  }
+
+  private _closePanel() {
+    if (this._openPanel === null) return;
+    this._openPanel = null;
+    document.removeEventListener('pointerdown', this._onPanelOutsidePointer, true);
+    document.removeEventListener('keydown', this._onPanelEscape, true);
+    window.removeEventListener('resize', this._onPanelResize);
+  }
+
+  private _onPanelResize = () => this._clampOpenPanel();
+
+  private _openPanelWrap(): HTMLElement | null {
+    if (this._openPanel === null) return null;
+    return this.shadowRoot?.querySelector<HTMLElement>(`.panel-wrap[data-panel="${this._openPanel}"]`) ?? null;
+  }
+
+  private _onPanelOutsidePointer = (e: PointerEvent) => {
+    const wrap = this._openPanelWrap();
+    if (wrap && !e.composedPath().includes(wrap)) this._closePanel();
+  };
+
+  /**
+   * Escape closes the open panel wherever focus is (some browsers don't focus
+   * a clicked button), and keeps it from also reaching canvas shortcuts.
+   */
+  private _onPanelEscape = (e: KeyboardEvent) => {
+    if (e.key !== 'Escape' || this._openPanel === null) return;
+    e.stopPropagation();
+    const wrap = this._openPanelWrap();
+    const focusInside = !!wrap && e.composedPath().includes(wrap);
+    this._closePanel();
+    if (focusInside) wrap!.querySelector<HTMLButtonElement>('.panel-trigger')?.focus();
+  };
+
+  /** Tabbing out of a panel closes it. Native pickers blur with no target. */
+  private _onPanelFocusOut = (e: FocusEvent) => {
+    const next = e.relatedTarget as Node | null;
+    if (!next) return;
+    const wrap = e.currentTarget as HTMLElement;
+    if (!wrap.contains(next)) this._closePanel();
+  };
+
+  private _renderColorControls(strokeColor: string) {
+    const picker = html`
+      <input
+        type="color"
+        .value=${strokeColor}
+        @input=${this._onStrokeColor}
+        title="Stroke color"
+        aria-label="Stroke color"
+      />
+    `;
+    const grid = html`
+      <div class="color-grid">
+        ${presetColors.map(
+          (c) => html`
+            <button
+              class="color-swatch ${strokeColor === c ? 'active' : ''}"
+              style="background:${c}"
+              title=${c}
+              aria-label=${`Use ${c}`}
+              @click=${() => this.ctx.setStrokeColor(c)}
+            ></button>
+          `,
+        )}
+      </div>
+    `;
+    if (this.ctx.isMobile) return html`${picker}${grid}`;
+    return html`
+      ${grid}
+      <label class="custom-color">${picker} Custom color…</label>
+    `;
+  }
+
   private _toggleBrushDropdown() {
     this._brushDropdownOpen = !this._brushDropdownOpen;
     if (this._brushDropdownOpen) {
@@ -1513,192 +1832,25 @@ export class ToolSettings extends LitElement {
     `;
   }
 
-  override render() {
-    if (!this._ctx.value) return html``;
-
-    const state = this.ctx.state;
-    const { strokeColor, fillColor, useFill, activeTool, stampImage, stampSize, brush } = state;
+  /**
+   * Secondary brush controls. On desktop they live in the "Brush settings"
+   * panel so the bar stays one row; the mobile sheet shows them inline.
+   */
+  private _renderBrushDetails() {
+    const { brush, activeTool } = this.ctx.state;
     const tipCapabilities = getTipCapabilities(brush.tip.shape);
     const tipDefaults = getDefaultTipDescriptor(brush.tip.shape);
-
-    // Select tool: show transform controls or a hint
-    if (activeTool === 'select') {
-      if (this._ctx.value.transformActive) {
-        return this._renderTransformSettings();
-      }
-      return html`
-        <div class="section" style="padding:16px;color:#888;font-size:12px;text-align:center;line-height:1.5;">
-          Draw a selection to transform, or press
-          <kbd style="background:#333;padding:1px 5px;border-radius:3px;font-size:11px;">${navigator.platform?.startsWith('Mac') ? '⌘' : 'Ctrl'}+T</kbd>
-          to transform the entire layer.
-        </div>
-      `;
-    }
-    const brushSize = brush.size;
-
-    const isMobile = this.ctx.isMobile;
-
+    const inPanel = !this.ctx.isMobile;
+    const heading = (text: string) => inPanel ? html`<div class="panel-heading">${text}</div>` : nothing;
+    const advancedToggle = html`
+      <button
+        class="advanced-toggle"
+        aria-expanded=${this._advancedOpen ? 'true' : 'false'}
+        @click=${() => { this._advancedOpen = !this._advancedOpen; }}
+      >Advanced ${this._advancedOpen ? html`&#9650;` : html`&#9660;`}</button>
+    `;
     return html`
-      ${!isMobile ? html`
-        <div class="section project-section">
-          <div class="project-dropdown-wrap">
-            <button class="project-name-btn" @click=${this._toggleProjectDropdown}>
-              ${this.ctx.currentProject?.name ?? 'Untitled'}
-              <span class="dropdown-arrow">&#9662;</span>
-            </button>
-            ${this._projectDropdownOpen ? html`
-              <div class="project-dropdown">
-                ${this.ctx.projectList.map(p => html`
-                  <div class="project-item ${p.id === this.ctx.currentProject?.id ? 'active' : ''}">
-                    ${this._renamingProjectId === p.id ? html`
-                      <input
-                        class="project-rename-input"
-                        .value=${p.name}
-                        @keydown=${(e: KeyboardEvent) => this._onRenameKeydown(e, p.id)}
-                        @blur=${(e: FocusEvent) => this._commitRename(e, p.id)}
-                      />
-                    ` : html`
-                      <span class="project-item-name" @click=${() => this._onSelectProject(p.id)}>
-                        ${p.name}
-                      </span>
-                      <button
-                        class="project-item-action"
-                        title="Rename project"
-                        aria-label=${`Rename ${p.name}`}
-                        @click=${(e: Event) => this._startRename(e, p.id)}
-                      >${projectActionIcons.rename}</button>
-                      <button
-                        class="project-item-action delete"
-                        title="Delete project"
-                        aria-label=${`Delete ${p.name}`}
-                        @click=${(e: Event) => this._onDeleteProject(e, p.id)}
-                      >${projectActionIcons.delete}</button>
-                    `}
-                  </div>
-                `)}
-                <div class="project-dropdown-divider"></div>
-                <button class="project-new-btn" @click=${this._onNewProject}>+ New Project</button>
-              </div>
-            ` : ''}
-          </div>
-        </div>
-        <div class="separator"></div>
-
-        <div class="section" style="color:#888;font-size:0.75rem;">
-          ${this.ctx.state.documentWidth} \u00d7 ${this.ctx.state.documentHeight}
-        </div>
-        <div class="separator"></div>
-      ` : ''}
-
-      ${isShapeTool(activeTool) ? html`
-        <div class="section">
-          <label>Shape</label>
-          <div class="shape-picker" role="group" aria-label="Shape">
-            ${SHAPE_TOOLS.map(shape => html`
-              <button
-                class="shape-option ${activeTool === shape ? 'active' : ''}"
-                data-shape=${shape}
-                title=${`${toolLabels[shape]} (${toolShortcuts[shape]})`}
-                aria-label=${`Select ${toolLabels[shape]} shape`}
-                aria-pressed=${activeTool === shape ? 'true' : 'false'}
-                @click=${() => this.ctx.setTool(shape)}
-              >${toolIcons[shape]}</button>
-            `)}
-          </div>
-        </div>
-        <div class="separator"></div>
-      ` : nothing}
-
-      ${activeTool !== 'eraser' && activeTool !== 'stamp' ? html`
-      <div class="section">
-        <label>Color</label>
-        <input
-          type="color"
-          .value=${strokeColor}
-          @input=${this._onStrokeColor}
-          title="Stroke color"
-          aria-label="Stroke color"
-        />
-        <div class="color-grid">
-          ${presetColors.map(
-      (c) => html`
-              <button
-                class="color-swatch ${strokeColor === c ? 'active' : ''}"
-                style="background:${c}"
-                title=${c}
-                @click=${() => this.ctx.setStrokeColor(c)}
-              ></button>
-            `,
-    )}
-        </div>
-      </div>
-
-      <div class="separator"></div>
-      ` : nothing}
-
-      <div class="section">
-        <label>${activeTool === 'stamp' ? 'Stamp size' : 'Size'}</label>
-        <input
-          type="range"
-          min=${activeTool === 'stamp' ? MIN_STAMP_SIZE : 1}
-          max=${activeTool === 'stamp' ? MAX_STAMP_SIZE : 150}
-          aria-label=${activeTool === 'stamp' ? 'Stamp size' : 'Brush size'}
-          .value=${String(activeTool === 'stamp' ? stampSize : brushSize)}
-          @input=${activeTool === 'stamp' ? this._onStampSize : this._onBrushSize}
-        />
-        ${activeTool === 'stamp'
-          ? html`
-              <input
-                class="stamp-size-input"
-                type="number"
-                min=${MIN_STAMP_SIZE}
-                max=${MAX_STAMP_SIZE}
-                step="1"
-                aria-label="Stamp size in pixels"
-                title="Stamp size in pixels"
-                .value=${String(stampSize)}
-                @change=${this._onStampSize}
-              />
-            `
-          : html`<span class="size-value">${brushSize}</span>`}
-      </div>
-
-      ${(activeTool === 'pencil' || activeTool === 'eraser') ? html`
-        <div class="separator"></div>
-        <div class="section">
-          <div class="brush-dropdown-wrap">
-            <button class="brush-dropdown-btn" @click=${() => this._toggleBrushDropdown()}>
-              <img src=${state.isPresetModified
-                ? this._generateCustomPreview(brush, activeTool === 'eraser')
-                : this._generatePreview(
-                    BRUSH_PRESETS.find(p => p.id === state.activePreset) ?? BRUSH_PRESETS[0],
-                    activeTool === 'eraser',
-                  )} alt="" />
-              <span>${(BRUSH_PRESETS.find(p => p.id === state.activePreset) ?? BRUSH_PRESETS[0]).name}${state.isPresetModified ? ' *' : ''}</span>
-              <span class="chevron">&#9660;</span>
-            </button>
-            ${this._brushDropdownOpen ? html`
-              <div class="brush-dropdown-panel">
-                ${BRUSH_PRESETS.map(preset => html`
-                  <button
-                    class="brush-dropdown-item ${state.activePreset === preset.id && !state.isPresetModified ? 'active' : ''}"
-                    @click=${() => this._selectPreset(preset.id)}
-                  >
-                    <img src=${this._generatePreview(preset, activeTool === 'eraser')} alt="" />
-                    <span>${preset.name}</span>
-                  </button>
-                `)}
-              </div>
-            ` : nothing}
-          </div>
-        </div>
-        <div class="separator"></div>
-        <div class="section">
-          <label>Opacity</label>
-          <input type="range" aria-label="Brush opacity" min="0" max="100" .value=${String(Math.round(brush.opacity * 100))}
-            @input=${(e: Event) => this.ctx.setBrush({ opacity: Number((e.target as HTMLInputElement).value) / 100 })} />
-          <span class="size-value">${Math.round(brush.opacity * 100)}%</span>
-        </div>
+        ${heading('Stroke')}
         <div class="section">
           <label>Flow</label>
           <input type="range" aria-label="Brush flow" min="1" max="100" .value=${String(Math.round(brush.flow * 100))}
@@ -1717,7 +1869,7 @@ export class ToolSettings extends LitElement {
             @input=${(e: Event) => this.ctx.setBrush({ spacing: Number((e.target as HTMLInputElement).value) / 100 })} />
           <span class="size-value">${Math.round(brush.spacing * 100)}%</span>
         </div>
-        <div class="separator"></div>
+        ${heading('Stylus')}
         <div class="section">
           <label class="checkbox-label" title="Affects pressure-sensitive pen or stylus input; mouse input uses full pressure.">
             <input type="checkbox" .checked=${brush.pressureSize}
@@ -1743,10 +1895,9 @@ export class ToolSettings extends LitElement {
           </select>
         </div>
         ` : nothing}
-        <div class="separator"></div>
+        <div class="section">${advancedToggle}</div>
         ${this._advancedOpen ? html`
-          <div class="section" style="flex-wrap:wrap;gap:0.5rem;">
-            <label style="flex-basis:100%;cursor:pointer;" @click=${() => { this._advancedOpen = false; }}>Advanced &#9650;</label>
+          <div class="section advanced-group">
             <div class="section">
               <label>Tip</label>
               <div class="pill-row">
@@ -1836,9 +1987,217 @@ export class ToolSettings extends LitElement {
             </div>
             ` : nothing}
           </div>
-        ` : html`
-          <div class="section">
-            <label style="cursor:pointer;" @click=${() => { this._advancedOpen = true; }}>Advanced &#9660;</label>
+        ` : nothing}
+    `;
+  }
+
+  override render() {
+    if (!this._ctx.value) return html``;
+
+    const state = this.ctx.state;
+    const { strokeColor, fillColor, useFill, activeTool, stampImage, stampSize, brush } = state;
+
+    // Select tool: show transform controls or a hint
+    if (activeTool === 'select') {
+      if (this._ctx.value.transformActive) {
+        return this._renderTransformSettings();
+      }
+      return html`
+        <div class="section" style="padding:16px;color:#888;font-size:12px;text-align:center;line-height:1.5;">
+          Draw a selection to transform, or press
+          <kbd style="background:#333;padding:1px 5px;border-radius:3px;font-size:11px;">${navigator.platform?.startsWith('Mac') ? '⌘' : 'Ctrl'}+T</kbd>
+          to transform the entire layer.
+        </div>
+      `;
+    }
+    const brushSize = brush.size;
+
+    const isMobile = this.ctx.isMobile;
+
+    return html`
+      ${!isMobile ? html`
+        <div class="section project-section">
+          <div class="project-dropdown-wrap">
+            <button class="project-name-btn" @click=${this._toggleProjectDropdown}>
+              ${this.ctx.currentProject?.name ?? 'Untitled'}
+              <span class="dropdown-arrow">&#9662;</span>
+            </button>
+            ${this._projectDropdownOpen ? html`
+              <div class="project-dropdown">
+                ${this.ctx.projectList.map(p => html`
+                  <div class="project-item ${p.id === this.ctx.currentProject?.id ? 'active' : ''}">
+                    ${this._renamingProjectId === p.id ? html`
+                      <input
+                        class="project-rename-input"
+                        .value=${p.name}
+                        @keydown=${(e: KeyboardEvent) => this._onRenameKeydown(e, p.id)}
+                        @blur=${(e: FocusEvent) => this._commitRename(e, p.id)}
+                      />
+                    ` : html`
+                      <span class="project-item-name" @click=${() => this._onSelectProject(p.id)}>
+                        ${p.name}
+                      </span>
+                      <button
+                        class="project-item-action"
+                        title="Rename project"
+                        aria-label=${`Rename ${p.name}`}
+                        @click=${(e: Event) => this._startRename(e, p.id)}
+                      >${projectActionIcons.rename}</button>
+                      <button
+                        class="project-item-action delete"
+                        title="Delete project"
+                        aria-label=${`Delete ${p.name}`}
+                        @click=${(e: Event) => this._onDeleteProject(e, p.id)}
+                      >${projectActionIcons.delete}</button>
+                    `}
+                  </div>
+                `)}
+                <div class="project-dropdown-divider"></div>
+                <button class="project-new-btn" @click=${this._onNewProject}>+ New Project</button>
+              </div>
+            ` : ''}
+          </div>
+        </div>
+        <div class="section document-size" title="Canvas size">
+          ${this.ctx.state.documentWidth} \u00d7 ${this.ctx.state.documentHeight}
+        </div>
+        <div class="separator"></div>
+      ` : ''}
+
+      ${isShapeTool(activeTool) ? html`
+        <div class="section">
+          <label>Shape</label>
+          <div class="shape-picker" role="group" aria-label="Shape">
+            ${SHAPE_TOOLS.map(shape => html`
+              <button
+                class="shape-option ${activeTool === shape ? 'active' : ''}"
+                data-shape=${shape}
+                title=${`${toolLabels[shape]} (${toolShortcuts[shape]})`}
+                aria-label=${`Select ${toolLabels[shape]} shape`}
+                aria-pressed=${activeTool === shape ? 'true' : 'false'}
+                @click=${() => this.ctx.setTool(shape)}
+              >${toolIcons[shape]}</button>
+            `)}
+          </div>
+        </div>
+        <div class="separator"></div>
+      ` : nothing}
+
+      ${activeTool !== 'eraser' && activeTool !== 'stamp' ? html`
+      ${isMobile ? html`
+        <div class="section">
+          <label>Color</label>
+          ${this._renderColorControls(strokeColor)}
+        </div>
+      ` : html`
+        <div class="section panel-wrap" data-panel="color" @focusout=${this._onPanelFocusOut}>
+          <button
+            class="panel-trigger color-trigger ${this._openPanel === 'color' ? 'open' : ''}"
+            title="Color"
+            aria-label="Color"
+            aria-haspopup="dialog"
+            aria-controls="color-panel"
+            aria-expanded=${this._openPanel === 'color' ? 'true' : 'false'}
+            @click=${() => this._togglePanel('color')}
+          >
+            <span class="color-chip" style="background:${strokeColor}"></span>
+            <span class="chevron">&#9660;</span>
+          </button>
+          ${this._openPanel === 'color' ? html`
+            <div id="color-panel" class="settings-panel color-panel" role="dialog" aria-label="Color">
+              <div class="panel-heading">Color</div>
+              ${this._renderColorControls(strokeColor)}
+            </div>
+          ` : nothing}
+        </div>
+      `}
+
+      <div class="separator"></div>
+      ` : nothing}
+
+      <div class="section">
+        <label>${activeTool === 'stamp' ? 'Stamp size' : 'Size'}</label>
+        <input
+          type="range"
+          min=${activeTool === 'stamp' ? MIN_STAMP_SIZE : 1}
+          max=${activeTool === 'stamp' ? MAX_STAMP_SIZE : 150}
+          aria-label=${activeTool === 'stamp' ? 'Stamp size' : 'Brush size'}
+          .value=${String(activeTool === 'stamp' ? stampSize : brushSize)}
+          @input=${activeTool === 'stamp' ? this._onStampSize : this._onBrushSize}
+        />
+        ${activeTool === 'stamp'
+          ? html`
+              <input
+                class="stamp-size-input"
+                type="number"
+                min=${MIN_STAMP_SIZE}
+                max=${MAX_STAMP_SIZE}
+                step="1"
+                aria-label="Stamp size in pixels"
+                title="Stamp size in pixels"
+                .value=${String(stampSize)}
+                @change=${this._onStampSize}
+              />
+            `
+          : html`<span class="size-value">${brushSize}</span>`}
+      </div>
+
+      ${(activeTool === 'pencil' || activeTool === 'eraser') ? html`
+        <div class="separator"></div>
+        <div class="section">
+          <div class="brush-dropdown-wrap">
+            <button class="brush-dropdown-btn" @click=${() => this._toggleBrushDropdown()}>
+              <img src=${state.isPresetModified
+                ? this._generateCustomPreview(brush, activeTool === 'eraser')
+                : this._generatePreview(
+                    BRUSH_PRESETS.find(p => p.id === state.activePreset) ?? BRUSH_PRESETS[0],
+                    activeTool === 'eraser',
+                  )} alt="" />
+              <span>${(BRUSH_PRESETS.find(p => p.id === state.activePreset) ?? BRUSH_PRESETS[0]).name}${state.isPresetModified ? ' *' : ''}</span>
+              <span class="chevron">&#9660;</span>
+            </button>
+            ${this._brushDropdownOpen ? html`
+              <div class="brush-dropdown-panel">
+                ${BRUSH_PRESETS.map(preset => html`
+                  <button
+                    class="brush-dropdown-item ${state.activePreset === preset.id && !state.isPresetModified ? 'active' : ''}"
+                    @click=${() => this._selectPreset(preset.id)}
+                  >
+                    <img src=${this._generatePreview(preset, activeTool === 'eraser')} alt="" />
+                    <span>${preset.name}</span>
+                  </button>
+                `)}
+              </div>
+            ` : nothing}
+          </div>
+        </div>
+        <div class="separator"></div>
+        <div class="section">
+          <label>Opacity</label>
+          <input type="range" aria-label="Brush opacity" min="0" max="100" .value=${String(Math.round(brush.opacity * 100))}
+            @input=${(e: Event) => this.ctx.setBrush({ opacity: Number((e.target as HTMLInputElement).value) / 100 })} />
+          <span class="size-value">${Math.round(brush.opacity * 100)}%</span>
+        </div>
+        ${isMobile ? this._renderBrushDetails() : html`
+          <div class="section panel-wrap" data-panel="brush" @focusout=${this._onPanelFocusOut}>
+            <button
+              class="panel-trigger ${this._openPanel === 'brush' ? 'open' : ''}"
+              title="Brush settings"
+              aria-label="Brush settings"
+              aria-haspopup="dialog"
+              aria-controls="brush-panel"
+              aria-expanded=${this._openPanel === 'brush' ? 'true' : 'false'}
+              @click=${() => this._togglePanel('brush')}
+            >
+              ${slidersIcon}
+              <span class="brush-trigger-label">Brush settings</span>
+              <span class="chevron">&#9660;</span>
+            </button>
+            ${this._openPanel === 'brush' ? html`
+              <div id="brush-panel" class="settings-panel brush-panel" role="dialog" aria-label="Brush settings">
+                ${this._renderBrushDetails()}
+              </div>
+            ` : nothing}
           </div>
         `}
       ` : nothing}
