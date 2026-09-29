@@ -645,6 +645,7 @@ export class DrawingCanvas extends LitElement {
     const rect = this.getBoundingClientRect();
     const vw = rect.width > 0 ? Math.floor(rect.width) : 800;
     const vh = rect.height > 0 ? Math.floor(rect.height) : 600;
+    this._laidOut = rect.width > 0 && rect.height > 0;
 
     this.mainCanvas.width = vw;
     this.mainCanvas.height = vh;
@@ -698,6 +699,7 @@ export class DrawingCanvas extends LitElement {
 
     const newWidth = Math.floor(rect.width);
     const newHeight = Math.floor(rect.height);
+    this._laidOut = true;
     const oldWidth = this.mainCanvas.width;
     const oldHeight = this.mainCanvas.height;
     if (oldWidth === newWidth && oldHeight === newHeight) return;
@@ -1448,9 +1450,12 @@ export class DrawingCanvas extends LitElement {
     return { zoom: this._zoom, panX: this._panX, panY: this._panY };
   }
 
+  /** Whether the display canvas has been sized from real layout, not the 800×600 fallback. */
+  private _laidOut = false;
+
   /** The display canvas size in CSS pixels, saved with the viewport so a restore can tell the screen changed. */
-  public getViewportSize(): { width: number; height: number } {
-    return { width: this._vw, height: this._vh };
+  public getViewportSize(): { width: number; height: number } | null {
+    return this._laidOut ? { width: this._vw, height: this._vh } : null;
   }
 
   /**
@@ -1464,7 +1469,7 @@ export class DrawingCanvas extends LitElement {
     panY: number,
     savedSize?: { width: number; height: number },
   ) {
-    if (savedSize) {
+    if (savedSize && this._laidOut) {
       if (!DrawingCanvas._similarSize(savedSize, { width: this._vw, height: this._vh })) {
         this.resetView();
         return;

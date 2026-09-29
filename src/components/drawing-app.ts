@@ -557,7 +557,7 @@ export class DrawingApp extends LitElement {
           const layerHashes = layerSnapshots.map(snap =>
             snap.imageData ? hashImageData(snap.imageData) : this._savedLayerBlobs.get(snap.id)!.hash);
           const viewport = this.canvas?.getViewport() ?? { zoom: 1, panX: 0, panY: 0 };
-          const viewportSize = this.canvas?.getViewportSize();
+          const viewportSize = this.canvas?.getViewportSize() ?? null;
           const historySnapshot = this.canvas?.getHistory() ?? [];
           const historyIndex = this.canvas?.getHistoryIndex() ?? -1;
           const trackingGeneration = this._trackingGeneration;
@@ -739,10 +739,10 @@ export class DrawingApp extends LitElement {
 
           this._projectList = await this._backend!.projects.list();
 
-          // Show saving indicator for a minimum duration so it doesn't flash,
-          // but skip the delay when flushing (beforeunload/visibilitychange)
-          // to avoid data loss on page close.
-          if (!skipDelay && this._saving) {
+          // Keep saves at least this far apart (and the indicator, when shown,
+          // up long enough not to flash), but skip the delay when flushing
+          // (beforeunload/visibilitychange) to avoid data loss on page close.
+          if (!skipDelay) {
             const elapsed = Date.now() - saveStartTime;
             if (elapsed < 1500) {
               await new Promise(resolve => setTimeout(resolve, 1500 - elapsed));

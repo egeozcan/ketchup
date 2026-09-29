@@ -17,6 +17,7 @@ function setupCanvas(docWidth: number, docHeight: number, viewWidth: number, vie
   mainCanvas.height = viewHeight;
   (canvas as any).composite = vi.fn();
   (canvas as any).requestUpdate = vi.fn();
+  (canvas as any)._laidOut = true;
   return canvas;
 }
 
@@ -85,6 +86,16 @@ describe('DrawingCanvas.restoreViewport', () => {
     expect(1920 * zoom).toBeLessThanOrEqual(390);
     expect(panX).toBeGreaterThanOrEqual(0);
     expect(panY).toBeGreaterThanOrEqual(0);
+  });
+
+  it('ignores the saved size until the canvas has real layout', () => {
+    const canvas = setupCanvas(800, 600, 1200, 800);
+    (canvas as any)._laidOut = false;
+
+    canvas.restoreViewport(2, -300, -200, { width: 390, height: 700 });
+
+    expect(canvas.getViewport()).toEqual({ zoom: 2, panX: -300, panY: -200 });
+    expect(canvas.getViewportSize()).toBeNull();
   });
 
   it('shows the whole document when an older saved view leaves it off-screen', () => {
