@@ -144,6 +144,7 @@ export function makeAppCanvasStub(overrides: Record<string, unknown> = {}) {
     zoomOut: vi.fn(),
     setHistory: vi.fn(),
     centerDocument: vi.fn(),
+    resetView: vi.fn(),
     composite: vi.fn(),
     pushLayerOperation: vi.fn(),
     isTransformActive: vi.fn(() => false),

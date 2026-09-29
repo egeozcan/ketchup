@@ -204,6 +204,12 @@ export class DrawingApp extends LitElement {
    * project's layers and history into the new one, so saves wait.
    */
   private _projectLoads = 0;
+  /**
+   * The layers panel's desktop open state while the mobile layout forces the
+   * sheet closed, so a phone-width session never overwrites the saved setting.
+   * Null when not in the mobile layout.
+   */
+  private _desktopLayersPanelOpen: boolean | null = null;
 
   @query('drawing-canvas') canvas!: DrawingCanvas;
 
@@ -510,7 +516,7 @@ export class DrawingApp extends LitElement {
           const snapshotWidth = this._state.documentWidth;
           const snapshotHeight = this._state.documentHeight;
           const snapshotActiveLayerId = this._state.activeLayerId;
-          const snapshotLayersPanelOpen = this._state.layersPanelOpen;
+          const snapshotLayersPanelOpen = this._desktopLayersPanelOpen ?? this._state.layersPanelOpen;
 
           // If a floating selection is active, composite it into the owning
           // layer's snapshot so persisted data never has a hole from the lift.
@@ -938,7 +944,8 @@ export class DrawingApp extends LitElement {
       stampSize: DEFAULT_STAMP_SIZE,
       layers: [layer],
       activeLayerId: layer.id,
-      layersPanelOpen: true,
+      // On phones the layers sheet would cover the toolbar, so start it closed.
+      layersPanelOpen: !this._isMobile,
       documentWidth: w,
       documentHeight: h,
       cropAspectRatio: 'free',
@@ -960,6 +967,7 @@ export class DrawingApp extends LitElement {
     // failed part-way), so the next save must replace it rather than append.
     this._trackLoadedProject(this._currentProject?.id ?? null, [], []);
     this._historyNeedsRewrite = true;
+    if (this._isMobile) this._desktopLayersPanelOpen = true;
   }
 
   private async _loadProject(projectId: string) {
@@ -1039,7 +1047,7 @@ export class DrawingApp extends LitElement {
         stampSize: normalizeStampSize(ts.stampSize),
         layers,
         activeLayerId: validActiveId,
-        layersPanelOpen: record.layersPanelOpen,
+        layersPanelOpen: record.layersPanelOpen && !this._isMobile,
         documentWidth: record.canvasWidth,
         documentHeight: record.canvasHeight,
         cropAspectRatio: ts.cropAspectRatio ?? 'free',
@@ -1050,6 +1058,7 @@ export class DrawingApp extends LitElement {
         eyedropperSampleAll: ts.eyedropperSampleAll ?? true,
         childMode: ts.childMode ?? false,
       };
+      if (this._isMobile) this._desktopLayersPanelOpen = record.layersPanelOpen;
       await this.updateComplete;
       this.canvas?.setHistory(history, record.historyIndex ?? (history.length - 1));
       this._dirty = false;
@@ -1058,8 +1067,7 @@ export class DrawingApp extends LitElement {
       if (record.zoom != null && record.panX != null && record.panY != null) {
         this.canvas?.setViewport(record.zoom, record.panX, record.panY);
       } else {
-        this.canvas?.centerDocument();
-        this.canvas?.composite();
+        this.canvas?.resetView();
       }
     } catch (err) {
       console.error('Failed to load project:', err);
@@ -1394,6 +1402,7 @@ export class DrawingApp extends LitElement {
           await this._enterProject(meta, async () => {
             this._projectList = await this._backend!.projects.list();
             await this._resetToFreshProject(width, height);
+            this.canvas?.resetView();
           });
           this._markDirty();
         };
@@ -1414,7 +1423,10 @@ export class DrawingApp extends LitElement {
             } else {
               const meta = await this._backend!.projects.create({ name: 'Untitled', thumbnailRef: null });
               this._projectList = [meta];
-              await this._enterProject(meta, () => this._resetToFreshProject());
+              await this._enterProject(meta, async () => {
+                await this._resetToFreshProject();
+                this.canvas?.resetView();
+              });
               this._markDirty();
             }
           }
@@ -1590,6 +1602,15 @@ export class DrawingApp extends LitElement {
     if (useMobileLayout === this._isMobile) return;
 
     this._isMobile = useMobileLayout;
+    // The layers sheet covers the mobile toolbar; don't carry an open desktop
+    // sidebar over into it.
+    if (useMobileLayout) {
+      this._desktopLayersPanelOpen = this._state.layersPanelOpen;
+      this._state = { ...this._state, layersPanelOpen: false };
+    } else if (this._desktopLayersPanelOpen !== null) {
+      this._state = { ...this._state, layersPanelOpen: this._desktopLayersPanelOpen };
+      this._desktopLayersPanelOpen = null;
+    }
     // Child mode uses the compact toolbar; disable it when switching to desktop.
     if (!useMobileLayout && this._state.childMode) {
       this._state = { ...this._state, childMode: false };
@@ -1653,6 +1674,10 @@ export class DrawingApp extends LitElement {
       this._currentProject = meta;
       this._projectList = [meta];
       this._markDirty();
+      // The first render may have measured a pre-mobile layout; fit to the real one.
+      await this.updateComplete;
+      await this.canvas?.updateComplete;
+      this.canvas?.resetView();
     }
   }
 
