@@ -33,10 +33,17 @@ async function setupApp() {
     history = entries;
     (app as any)._dirty = true;
     (app as any)._dirtyVersion++;
+    (app as any)._contentVersion++;
+    await (app as any)._save(true);
+  };
+  // Same as `save`, but as a pan/zoom would mark the project: no content change.
+  const saveViewportOnly = async () => {
+    (app as any)._dirty = true;
+    (app as any)._dirtyVersion++;
     await (app as any)._save(true);
   };
   const stored = () => backend.history.getEntries(project.id);
-  return { app, backend, project, layer, save, stored };
+  return { app, backend, project, layer, save, saveViewportOnly, stored };
 }
 
 function refsOf(entry: SerializedHistoryEntry): BlobRef[] {
@@ -159,6 +166,22 @@ describe('incremental history persistence', () => {
     expect(serializeLayer).toHaveBeenCalledTimes(2);
     expect(after.layers[0].imageBlobRef).not.toBe(firstRef);
     expect(await blobExists(backend, firstRef)).toBe(false);
+  });
+
+  it('skips reading layers back when only the viewport changed', async () => {
+    const { backend, project, layer, save, saveViewportOnly } = await setupApp();
+    await save([]);
+    const ref = (await backend.state.get(project.id))!.layers[0].imageBlobRef;
+    const serializeLayer = vi.spyOn(serialization, 'serializeLayerFromImageData');
+    const getImageData = vi.spyOn(layer.canvas.getContext('2d')!, 'getImageData');
+    getImageData.mockClear();
+
+    await saveViewportOnly();
+
+    expect(getImageData).not.toHaveBeenCalled();
+    expect(serializeLayer).not.toHaveBeenCalled();
+    expect((await backend.state.get(project.id))!.layers[0].imageBlobRef).toBe(ref);
+    expect(await blobExists(backend, ref)).toBe(true);
   });
 
   it('keeps the stored layer blobs of a project it just loaded', async () => {
