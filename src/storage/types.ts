@@ -119,6 +119,9 @@ export interface ProjectStateRecord {
   zoom?: number;
   panX?: number;
   panY?: number;
+  /** Display size the viewport was saved at, used to detect a different screen on load. */
+  viewportWidth?: number;
+  viewportHeight?: number;
 }
 
 export interface ProjectHistoryRecord {

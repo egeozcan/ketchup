@@ -40,21 +40,29 @@ describe('embedded host API', () => {
     document.body.replaceChildren();
   });
 
+  /** Startup renders before it resolves, so the element has to be in the document. */
+  async function connected(app: DrawingApp): Promise<DrawingApp> {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    Object.defineProperty(app, 'canvas', { configurable: true, value: makeAppCanvasStub() });
+    document.body.append(app);
+    await app.whenReady();
+    return app;
+  }
+
   it('keeps an embedded document in memory, and a standalone one in IndexedDB', async () => {
     const embedded = new DrawingApp();
     embedded.embedded = true;
-    await (embedded as any)._doInitStorage();
+    await connected(embedded);
     expect((embedded as any)._backend).toBeInstanceOf(MemoryBackend);
 
-    const standalone = new DrawingApp();
-    const dispose = vi.spyOn(IndexedDBBackend.prototype, 'init').mockResolvedValue(undefined);
+    const init = vi.spyOn(IndexedDBBackend.prototype, 'init').mockResolvedValue(undefined);
     vi.spyOn(IndexedDBBackend.prototype, 'projects', 'get').mockReturnValue({
       list: async () => [],
       create: async () => ({ id: 'p', name: 'Untitled', createdAt: 0, updatedAt: 0, thumbnailRef: null }),
     } as any);
-    await (standalone as any)._doInitStorage();
+    const standalone = await connected(new DrawingApp());
     expect((standalone as any)._backend).toBeInstanceOf(IndexedDBBackend);
-    dispose.mockRestore();
+    init.mockRestore();
   });
 
   it('prefers a caller-supplied backend even when embedded', async () => {
@@ -62,18 +70,19 @@ describe('embedded host API', () => {
     app.embedded = true;
     const backend = new MemoryBackend();
     app.storageBackend = backend;
-    await (app as any)._doInitStorage();
+    await connected(app);
     expect((app as any)._backend).toBe(backend);
   });
 
-  it('whenReady resolves once storage is open', async () => {
+  it('whenReady resolves once storage is open and the first document is shown', async () => {
     const app = new DrawingApp();
     app.embedded = true;
     let ready = false;
     void app.whenReady().then(() => { ready = true; });
-    await (app as any)._doInitStorage();
-    await Promise.resolve();
+    expect(ready).toBe(false);
+    await connected(app);
     expect(ready).toBe(true);
+    expect((app as any)._currentProject).not.toBeNull();
   });
 
   it('asks the host to save when embedded instead of downloading', () => {

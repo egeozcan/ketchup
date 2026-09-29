@@ -30,6 +30,15 @@ function isNoOpPatch(entry: Extract<HistoryEntry, { type: 'patch' }>): boolean {
   return entry.before.width === 1 && entry.before.height === 1 && !diffBounds(entry.before, entry.after);
 }
 
+/** Turn a project name into a safe download file name (without extension). */
+export function exportFileBaseName(projectName: string | undefined): string {
+  const cleaned = (projectName ?? '')
+    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/^[.\s]+|[.\s]+$/g, '');
+  return cleaned || 'drawing';
+}
+
 @customElement('drawing-canvas')
 export class DrawingCanvas extends LitElement {
   static override styles = css`
@@ -635,13 +644,15 @@ export class DrawingCanvas extends LitElement {
     const rect = this.getBoundingClientRect();
     const vw = rect.width > 0 ? Math.floor(rect.width) : 800;
     const vh = rect.height > 0 ? Math.floor(rect.height) : 600;
+    this._laidOut = rect.width > 0 && rect.height > 0;
 
     this.mainCanvas.width = vw;
     this.mainCanvas.height = vh;
     this.previewCanvas.width = vw;
     this.previewCanvas.height = vh;
 
-    // Center document in viewport
+    // Center document in viewport, shrinking it to fit small screens
+    this._zoom = Math.max(DrawingCanvas.MIN_ZOOM, Math.min(this._zoom, this._fitZoom()));
     this._panX = Math.round((vw - this._docWidth * this._zoom) / 2);
     this._panY = Math.round((vh - this._docHeight * this._zoom) / 2);
 
@@ -687,6 +698,7 @@ export class DrawingCanvas extends LitElement {
 
     const newWidth = Math.floor(rect.width);
     const newHeight = Math.floor(rect.height);
+    this._laidOut = true;
     const oldWidth = this.mainCanvas.width;
     const oldHeight = this.mainCanvas.height;
     if (oldWidth === newWidth && oldHeight === newHeight) return;
@@ -1265,7 +1277,7 @@ export class DrawingCanvas extends LitElement {
     // Composite onto a temp canvas without checkerboard for clean export
     const exportCanvas = this.renderFlattened('#ffffff');
     const link = document.createElement('a');
-    link.download = 'drawing.png';
+    link.download = `${exportFileBaseName(this._ctx.value?.currentProject?.name)}.png`;
     link.href = exportCanvas.toDataURL('image/png');
     link.click();
   }
@@ -1417,12 +1429,25 @@ export class DrawingCanvas extends LitElement {
     this._zoomToCenter(this._zoom / DrawingCanvas.ZOOM_STEP);
   }
 
+  /** Show the whole document: 100% when it fits, otherwise fit it to the viewport. */
+  public resetView() {
+    if (!this.mainCanvas) return;
+    this._setCenteredZoom(Math.min(1, this._fitZoom()));
+  }
+
   public zoomToFit() {
-    const fitZoom = Math.min(
+    this._setCenteredZoom(this._fitZoom());
+  }
+
+  private _fitZoom(): number {
+    return Math.min(
       this._vw / this._docWidth,
       this._vh / this._docHeight,
     ) * 0.9;
-    this._zoom = Math.min(DrawingCanvas.MAX_ZOOM, Math.max(DrawingCanvas.MIN_ZOOM, fitZoom));
+  }
+
+  private _setCenteredZoom(zoom: number) {
+    this._zoom = Math.min(DrawingCanvas.MAX_ZOOM, Math.max(DrawingCanvas.MIN_ZOOM, zoom));
     this._panX = Math.round((this._vw - this._docWidth * this._zoom) / 2);
     this._panY = Math.round((this._vh - this._docHeight * this._zoom) / 2);
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
@@ -1435,6 +1460,57 @@ export class DrawingCanvas extends LitElement {
 
   public getViewport(): { zoom: number; panX: number; panY: number } {
     return { zoom: this._zoom, panX: this._panX, panY: this._panY };
+  }
+
+  /** Whether the display canvas has been sized from real layout, not the 800×600 fallback. */
+  private _laidOut = false;
+
+  /** The display canvas size in CSS pixels, saved with the viewport so a restore can tell the screen changed. */
+  public getViewportSize(): { width: number; height: number } | null {
+    return this._laidOut ? { width: this._vw, height: this._vh } : null;
+  }
+
+  /**
+   * Restore a saved view. When it was saved on a noticeably different screen
+   * size (a desktop project opened on a phone), or it would leave most of the
+   * document off-screen, show the whole document instead.
+   */
+  public restoreViewport(
+    zoom: number,
+    panX: number,
+    panY: number,
+    savedSize?: { width: number; height: number },
+  ) {
+    if (savedSize && this._laidOut) {
+      if (!DrawingCanvas._similarSize(savedSize, { width: this._vw, height: this._vh })) {
+        this.resetView();
+        return;
+      }
+      // Keep the same document point at the centre, as a window resize does.
+      panX += (this._vw - savedSize.width) / 2;
+      panY += (this._vh - savedSize.height) / 2;
+    }
+    this.setViewport(zoom, panX, panY);
+    if (this._visibleDocumentFraction() < 0.5) this.resetView();
+  }
+
+  private static _similarSize(a: { width: number; height: number }, b: { width: number; height: number }): boolean {
+    const close = (x: number, y: number) => Math.abs(x - y) <= Math.max(x, y) * 0.2;
+    return close(a.width, b.width) && close(a.height, b.height);
+  }
+
+  /**
+   * How much of the document is on screen, relative to the most that could
+   * be: the whole document when it is smaller than the viewport, otherwise a
+   * viewport's worth of it.
+   */
+  private _visibleDocumentFraction(): number {
+    const docW = this._docWidth * this._zoom;
+    const docH = this._docHeight * this._zoom;
+    const visW = Math.max(0, Math.min(this._vw, this._panX + docW) - Math.max(0, this._panX));
+    const visH = Math.max(0, Math.min(this._vh, this._panY + docH) - Math.max(0, this._panY));
+    const possible = Math.min(docW, this._vw) * Math.min(docH, this._vh);
+    return possible > 0 ? (visW * visH) / possible : 0;
   }
 
   public setViewport(zoom: number, panX: number, panY: number) {

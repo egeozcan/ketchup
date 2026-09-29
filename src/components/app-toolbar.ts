@@ -7,6 +7,9 @@ import { toolIcons, toolLabels, toolShortcuts, actionIcons, CHILD_TOOLS, shapesI
 import { SHAPE_TOOLS, isShapeTool } from '../tools/shapes.js';
 import './tool-settings.js';
 
+/** Modifier-key prefix for shortcut hints: ⌘ on Apple platforms, Ctrl+ elsewhere. */
+const modKey = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '\u2318' : 'Ctrl+';
+
 const shapeToolGroup: ToolType[] = [...SHAPE_TOOLS];
 
 const toolGroups: ToolType[][] = [
@@ -224,6 +227,7 @@ export class AppToolbar extends LitElement {
     .popover .project-item {
       display: flex;
       align-items: center;
+      justify-content: flex-start;
       gap: 6px;
       width: 100%;
       padding: 8px 10px;
@@ -254,6 +258,7 @@ export class AppToolbar extends LitElement {
     .popover button.menu-btn {
       display: flex;
       align-items: center;
+      justify-content: flex-start;
       gap: 8px;
       width: 100%;
       height: auto;
@@ -404,6 +409,11 @@ export class AppToolbar extends LitElement {
     return this._ctx.value!;
   }
 
+  /** Embedded, Save hands the image to the host page; standalone, it downloads a PNG. */
+  private get _saveLabel(): string {
+    return this.ctx.embedded ? 'Save' : 'Export as PNG';
+  }
+
   private _onFullscreenChange = () => {
     this._isFullscreen = !!document.fullscreenElement;
   };
@@ -465,6 +475,7 @@ export class AppToolbar extends LitElement {
                   class=${isShapeTool(activeTool) ? 'active' : ''}
                   title="Shapes (U)"
                   aria-label="Shapes"
+                  aria-pressed=${isShapeTool(activeTool)}
                   @click=${() => this._selectTool(
                     isShapeTool(activeTool)
                       ? activeTool
@@ -479,6 +490,8 @@ export class AppToolbar extends LitElement {
                 <button
                   class=${activeTool === tool ? 'active' : ''}
                   title=${`${toolLabels[tool]} (${toolShortcuts[tool]})`}
+                  aria-label=${toolLabels[tool]}
+                  aria-pressed=${activeTool === tool}
                   @click=${() => this._selectTool(tool)}
                 >
                   ${toolIcons[tool]}
@@ -492,23 +505,25 @@ export class AppToolbar extends LitElement {
       <div class="action-group">
         <div class="separator"></div>
         <button
-          title="Undo"
+          title=${`Undo (${modKey}Z)`}
+          aria-label="Undo"
           ?disabled=${!this.ctx.canUndo}
           @click=${() => this.ctx.undo()}
         >
           ${actionIcons.undo}
         </button>
         <button
-          title="Redo"
+          title=${`Redo (${modKey}Shift+Z)`}
+          aria-label="Redo"
           ?disabled=${!this.ctx.canRedo}
           @click=${() => this.ctx.redo()}
         >
           ${actionIcons.redo}
         </button>
-        <button title="Save" @click=${() => this.ctx.saveCanvas()}>
+        <button title=${this._saveLabel} aria-label=${this._saveLabel} @click=${() => this.ctx.saveCanvas()}>
           ${actionIcons.save}
         </button>
-        <button title="Clear canvas" @click=${() => this.ctx.clearCanvas()}>
+        <button title="Clear layer" aria-label="Clear layer" @click=${() => this.ctx.clearCanvas()}>
           ${actionIcons.clear}
         </button>
       </div>
@@ -594,7 +609,7 @@ export class AppToolbar extends LitElement {
 
           <button
             class="child-tool-btn"
-            title="Save"
+            title="Save picture"
             @click=${() => this.ctx.saveCanvas()}
           >${actionIcons.save}</button>
           <button
@@ -746,8 +761,8 @@ export class AppToolbar extends LitElement {
         </button>
         <div class="popover-divider"></div>
         ` : ''}
-        <button class="menu-btn" title="Save" @click=${() => { this.ctx.saveCanvas(); this._closePopover(); }}>${actionIcons.save} Save</button>
-        <button class="menu-btn" title="Clear canvas" @click=${() => { this.ctx.clearCanvas(); this._closePopover(); }}>${actionIcons.clear} Clear</button>
+        <button class="menu-btn" @click=${() => { this.ctx.saveCanvas(); this._closePopover(); }}>${actionIcons.save} ${this._saveLabel}</button>
+        <button class="menu-btn" @click=${() => { this.ctx.clearCanvas(); this._closePopover(); }}>${actionIcons.clear} Clear layer</button>
         <div class="popover-divider"></div>
         <button class="menu-btn" @click=${this._toggleFullscreen}>
           ${this._isFullscreen
