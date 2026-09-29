@@ -393,7 +393,7 @@ export class ToolSettings extends LitElement {
       color: #ddd;
       padding: 0.125rem 0.25rem;
       font-size: 0.8125rem;
-      outline: none;
+      outline: 2px solid transparent;
     }
 
     .project-dropdown-divider {
@@ -484,7 +484,7 @@ export class ToolSettings extends LitElement {
       color: #ddd;
       padding: 0.375rem 0.5rem;
       font-size: 0.8125rem;
-      outline: none;
+      outline: 2px solid transparent;
     }
 
     .dialog-field input[type="text"]:focus {
@@ -533,7 +533,7 @@ export class ToolSettings extends LitElement {
       padding: 0.375rem 0.5rem;
       font-size: 0.8125rem;
       text-align: center;
-      outline: none;
+      outline: 2px solid transparent;
     }
 
     .dialog-size-input:focus {
@@ -796,7 +796,7 @@ export class ToolSettings extends LitElement {
       padding: 0.2rem 0.3rem;
       font-size: 0.75rem;
       text-align: center;
-      outline: none;
+      outline: 2px solid transparent;
       -moz-appearance: textfield;
     }
 

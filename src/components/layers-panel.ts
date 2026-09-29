@@ -230,7 +230,7 @@ export class LayersPanel extends LitElement {
       border-radius: 3px;
       color: #ddd;
       padding: 1px 4px;
-      outline: none;
+      outline: 2px solid transparent;
       font-family: inherit;
     }
 

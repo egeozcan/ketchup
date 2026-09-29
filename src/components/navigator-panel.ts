@@ -87,7 +87,7 @@ export class NavigatorPanel extends LitElement {
       appearance: none;
       background: #555;
       border-radius: 2px;
-      outline: none;
+      outline: 2px solid transparent;
       min-width: 0;
     }
 
