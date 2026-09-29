@@ -32,6 +32,13 @@ interface DocumentMark {
 }
 
 const MOBILE_ENTER_WIDTH = 768;
+const MAX_DOCUMENT_DIMENSION = 16384;
+
+function checkDocumentSize(width: number, height: number) {
+  if (!(width > 0 && height > 0 && width <= MAX_DOCUMENT_DIMENSION && height <= MAX_DOCUMENT_DIMENSION)) {
+    throw new RangeError(`Document size ${width}\u00d7${height} is outside 1\u2013${MAX_DOCUMENT_DIMENSION} pixels`);
+  }
+}
 const MOBILE_EXIT_WIDTH = 800;
 
 /**
@@ -204,7 +211,7 @@ export class DrawingApp extends LitElement {
   /** The document each exported Blob was rendered from, for `markSaved(blob)`. */
   private _exportMarks = new WeakMap<Blob, DocumentMark>();
   private _lastReportedModified = false;
-  /** Serializes `openImage`/`newDocument`, which each replace the whole document. */
+  /** Serializes `openImage`/`newDocument`, which each replace the whole document, and the renders of `exportImage`. */
   private _documentReplacement: Promise<unknown> = Promise.resolve();
 
   /** Longest side of the project thumbnail stored with each save. */
@@ -512,7 +519,7 @@ export class DrawingApp extends LitElement {
   /**
    * Make `meta` the current project and run `load` to bring its content in.
    * No save runs until the load finishes, since until then the canvas still
-   * holds the previous project.
+   * holds the previous project. Once loaded, it reads as unmodified.
    */
   private async _enterProject(meta: StorageProjectMeta, load: () => Promise<void>) {
     this._projectLoads++;
@@ -522,6 +529,10 @@ export class DrawingApp extends LitElement {
     } finally {
       this._projectLoads--;
     }
+    // Another document is open, however it was reached (the host API, or the
+    // project menu when standalone): it is the saved one, and marks taken of
+    // the previous one no longer apply.
+    this._markSaved();
   }
 
   /** Downscale the display canvas to a project thumbnail; encoding the full viewport each save is wasted work. */
@@ -1584,9 +1595,11 @@ export class DrawingApp extends LitElement {
     return this._replaceDocumentInTurn(async () => {
       const bitmap = await createImageBitmap(source);
       try {
-        // Refuse before anything changes when this browser cannot hold a
-        // canvas this large (iOS caps the area), rather than leaving a blank
-        // document named after the image on screen.
+        // Refuse before anything changes when this browser says it cannot
+        // hold a canvas this large (Safari caps the area), rather than leaving
+        // a blank document named after the image on screen. Other browsers
+        // may only fail later, at the paint.
+        checkDocumentSize(bitmap.width, bitmap.height);
         const probe = document.createElement('canvas');
         probe.width = bitmap.width;
         probe.height = bitmap.height;
@@ -1617,22 +1630,29 @@ export class DrawingApp extends LitElement {
    * Flatten the visible layers into an encoded image. `background` defaults
    * to none (transparent), except for JPEG, which has no alpha and gets white.
    * Work in progress (a transform, a floating selection, text being typed) is
-   * committed first, so the image is what the reader sees. A document
-   * replacement in progress is waited for, so the image is never the blank
-   * canvas between two documents. The rendered state is what a later
-   * `markSaved()` records.
+   * committed first, so the image is what the reader sees. It renders in call
+   * order with `openImage`/`newDocument`: after the ones called before it, and
+   * never the document of one called after. The rendered state is what a
+   * later `markSaved()` records.
    */
   async exportImage(options: { type?: string; quality?: number; background?: string | null } = {}): Promise<Blob> {
-    await this._ready;
-    await this._replacementsSettled();
     const type = options.type ?? 'image/png';
     const background = options.background !== undefined
       ? options.background
       : (type === 'image/jpeg' ? '#ffffff' : null);
-    this.canvas.clearSelection();
-    const canvas = this.canvas.renderFlattened(background);
-    const mark = this._markDocument();
-    this._exportedDocument = mark;
+    // Rendered in its turn among openImage/newDocument, before this first
+    // await: an export renders the document that was open when it was asked
+    // for, whatever the host opens next.
+    const rendered = this._documentReplacement.then(async () => {
+      await this._ready;
+      this.canvas.clearSelection();
+      const canvas = this.canvas.renderFlattened(background);
+      const mark = this._markDocument();
+      this._exportedDocument = mark;
+      return { canvas, mark };
+    });
+    this._documentReplacement = rendered.catch(() => {});
+    const { canvas, mark } = await rendered;
     return new Promise((resolve, reject) => {
       canvas.toBlob((blob) => {
         if (!blob) {
@@ -1694,15 +1714,6 @@ export class DrawingApp extends LitElement {
     };
   }
 
-  /** Resolves once no `openImage`/`newDocument` is running or queued. */
-  private async _replacementsSettled() {
-    let turn: Promise<unknown>;
-    do {
-      turn = this._documentReplacement;
-      await turn;
-    } while (turn !== this._documentReplacement);
-  }
-
   /** A new document is open, and as it is now it is the saved one. */
   private _markSaved() {
     this._documentGeneration++;
@@ -1759,12 +1770,9 @@ export class DrawingApp extends LitElement {
     name: string,
     paint?: (layer: Layer) => void,
   ) {
-    const MAX_DIMENSION = 16384;
     width = Math.round(width);
     height = Math.round(height);
-    if (!(width > 0 && height > 0 && width <= MAX_DIMENSION && height <= MAX_DIMENSION)) {
-      throw new RangeError(`Document size ${width}\u00d7${height} is outside 1\u2013${MAX_DIMENSION} pixels`);
-    }
+    checkDocumentSize(width, height);
     this.canvas?.cancelCrop();
     this.canvas?.clearSelection();
     if (this._savePromise || this._dirty) {
@@ -1772,6 +1780,9 @@ export class DrawingApp extends LitElement {
     }
     const previous = this._currentProject;
     const meta = await this._backend!.projects.create({ name, thumbnailRef: null });
+    // Recent stamps are the user's, not the document's; they follow along
+    // before the previous project, and its stamps, are discarded.
+    if (this.embedded && previous) await this._carryStamps(previous.id, meta.id);
     await this._enterProject(meta, async () => {
       await this._resetToFreshProject(width, height, background);
       // Painted while the load holds autosave off, so no save sees the blank layer.
@@ -1790,6 +1801,20 @@ export class DrawingApp extends LitElement {
       }
     }
     this._projectList = await this._backend!.projects.list();
+  }
+
+  /** Best effort: a stamp that cannot be copied is only a stamp to pick again. */
+  private async _carryStamps(fromId: string, toId: string) {
+    const backend = this._backend!;
+    try {
+      const stamps = await backend.stamps.list(fromId);
+      stamps.sort((a, b) => a.createdAt - b.createdAt);
+      for (const stamp of stamps) {
+        await backend.stamps.add(toId, await backend.blobs.get(stamp.blobRef));
+      }
+    } catch (err) {
+      console.warn('Could not keep the recent stamps:', err);
+    }
   }
 
   private _onViewportChange() {

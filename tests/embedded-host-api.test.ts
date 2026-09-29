@@ -411,4 +411,41 @@ describe('embedded host API', () => {
     vi.advanceTimersByTime(1000);
     expect(save).toHaveBeenCalled();
   });
+
+  it('exports the document open when it was asked for, not one opened right after', async () => {
+    const app = await connected(Object.assign(new DrawingApp(), { embedded: true }));
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb, type) {
+      cb(new Blob(['x'], { type: type ?? 'image/png' }));
+    });
+    const before = (app as any)._documentGeneration;
+    const exported = app.exportImage();
+    const replaced = app.newDocument(16, 8);
+    const blob = await exported;
+    await replaced;
+    expect((app as any)._exportMarks.get(blob).generation).toBe(before);
+    // ...so it cannot mark the document opened after it as saved.
+    const saved = (app as any)._savedDocument;
+    app.markSaved(blob);
+    expect((app as any)._savedDocument).toBe(saved);
+  });
+
+  it('keeps the recent stamps when the embedded document is replaced', async () => {
+    const app = await connected(Object.assign(new DrawingApp(), { embedded: true }));
+    const backend = (app as any)._backend as MemoryBackend;
+    const first = (app as any)._currentProject.id;
+    await backend.stamps.add(first, new Blob(['a']));
+    await backend.stamps.add(first, new Blob(['b']));
+    await app.newDocument(16, 8);
+    const stamps = await backend.stamps.list((app as any)._currentProject.id);
+    expect(stamps).toHaveLength(2);
+    expect(await backend.stamps.list(first)).toHaveLength(0);
+  });
+
+  it('refuses an image over the document limit before trying to allocate it', async () => {
+    const app = await connected(Object.assign(new DrawingApp(), { embedded: true }));
+    vi.stubGlobal('createImageBitmap', async () => ({ width: 20000, height: 10, close() {} }));
+    const create = vi.spyOn(document, 'createElement');
+    await expect(app.openImage(new Blob(['x']))).rejects.toThrow(/outside 1/);
+    expect(create).not.toHaveBeenCalledWith('canvas');
+  });
 });

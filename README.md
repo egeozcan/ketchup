@@ -26,16 +26,16 @@ Another page can host the editor and keep the image itself, for example an app t
 </script>
 ```
 
-The `embedded` attribute (or property, set before the element is connected) means the host owns the document. The editor then keeps its working state in memory instead of IndexedDB and does not autosave it (unless you pass your own `storageBackend`), hides project switching and creation, and answers the Save button and Ctrl/Cmd+S with a `save-request` event instead of downloading a PNG.
+The `embedded` attribute (or property, set before the element is connected) means the host owns the document. The editor then keeps its working state in memory instead of IndexedDB and does not autosave it (unless you pass your own `storageBackend`), hides project switching and creation (recent stamps carry over from one opened document to the next), and answers the Save button and Ctrl/Cmd+S with a `save-request` event instead of downloading a PNG.
 
 | Member | What it does |
 |--------|--------------|
 | `whenReady()` | Resolves once storage is open and a document is on the canvas. |
-| `openImage(blob, { name })` | Replaces the document with the image, at its own size, on one layer, with empty history. Transparency is kept. Rejects, changing nothing, when the browser cannot hold a canvas that large. This and `newDocument` run one at a time, in call order. |
+| `openImage(blob, { name })` | Replaces the document with the image, at its own size, on one layer, with empty history. Transparency is kept. Rejects, changing nothing, when the image is larger than the document limit or the browser reports it cannot hold a canvas that large (Safari). This and `newDocument` run one at a time, in call order. |
 | `newDocument(width, height, { name, background })` | Replaces the document with a blank one; `background: null` makes it transparent (default white). |
-| `exportImage({ type, quality, background })` | Commits work in progress (a transform, a floating selection, text) and flattens the visible layers into a `Blob`. Waits for an `openImage`/`newDocument` in progress. Transparent by default; JPEG gets a white background. A browser that cannot encode `type` returns PNG, so check the Blob's `type`. |
+| `exportImage({ type, quality, background })` | Commits work in progress (a transform, a floating selection, text) and flattens the visible layers into a `Blob`. Runs in call order with `openImage`/`newDocument`: it renders the document open when it was called, after any replacement called before it. Transparent by default; JPEG gets a white background. A browser that cannot encode `type` returns PNG, so check the Blob's `type`. |
 | `modified` | True when the document changed since it was opened or last marked saved, including text still being typed. Undoing back to that point makes it false again, unless the undo history has since dropped it (it keeps 50 steps). |
-| `markSaved(blob?)` | Records the document as saved as the export that produced `blob` rendered it, so edits made while the host was storing it, and later exports still in flight, still count as modified. Without `blob`, the last export's document, or the document as it is if nothing was exported. A `blob` exported before the document was replaced is ignored. |
+| `markSaved(blob?)` | Records the document as saved as the export that produced `blob` rendered it, so edits made while the host was storing it, and later exports still in flight, still count as modified. Without `blob`, the last export's document, or the document as it is if nothing was exported. A `blob` exported before the document was replaced is ignored; one `exportImage` did not return counts as no `blob`. |
 | `save-request` event | Save was asked for (button or Ctrl/Cmd+S). Only fired when embedded. |
 | `modified-change` event | `modified` flipped; `detail.modified` is the new value. |
 

@@ -255,9 +255,8 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _dispatchPendingTextChange() {
+    // Heard by drawing-app on this element; not part of the host API.
     this.dispatchEvent(new CustomEvent('pending-text-change', {
-      bubbles: true,
-      composed: true,
       detail: { pending: this.hasPendingText() },
     }));
   }
