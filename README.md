@@ -4,3 +4,39 @@ A drawing app with stamps, and basic tools that run in the browser
 ## Install
 
 On browsers that support Progressive Web Apps, use the browser's install action to add Ketchup to your home screen or applications. Once the app has been loaded online, its interface is also available offline; drawings and projects remain in local browser storage.
+
+## Embedding
+
+Another page can host the editor and keep the image itself, for example an app that stores images on its own server. `npm run build:lib` writes `dist-lib/ketchup.js`, one self-contained ES module (Lit included) that defines the `<drawing-app>` element when loaded:
+
+```html
+<drawing-app embedded tabindex="0" style="height:80vh"></drawing-app>
+<script type="module">
+  import './ketchup.js';
+
+  const app = document.querySelector('drawing-app');
+  await app.whenReady();
+  await app.openImage(await (await fetch('/image.png')).blob(), { name: 'image' });
+
+  app.addEventListener('save-request', async () => {
+    const blob = await app.exportImage({ type: 'image/png' });
+    await fetch('/image.png', { method: 'PUT', body: blob });
+    app.markSaved();
+  });
+</script>
+```
+
+The `embedded` attribute (or property, set before the element is connected) means the host owns the document. The editor then keeps its working state in memory instead of IndexedDB (unless you pass your own `storageBackend`), hides project switching and creation, and answers the Save button and Ctrl/Cmd+S with a `save-request` event instead of downloading a PNG.
+
+| Member | What it does |
+|--------|--------------|
+| `whenReady()` | Resolves once storage is open and a document is on the canvas. |
+| `openImage(blob, { name })` | Replaces the document with the image, at its own size, on one layer, with empty history. Transparency is kept. |
+| `newDocument(width, height, { name, background })` | Replaces the document with a blank one; `background: null` makes it transparent (default white). |
+| `exportImage({ type, quality, background })` | Flattens the visible layers into a `Blob`. Transparent by default; JPEG gets a white background. |
+| `modified` | True when the document changed since it was opened or last marked saved. Undoing back to that point makes it false again. |
+| `markSaved()` | Records the current document as saved. |
+| `save-request` event | Save was asked for (button or Ctrl/Cmd+S). Only fired when embedded. |
+| `modified-change` event | `modified` flipped; `detail.modified` is the new value. |
+
+Both events bubble and cross shadow roots. Documents are limited to 16384 pixels a side.

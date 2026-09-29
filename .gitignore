@@ -4,3 +4,4 @@ dist/
 .vite/
 .idea/
 /.superpowers/
+dist-lib/

@@ -727,6 +727,7 @@ export class AppToolbar extends LitElement {
           if (groupIndex !== -1) this._onMobileToolTap(toolGroups[groupIndex], groupIndex);
         }}>Tool settings</button>
         <div class="popover-divider"></div>
+        ${!this.ctx.embedded ? html`
         <span class="popover-label">Projects</span>
         <div class="project-list">
           ${this.ctx.projectList.map(p => html`
@@ -744,6 +745,7 @@ export class AppToolbar extends LitElement {
           New Project
         </button>
         <div class="popover-divider"></div>
+        ` : ''}
         <button class="menu-btn" title="Save" @click=${() => { this.ctx.saveCanvas(); this._closePopover(); }}>${actionIcons.save} Save</button>
         <button class="menu-btn" title="Clear canvas" @click=${() => { this.ctx.clearCanvas(); this._closePopover(); }}>${actionIcons.clear} Clear</button>
         <div class="popover-divider"></div>

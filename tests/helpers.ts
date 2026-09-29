@@ -158,6 +158,7 @@ export function makeAppCanvasStub(overrides: Record<string, unknown> = {}) {
     duplicateInPlace: vi.fn(),
     clearCanvas: vi.fn(),
     saveCanvas: vi.fn(),
+    renderFlattened: vi.fn(() => makeCanvas(4, 4)),
     mainCanvas: null,
     hasClipboardData: false,
     hasCropRect: false,

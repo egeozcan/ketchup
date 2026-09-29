@@ -6,7 +6,7 @@ import { blendModeToCompositeOp, type BlendMode, type BrushDescriptor, type TipD
 import { getDefaultDescriptor, getPresetById } from '../engine/brush-presets.js';
 import type { DrawingState, HistoryEntry, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
-import { IndexedDBBackend, ProjectService, StorageQuotaError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
+import { IndexedDBBackend, MemoryBackend, ProjectService, StorageQuotaError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
 import type { StorageBackend, BlobStore, BlobRef, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord } from '../storage/types.js';
 import { canvasToBlob } from '../utils/canvas-helpers.js';
 import { hashImageData } from '../utils/image-diff.js';
@@ -139,6 +139,23 @@ export class DrawingApp extends LitElement {
   @property({ attribute: false })
   storageBackend?: StorageBackend;
 
+  /**
+   * The page hosting this element owns the document: it loads it with
+   * `openImage()`/`newDocument()`, reads it back with `exportImage()`, and
+   * keeps it wherever it keeps documents. Embedded, the element:
+   *
+   * - stores its working state in memory unless `storageBackend` is given,
+   *   so nothing is left behind in the browser's IndexedDB;
+   * - hides project switching, creation, renaming and deletion;
+   * - answers Save (the toolbar button and Ctrl/Cmd+S) with a `save-request`
+   *   event instead of downloading a PNG.
+   *
+   * Read once, when the element connects, so set it before inserting the
+   * element (the `embedded` attribute in markup does that).
+   */
+  @property({ type: Boolean, reflect: true })
+  embedded = false;
+
   @state() private _storageState: 'loading' | 'ready' | 'error' = 'loading';
   @state() private _storageError?: string;
   @state() private _backend?: StorageBackend;
@@ -149,6 +166,20 @@ export class DrawingApp extends LitElement {
   private _storageProvider?: ContextProvider<typeof storageBackendContext>;
   private _serviceProvider?: ContextProvider<typeof projectServiceContext>;
   private _initPromise?: Promise<void>;
+  private _resolveReady!: () => void;
+  private _rejectReady!: (err: unknown) => void;
+  /** Settles once storage is open and the first document is on the canvas. */
+  private _ready = new Promise<void>((resolve, reject) => {
+    this._resolveReady = resolve;
+    this._rejectReady = reject;
+  });
+  /**
+   * The history entry on top of the undo stack when the host last saved the
+   * document (null: the empty stack). The document is modified exactly when
+   * the top differs, so undoing back to the saved state reads as unmodified.
+   */
+  private _savedHistoryTop: HistoryEntry | null = null;
+  private _lastReportedModified = false;
 
   /** Longest side of the project thumbnail stored with each save. */
   private static readonly THUMBNAIL_SIZE = 256;
@@ -211,6 +242,8 @@ export class DrawingApp extends LitElement {
 
   constructor() {
     super();
+    // whenReady() callers see the failure; nobody awaiting it is not an error.
+    this._ready.catch(() => {});
     const layer = this._createLayer(800, 600);
     this._state = {
       activeTool: 'pencil',
@@ -806,6 +839,11 @@ export class DrawingApp extends LitElement {
     }
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
+    if (ctrl && key === 's' && this.embedded) {
+      e.preventDefault();
+      this._requestSave();
+      return;
+    }
     if (ctrl && key === 't') {
       e.preventDefault();
       this.canvas?.enterTransformMode();
@@ -919,7 +957,7 @@ export class DrawingApp extends LitElement {
     }
   };
 
-  private async _resetToFreshProject(width = 800, height = 600) {
+  private async _resetToFreshProject(width = 800, height = 600, background: string | null = '#ffffff') {
     this.canvas?.clearSelection();
     this._layerCounter = 0;
     const w = width;
@@ -951,9 +989,11 @@ export class DrawingApp extends LitElement {
     };
     await this.updateComplete;
     this.canvas?.setHistory([], -1);
-    const ctx = layer.canvas.getContext('2d')!;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
+    if (background) {
+      const ctx = layer.canvas.getContext('2d')!;
+      ctx.fillStyle = background;
+      ctx.fillRect(0, 0, layer.canvas.width, layer.canvas.height);
+    }
     this.canvas?.composite();
     this._dirty = false;
     // Storage may still hold history for this project (e.g. a load that
@@ -1113,7 +1153,8 @@ export class DrawingApp extends LitElement {
       undo: () => this.canvas?.undo(),
       redo: () => this.canvas?.redo(),
       clearCanvas: () => this.canvas?.clearCanvas(),
-      saveCanvas: () => this.canvas?.saveCanvas(),
+      saveCanvas: () => this._requestSave(),
+      embedded: this.embedded,
       // Layer operations
       addLayer: (name?: string) => {
         this.canvas?.clearSelection();
@@ -1454,6 +1495,151 @@ export class DrawingApp extends LitElement {
     this._canUndo = e.detail.canUndo;
     this._canRedo = e.detail.canRedo;
     this._markDirty();
+    this._reportModified();
+  }
+
+  // ── Host API ──────────────────────────────────────────────
+  // For pages that embed this element and keep the document themselves; see
+  // `embedded`. Everything here also works on a standalone app.
+
+  /** Resolves once storage is open and a document is on the canvas; rejects if storage failed. */
+  whenReady(): Promise<void> {
+    return this._ready;
+  }
+
+  /**
+   * Replace the document with `source`, at the image's own size, on a single
+   * layer, with empty history. The image is not composited over white, so its
+   * transparency survives `exportImage({ background: null })`.
+   */
+  async openImage(source: Blob, options: { name?: string } = {}): Promise<void> {
+    await this._ready;
+    const bitmap = await createImageBitmap(source);
+    try {
+      await this._replaceDocument(bitmap.width, bitmap.height, null, options.name ?? 'Untitled');
+      this._state.layers[0].canvas.getContext('2d')!.drawImage(bitmap, 0, 0);
+    } finally {
+      bitmap.close();
+    }
+    await this._showWholeDocument();
+    this._markDirty();
+    this._markSaved();
+  }
+
+  /** Replace the document with a blank one; `background: null` leaves it transparent. */
+  async newDocument(
+    width: number,
+    height: number,
+    options: { name?: string; background?: string | null } = {},
+  ): Promise<void> {
+    await this._ready;
+    await this._replaceDocument(width, height, options.background === undefined ? '#ffffff' : options.background, options.name ?? 'Untitled');
+    await this._showWholeDocument();
+    this._markDirty();
+    this._markSaved();
+  }
+
+  /**
+   * Flatten the visible layers into an encoded image. `background` defaults
+   * to none (transparent), except for JPEG, which has no alpha and gets white.
+   * An in-progress transform is included where it currently sits.
+   */
+  async exportImage(options: { type?: string; quality?: number; background?: string | null } = {}): Promise<Blob> {
+    await this._ready;
+    const type = options.type ?? 'image/png';
+    const background = options.background !== undefined
+      ? options.background
+      : (type === 'image/jpeg' ? '#ffffff' : null);
+    const canvas = this.canvas.renderFlattened(background);
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (blob) resolve(blob);
+        else reject(new Error(`Could not encode the image as ${type}`));
+      }, type, options.quality);
+    });
+  }
+
+  /** True when the document changed since it was opened or last `markSaved()`. */
+  get modified(): boolean {
+    if (!this.canvas) return false;
+    return this._historyTop() !== this._savedHistoryTop || this.canvas.isTransformActive();
+  }
+
+  /** Record the current document as the saved one; `modified` reads false until the next change. */
+  markSaved(): void {
+    this._markSaved();
+  }
+
+  /** Center a document that fits the view at 100%, and zoom one that does not out until it does. */
+  private async _showWholeDocument() {
+    // The canvas takes the new document size from context on its own update.
+    await this.updateComplete;
+    const canvas = this.canvas;
+    if (!canvas) return;
+    await canvas.updateComplete;
+    const fits = this._state.documentWidth <= canvas.clientWidth && this._state.documentHeight <= canvas.clientHeight;
+    if (fits) canvas.centerDocument();
+    else canvas.zoomToFit();
+    canvas.composite();
+  }
+
+  private _historyTop(): HistoryEntry | null {
+    const index = this.canvas?.getHistoryIndex() ?? -1;
+    return index >= 0 ? this.canvas.getHistory()[index] ?? null : null;
+  }
+
+  private _markSaved() {
+    this._savedHistoryTop = this._historyTop();
+    this._reportModified();
+  }
+
+  /** Fires `modified-change` when `modified` flips. */
+  private _reportModified() {
+    const modified = this.modified;
+    if (modified === this._lastReportedModified) return;
+    this._lastReportedModified = modified;
+    this.dispatchEvent(new CustomEvent('modified-change', {
+      detail: { modified },
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  /** Save, as the host sees it: embedded, the host is asked; standalone, a PNG downloads. */
+  private _requestSave() {
+    if (!this.embedded) {
+      this.canvas?.saveCanvas();
+      return;
+    }
+    // Commit a floating selection so the host exports what the reader sees.
+    this.canvas?.clearSelection();
+    this.dispatchEvent(new CustomEvent('save-request', { bubbles: true, composed: true }));
+  }
+
+  /**
+   * Start a new project holding a fresh document and make it current.
+   * Embedded, the previous project is deleted: the host keeps the document,
+   * so keeping old ones here would only hold their memory.
+   */
+  private async _replaceDocument(width: number, height: number, background: string | null, name: string) {
+    const MAX_DIMENSION = 16384;
+    if (!(width > 0 && height > 0 && width <= MAX_DIMENSION && height <= MAX_DIMENSION)) {
+      throw new RangeError(`Document size ${width}\u00d7${height} is outside 1\u2013${MAX_DIMENSION} pixels`);
+    }
+    this.canvas?.cancelCrop();
+    this.canvas?.clearSelection();
+    if (this._savePromise || this._dirty) {
+      await this._flushPendingSaveAndWait();
+    }
+    const previous = this._currentProject;
+    const meta = await this._backend!.projects.create({ name, thumbnailRef: null });
+    await this._enterProject(meta, async () => {
+      await this._resetToFreshProject(Math.round(width), Math.round(height), background);
+    });
+    if (this.embedded && previous) {
+      await this._projectService!.deleteProject(previous.id);
+    }
+    this._projectList = await this._backend!.projects.list();
   }
 
   private _onViewportChange() {
@@ -1618,7 +1804,7 @@ export class DrawingApp extends LitElement {
   private async _doInitStorage() {
     try {
       const callerSupplied = !!this.storageBackend;
-      const backend = this.storageBackend ?? new IndexedDBBackend();
+      const backend = this.storageBackend ?? (this.embedded ? new MemoryBackend() : new IndexedDBBackend());
       await backend.init();
       this._backend = backend;
       this._ownsBackend = !callerSupplied;
@@ -1636,7 +1822,10 @@ export class DrawingApp extends LitElement {
       // Cannot rely on firstUpdated() because it fires after the first render,
       // which happens before this async init completes.
       await this._bootstrapProjects();
+      this._markSaved();
+      this._resolveReady();
     } catch (e) {
+      this._rejectReady(e);
       console.error('Storage initialization failed:', e);
       this._storageState = 'error';
       this._storageError = 'Could not open local storage. Try reloading or checking browser storage settings.';

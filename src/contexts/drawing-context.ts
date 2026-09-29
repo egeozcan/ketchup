@@ -15,7 +15,10 @@ export interface DrawingContextValue {
   undo: () => void;
   redo: () => void;
   clearCanvas: () => void;
+  /** Save: downloads a PNG standalone, asks the host (`save-request`) when embedded. */
   saveCanvas: () => void;
+  /** A host page owns the document; project management is its business. See `DrawingApp.embedded`. */
+  embedded: boolean;
   // Layer operations
   addLayer: (name?: string) => string;
   deleteLayer: (id: string) => void;

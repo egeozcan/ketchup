@@ -1080,6 +1080,7 @@ export class LayersPanel extends LitElement {
           ${isEditing
             ? html`<input
                 class="layer-name-input"
+                aria-label="Layer name"
                 .value=${layer.name}
                 @keydown=${(e: KeyboardEvent) => this._onRenameKeyDown(layer.id, e)}
                 @blur=${(e: FocusEvent) => this._onRenameBlur(layer.id, e)}
@@ -1124,6 +1125,7 @@ export class LayersPanel extends LitElement {
           ? html`
             <div class="opacity-row">
               <select class="blend-mode-select"
+                aria-label=${`Blend mode of ${layer.name}`}
                 .value=${layer.blendMode}
                 @change=${(e: Event) => this.ctx.setLayerBlendMode(layer.id, (e.target as HTMLSelectElement).value as any)}>
                 ${Object.entries(BLEND_MODE_LABELS).map(([value, label]) => html`
@@ -1136,6 +1138,7 @@ export class LayersPanel extends LitElement {
                 type="range"
                 min="0"
                 max="100"
+                aria-label=${`Opacity of ${layer.name}`}
                 .value=${String(Math.round(layer.opacity * 100))}
                 @pointerdown=${() => this._onOpacityPointerDown(layer)}
                 @input=${(e: Event) => this._onOpacityInput(layer.id, e)}

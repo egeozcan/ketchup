@@ -1229,14 +1229,20 @@ export class DrawingCanvas extends LitElement {
     this.composite();
   }
 
-  public saveCanvas() {
-    // Composite onto a temp canvas without checkerboard for clean export
+  /**
+   * Flattens every visible layer (plus any active transform at its layer's
+   * z-position) onto a new canvas at document size, without the checkerboard.
+   * `background` fills the canvas first; `null` keeps transparency.
+   */
+  public renderFlattened(background: string | null = '#ffffff'): HTMLCanvasElement {
     const exportCanvas = document.createElement('canvas');
     exportCanvas.width = this._docWidth;
     exportCanvas.height = this._docHeight;
     const exportCtx = exportCanvas.getContext('2d')!;
-    exportCtx.fillStyle = '#ffffff';
-    exportCtx.fillRect(0, 0, this._docWidth, this._docHeight);
+    if (background) {
+      exportCtx.fillStyle = background;
+      exportCtx.fillRect(0, 0, this._docWidth, this._docHeight);
+    }
     const state = this._ctx.value?.state;
     const layers = state?.layers ?? [];
     const activeLayerId = state?.activeLayerId ?? null;
@@ -1252,6 +1258,12 @@ export class DrawingCanvas extends LitElement {
       exportCtx.globalCompositeOperation = 'source-over';
       exportCtx.globalAlpha = 1.0;
     }
+    return exportCanvas;
+  }
+
+  public saveCanvas() {
+    // Composite onto a temp canvas without checkerboard for clean export
+    const exportCanvas = this.renderFlattened('#ffffff');
     const link = document.createElement('a');
     link.download = 'drawing.png';
     link.href = exportCanvas.toDataURL('image/png');
@@ -3223,6 +3235,7 @@ export class DrawingCanvas extends LitElement {
     ta.setAttribute('autocorrect', 'off');
     ta.setAttribute('autocapitalize', 'off');
     ta.setAttribute('spellcheck', 'false');
+    ta.setAttribute('aria-label', 'Text');
     ta.addEventListener('input', () => {
       if (this._textEditing) {
         this._startTextCursorBlink();

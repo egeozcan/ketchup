@@ -46,6 +46,10 @@ Uses a discriminated union `HistoryEntry` type (max 50 entries) supporting: `pat
 
 `stamp-store.ts` stores recent stamp images as Blobs (max 20 per project, auto-pruned) in the `project-stamps` object store within the `ketchup-projects` database, scoped by project ID.
 
+### Embedding
+
+`drawing-app` doubles as an embeddable editor for pages that keep the image themselves. The `embedded` flag (read at connect) switches the default backend to `MemoryBackend`, hides project management in `tool-settings`/`app-toolbar` (via `embedded` on the context), and turns Save and Ctrl/Cmd+S into a `save-request` event. The host API on `DrawingApp` is `whenReady`, `openImage`, `newDocument`, `exportImage`, `modified`/`markSaved` and the `modified-change` event; `modified` compares the undo stack's top entry with the one recorded at the last save. `npm run build:lib` (`vite.lib.config.ts`) bundles `src/index.ts` into `dist-lib/ketchup.js`. See README "Embedding".
+
 ### Deployment
 
 Vite base path is `/ketchup/` (configured in `vite.config.ts`) for GitHub Pages.
