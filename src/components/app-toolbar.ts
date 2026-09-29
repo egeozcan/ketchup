@@ -7,6 +7,9 @@ import { toolIcons, toolLabels, toolShortcuts, actionIcons, CHILD_TOOLS, shapesI
 import { SHAPE_TOOLS, isShapeTool } from '../tools/shapes.js';
 import './tool-settings.js';
 
+/** Modifier-key prefix for shortcut hints: ⌘ on Apple platforms, Ctrl+ elsewhere. */
+const modKey = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '\u2318' : 'Ctrl+';
+
 const shapeToolGroup: ToolType[] = [...SHAPE_TOOLS];
 
 const toolGroups: ToolType[][] = [
@@ -467,6 +470,7 @@ export class AppToolbar extends LitElement {
                   class=${isShapeTool(activeTool) ? 'active' : ''}
                   title="Shapes (U)"
                   aria-label="Shapes"
+                  aria-pressed=${isShapeTool(activeTool)}
                   @click=${() => this._selectTool(
                     isShapeTool(activeTool)
                       ? activeTool
@@ -496,7 +500,7 @@ export class AppToolbar extends LitElement {
       <div class="action-group">
         <div class="separator"></div>
         <button
-          title="Undo (Ctrl+Z)"
+          title=${`Undo (${modKey}Z)`}
           aria-label="Undo"
           ?disabled=${!this.ctx.canUndo}
           @click=${() => this.ctx.undo()}
@@ -504,7 +508,7 @@ export class AppToolbar extends LitElement {
           ${actionIcons.undo}
         </button>
         <button
-          title="Redo (Ctrl+Shift+Z)"
+          title=${`Redo (${modKey}Shift+Z)`}
           aria-label="Redo"
           ?disabled=${!this.ctx.canRedo}
           @click=${() => this.ctx.redo()}

@@ -33,10 +33,9 @@ function isNoOpPatch(entry: Extract<HistoryEntry, { type: 'patch' }>): boolean {
 /** Turn a project name into a safe download file name (without extension). */
 export function exportFileBaseName(projectName: string | undefined): string {
   const cleaned = (projectName ?? '')
-    .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-')
+    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]+/g, '-')
     .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/^[.-]+|[.-]+$/g, '');
+    .replace(/^[.\s]+|[.\s]+$/g, '');
   return cleaned || 'drawing';
 }
 
@@ -1418,6 +1417,7 @@ export class DrawingCanvas extends LitElement {
 
   /** Show the whole document: 100% when it fits, otherwise fit it to the viewport. */
   public resetView() {
+    if (!this.mainCanvas) return;
     this._setCenteredZoom(Math.min(1, this._fitZoom()));
   }
 

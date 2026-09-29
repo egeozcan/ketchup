@@ -475,6 +475,39 @@ describe('DrawingApp', () => {
     errorSpy.mockRestore();
   });
 
+  it('does not mark a project dirty when a failed load falls back to a fresh project', async () => {
+    const app = createAppWithCanvasSpies();
+    Object.defineProperty(app, 'updateComplete', {
+      configurable: true,
+      get: () => Promise.resolve(true),
+    });
+    (app as any)._backend = {
+      state: { get: vi.fn(async () => { throw new Error('read failed'); }) },
+    };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await (app as any)._loadProject('test-project');
+
+    // A save now would overwrite the stored project with the blank fallback.
+    expect((app as any)._dirty).toBe(false);
+    expect((app as any).canvas.resetView).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('closes the layers panel on mobile and restores the desktop setting afterwards', () => {
+    const app = createAppWithCanvasSpies();
+    (app as any)._state = { ...(app as any)._state, layersPanelOpen: true };
+
+    (app as any)._updateMobileLayout(400);
+    expect((app as any)._state.layersPanelOpen).toBe(false);
+    // Saves made while on mobile keep the desktop preference.
+    expect((app as any)._desktopLayersPanelOpen).toBe(true);
+
+    (app as any)._updateMobileLayout(1200);
+    expect((app as any)._state.layersPanelOpen).toBe(true);
+    expect((app as any)._desktopLayersPanelOpen).toBeNull();
+  });
+
   it('restores advanced brush, crop, and text settings from saved project state', async () => {
     const app = createAppWithCanvasSpies();
 

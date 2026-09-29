@@ -49,7 +49,9 @@ describe('exportFileBaseName', () => {
   });
 
   it('replaces characters that are invalid in file names', () => {
-    expect(exportFileBaseName('a/b:c*?')).toBe('a-b-c');
+    expect(exportFileBaseName('a/b:c*?')).toBe('a-b-c-');
+    expect(exportFileBaseName('-draft-')).toBe('-draft-');
+    expect(exportFileBaseName('tab\there\u007f.')).toBe('tab-here-');
   });
 
   it('falls back to "drawing" for empty or missing names', () => {
