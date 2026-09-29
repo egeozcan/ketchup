@@ -146,9 +146,9 @@ class MemoryStampStore implements StampStore {
       .filter((s) => s.projectId === projectId)
       .sort((a, b) => b.createdAt - a.createdAt);
   }
-  async add(projectId: string, data: Blob | ArrayBuffer): Promise<StampEntry> {
+  async add(projectId: string, data: Blob | ArrayBuffer, createdAt = Date.now()): Promise<StampEntry> {
     const blobRef = await this._blobs.put(data);
-    const entry: StampEntry = { id: this._newId(), projectId, blobRef, createdAt: Date.now() };
+    const entry: StampEntry = { id: this._newId(), projectId, blobRef, createdAt };
     this._stamps.set(entry.id, entry);
     return entry;
   }

@@ -433,15 +433,17 @@ describe('embedded host API', () => {
     const app = await connected(Object.assign(new DrawingApp(), { embedded: true }));
     const backend = (app as any)._backend as MemoryBackend;
     const first = (app as any)._currentProject.id;
-    await backend.stamps.add(first, new Blob(['a']));
-    await backend.stamps.add(first, new Blob(['b']));
+    await backend.stamps.add(first, new Blob(['a']), 1000);
+    await backend.stamps.add(first, new Blob(['b']), 2000);
     await app.newDocument(16, 8);
     const stamps = await backend.stamps.list((app as any)._currentProject.id);
     expect(stamps).toHaveLength(2);
+    // Newest first, as before: the copies keep their stamps' times.
+    expect(await Promise.all(stamps.map(async (st) => (await backend.blobs.get(st.blobRef)).text()))).toEqual(['b', 'a']);
     expect(await backend.stamps.list(first)).toHaveLength(0);
   });
 
-  it('refuses an image over the document limit before trying to allocate it', async () => {
+  it('refuses an image over the document limit before making a canvas for it', async () => {
     const app = await connected(Object.assign(new DrawingApp(), { embedded: true }));
     vi.stubGlobal('createImageBitmap', async () => ({ width: 20000, height: 10, close() {} }));
     const create = vi.spyOn(document, 'createElement');

@@ -7,7 +7,7 @@ import { getDefaultDescriptor, getPresetById } from '../engine/brush-presets.js'
 import type { DrawingState, HistoryEntry, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
 import { IndexedDBBackend, MemoryBackend, ProjectService, StorageQuotaError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
-import type { StorageBackend, BlobStore, BlobRef, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord } from '../storage/types.js';
+import type { StorageBackend, BlobStore, BlobRef, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord, StampEntry } from '../storage/types.js';
 import { canvasToBlob } from '../utils/canvas-helpers.js';
 import { hashImageData } from '../utils/image-diff.js';
 import {
@@ -32,6 +32,8 @@ interface DocumentMark {
 }
 
 const MOBILE_ENTER_WIDTH = 768;
+const MOBILE_EXIT_WIDTH = 800;
+
 const MAX_DOCUMENT_DIMENSION = 16384;
 
 function checkDocumentSize(width: number, height: number) {
@@ -39,7 +41,6 @@ function checkDocumentSize(width: number, height: number) {
     throw new RangeError(`Document size ${width}\u00d7${height} is outside 1\u2013${MAX_DOCUMENT_DIMENSION} pixels`);
   }
 }
-const MOBILE_EXIT_WIDTH = 800;
 
 /**
  * The compact layout is chosen by width alone, with hysteresis around the
@@ -886,7 +887,7 @@ export class DrawingApp extends LitElement {
   private _onKeyDown = (e: KeyboardEvent) => {
     // Embedded, Ctrl/Cmd+S saves from anywhere, text fields included, rather
     // than falling through to the browser's "Save page as".
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's' && this.embedded) {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key.toLowerCase() === 's' || e.code === 'KeyS') && this.embedded) {
       e.preventDefault();
       // A held key repeats; one press is one save.
       if (!e.repeat) this._requestSave();
@@ -1647,9 +1648,7 @@ export class DrawingApp extends LitElement {
       await this._ready;
       this.canvas.clearSelection();
       const canvas = this.canvas.renderFlattened(background);
-      const mark = this._markDocument();
-      this._exportedDocument = mark;
-      return { canvas, mark };
+      return { canvas, mark: this._markDocument() };
     });
     this._documentReplacement = rendered.catch(() => {});
     const { canvas, mark } = await rendered;
@@ -1659,6 +1658,8 @@ export class DrawingApp extends LitElement {
           reject(new Error(`Could not encode the image as ${type}`));
           return;
         }
+        // Only an export the host received is one markSaved() may record.
+        this._exportedDocument = mark;
         this._exportMarks.set(blob, mark);
         resolve(blob);
       }, type, options.quality);
@@ -1806,14 +1807,19 @@ export class DrawingApp extends LitElement {
   /** Best effort: a stamp that cannot be copied is only a stamp to pick again. */
   private async _carryStamps(fromId: string, toId: string) {
     const backend = this._backend!;
+    let stamps: StampEntry[];
     try {
-      const stamps = await backend.stamps.list(fromId);
-      stamps.sort((a, b) => a.createdAt - b.createdAt);
-      for (const stamp of stamps) {
-        await backend.stamps.add(toId, await backend.blobs.get(stamp.blobRef));
-      }
+      stamps = await backend.stamps.list(fromId);
     } catch (err) {
       console.warn('Could not keep the recent stamps:', err);
+      return;
+    }
+    for (const stamp of stamps) {
+      try {
+        await backend.stamps.add(toId, await backend.blobs.get(stamp.blobRef), stamp.createdAt);
+      } catch (err) {
+        console.warn('Could not keep a recent stamp:', err);
+      }
     }
   }
 
