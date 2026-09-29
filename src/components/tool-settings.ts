@@ -1,4 +1,4 @@
-import { LitElement, html, css, nothing } from 'lit';
+import { LitElement, html, css, nothing, svg } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
@@ -12,6 +12,12 @@ import { getStampThumbnailUrl, removeStampThumbnail } from '../utils/stamp-thumb
 import { MAX_STAMP_SIZE, MIN_STAMP_SIZE } from '../tools/stamp-size.js';
 import { SHAPE_TOOLS, isShapeTool } from '../tools/shapes.js';
 import { toolIcons, toolLabels, toolShortcuts } from './tool-icons.js';
+
+/** Icons for the project dropdown's per-row actions. */
+const projectActionIcons = {
+  rename: svg`<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>`,
+  delete: svg`<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`,
+};
 
 const documentPresets = [
   { label: '800 \u00d7 600', width: 800, height: 600 },
@@ -367,23 +373,29 @@ export class ToolSettings extends LitElement {
     .project-item-action {
       background: none;
       border: none;
-      color: #888;
+      color: #bbb;
       cursor: pointer;
-      padding: 0.125rem 0.25rem;
-      font-size: 0.75rem;
-      border-radius: 0.125rem;
-      line-height: 1;
-      width: auto;
-      height: auto;
+      padding: 0;
+      border-radius: 0.25rem;
+      line-height: 0;
+      width: 1.75rem;
+      height: 1.75rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
     }
 
-    .project-item-action:hover {
-      color: #ddd;
+    .project-item-action:hover,
+    .project-item-action:focus-visible {
+      color: #fff;
       background: #555;
     }
 
-    .project-item-action.delete:hover {
-      color: #ff6666;
+    .project-item-action.delete:hover,
+    .project-item-action.delete:focus-visible {
+      color: #ff8080;
+      background: #5a3434;
     }
 
     .project-rename-input {
@@ -1549,8 +1561,18 @@ export class ToolSettings extends LitElement {
                       <span class="project-item-name" @click=${() => this._onSelectProject(p.id)}>
                         ${p.name}
                       </span>
-                      <button class="project-item-action" title="Rename" @click=${(e: Event) => this._startRename(e, p.id)}>&#9998;</button>
-                      <button class="project-item-action delete" title="Delete" @click=${(e: Event) => this._onDeleteProject(e, p.id)}>&#10005;</button>
+                      <button
+                        class="project-item-action"
+                        title="Rename project"
+                        aria-label=${`Rename ${p.name}`}
+                        @click=${(e: Event) => this._startRename(e, p.id)}
+                      >${projectActionIcons.rename}</button>
+                      <button
+                        class="project-item-action delete"
+                        title="Delete project"
+                        aria-label=${`Delete ${p.name}`}
+                        @click=${(e: Event) => this._onDeleteProject(e, p.id)}
+                      >${projectActionIcons.delete}</button>
                     `}
                   </div>
                 `)}

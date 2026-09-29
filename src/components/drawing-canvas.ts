@@ -644,6 +644,7 @@ export class DrawingCanvas extends LitElement {
     const rect = this.getBoundingClientRect();
     const vw = rect.width > 0 ? Math.floor(rect.width) : 800;
     const vh = rect.height > 0 ? Math.floor(rect.height) : 600;
+    this._laidOut = rect.width > 0 && rect.height > 0;
 
     this.mainCanvas.width = vw;
     this.mainCanvas.height = vh;
@@ -697,6 +698,7 @@ export class DrawingCanvas extends LitElement {
 
     const newWidth = Math.floor(rect.width);
     const newHeight = Math.floor(rect.height);
+    this._laidOut = true;
     const oldWidth = this.mainCanvas.width;
     const oldHeight = this.mainCanvas.height;
     if (oldWidth === newWidth && oldHeight === newHeight) return;
@@ -1446,6 +1448,57 @@ export class DrawingCanvas extends LitElement {
 
   public getViewport(): { zoom: number; panX: number; panY: number } {
     return { zoom: this._zoom, panX: this._panX, panY: this._panY };
+  }
+
+  /** Whether the display canvas has been sized from real layout, not the 800×600 fallback. */
+  private _laidOut = false;
+
+  /** The display canvas size in CSS pixels, saved with the viewport so a restore can tell the screen changed. */
+  public getViewportSize(): { width: number; height: number } | null {
+    return this._laidOut ? { width: this._vw, height: this._vh } : null;
+  }
+
+  /**
+   * Restore a saved view. When it was saved on a noticeably different screen
+   * size (a desktop project opened on a phone), or it would leave most of the
+   * document off-screen, show the whole document instead.
+   */
+  public restoreViewport(
+    zoom: number,
+    panX: number,
+    panY: number,
+    savedSize?: { width: number; height: number },
+  ) {
+    if (savedSize && this._laidOut) {
+      if (!DrawingCanvas._similarSize(savedSize, { width: this._vw, height: this._vh })) {
+        this.resetView();
+        return;
+      }
+      // Keep the same document point at the centre, as a window resize does.
+      panX += (this._vw - savedSize.width) / 2;
+      panY += (this._vh - savedSize.height) / 2;
+    }
+    this.setViewport(zoom, panX, panY);
+    if (this._visibleDocumentFraction() < 0.5) this.resetView();
+  }
+
+  private static _similarSize(a: { width: number; height: number }, b: { width: number; height: number }): boolean {
+    const close = (x: number, y: number) => Math.abs(x - y) <= Math.max(x, y) * 0.2;
+    return close(a.width, b.width) && close(a.height, b.height);
+  }
+
+  /**
+   * How much of the document is on screen, relative to the most that could
+   * be: the whole document when it is smaller than the viewport, otherwise a
+   * viewport's worth of it.
+   */
+  private _visibleDocumentFraction(): number {
+    const docW = this._docWidth * this._zoom;
+    const docH = this._docHeight * this._zoom;
+    const visW = Math.max(0, Math.min(this._vw, this._panX + docW) - Math.max(0, this._panX));
+    const visH = Math.max(0, Math.min(this._vh, this._panY + docH) - Math.max(0, this._panY));
+    const possible = Math.min(docW, this._vw) * Math.min(docH, this._vh);
+    return possible > 0 ? (visW * visH) / possible : 0;
   }
 
   public setViewport(zoom: number, panX: number, panY: number) {
