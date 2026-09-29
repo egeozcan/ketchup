@@ -425,6 +425,8 @@ export class DrawingApp extends LitElement {
     this._nextHistoryRecordIndex = records.reduce((next, r) => Math.max(next, r.index + 1), 0);
     this._historyNeedsRewrite = false;
     this._savedLayerBlobs = layerBlobs;
+    // The first save after a load always reads the layers back.
+    this._savedContentVersion = -1;
   }
 
   /**
