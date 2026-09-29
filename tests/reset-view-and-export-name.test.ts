@@ -58,3 +58,51 @@ describe('exportFileBaseName', () => {
     expect(exportFileBaseName('...')).toBe('drawing');
   });
 });
+
+describe('DrawingCanvas.restoreViewport', () => {
+  it('keeps a saved view taken on the same screen size', () => {
+    const canvas = setupCanvas(800, 600, 1200, 800);
+
+    canvas.restoreViewport(2, -300, -200, { width: 1200, height: 800 });
+
+    expect(canvas.getViewport()).toEqual({ zoom: 2, panX: -300, panY: -200 });
+  });
+
+  it('keeps the same point centred when the screen is only a little different', () => {
+    const canvas = setupCanvas(800, 600, 1100, 800);
+
+    canvas.restoreViewport(2, -300, -200, { width: 1200, height: 800 });
+
+    expect(canvas.getViewport()).toEqual({ zoom: 2, panX: -350, panY: -200 });
+  });
+
+  it('shows the whole document when the view was saved on a much larger screen', () => {
+    const canvas = setupCanvas(1920, 1080, 390, 700);
+
+    canvas.restoreViewport(1, 40, 60, { width: 2000, height: 1150 });
+
+    const { zoom, panX, panY } = canvas.getViewport();
+    expect(1920 * zoom).toBeLessThanOrEqual(390);
+    expect(panX).toBeGreaterThanOrEqual(0);
+    expect(panY).toBeGreaterThanOrEqual(0);
+  });
+
+  it('shows the whole document when an older saved view leaves it off-screen', () => {
+    const canvas = setupCanvas(800, 600, 390, 700);
+
+    // No saved screen size (older project), and the pan puts the page past the right edge.
+    canvas.restoreViewport(1, 400, 50);
+
+    const { zoom, panX } = canvas.getViewport();
+    expect(800 * zoom).toBeLessThanOrEqual(390);
+    expect(panX).toBeGreaterThanOrEqual(0);
+  });
+
+  it('keeps an older saved view that still shows most of the document', () => {
+    const canvas = setupCanvas(800, 600, 1200, 800);
+
+    canvas.restoreViewport(1, 250, 150);
+
+    expect(canvas.getViewport()).toEqual({ zoom: 1, panX: 250, panY: 150 });
+  });
+});

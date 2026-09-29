@@ -176,6 +176,8 @@ export class DrawingApp extends LitElement {
   private _contentVersion = 0;
   /** `_contentVersion` as of the last save's snapshot; equal means no layer or setting changed since. */
   private _savedContentVersion = -1;
+  /** A drawing change is waiting to be saved, so the next save shows the saving indicator. */
+  private _unsavedWork = false;
   /**
    * History entries already in storage for the current project, by entry
    * identity, with the record index each was stored under and the blobs it
@@ -324,8 +326,15 @@ export class DrawingApp extends LitElement {
     await this._save(true);
   }
 
-  private _markDirty(viewportOnly = false) {
-    if (!viewportOnly) this._contentVersion++;
+  /**
+   * Schedule an autosave. `kind` says what changed: `'work'` is a change to the
+   * drawing itself (pixels, layers, history, document size) and shows the
+   * saving indicator; `'setting'` (tool, colour, brush, panel state) and
+   * `'viewport'` (pan/zoom) are saved quietly.
+   */
+  private _markDirty(kind: 'work' | 'setting' | 'viewport' = 'work') {
+    if (kind !== 'viewport') this._contentVersion++;
+    if (kind === 'work') this._unsavedWork = true;
     this._dirty = true;
     this._dirtyVersion++;
     this._saveRequested = true;
@@ -341,14 +350,14 @@ export class DrawingApp extends LitElement {
       brush: { ...this._state.brush, ...partial },
       isPresetModified: true,
     };
-    this._markDirty();
+    this._markDirty('setting');
   }
 
   private _updateStampSize(size: number) {
     const stampSize = normalizeStampSize(size, this._state.stampSize);
     if (stampSize === this._state.stampSize) return;
     this._state = { ...this._state, stampSize };
-    this._markDirty();
+    this._markDirty('setting');
   }
 
   /**
@@ -427,6 +436,8 @@ export class DrawingApp extends LitElement {
     this._savedLayerBlobs = layerBlobs;
     // The first save after a load always reads the layers back.
     this._savedContentVersion = -1;
+    // Restoring history during the load isn't a new edit to show as saving.
+    this._unsavedWork = false;
   }
 
   /**
@@ -465,7 +476,6 @@ export class DrawingApp extends LitElement {
 
     this._savePromise = (async () => {
       this._saveInProgress = true;
-      this._saving = true;
       let flushingThisRun = flushing;
       try {
         while (this._currentProject && this._dirty && this._projectLoads === 0) {
@@ -477,6 +487,12 @@ export class DrawingApp extends LitElement {
           this._forceFlushNextSave = false;
           this._saveRequested = false;
           const skipDelay = flushingThisRun || forceFlush;
+          // Only drawing changes show the indicator; tool and viewport changes
+          // save quietly so the spinner doesn't flash on every tool switch.
+          if (this._unsavedWork) {
+            this._unsavedWork = false;
+            this._saving = true;
+          }
 
           // Synchronously snapshot all mutable data before any awaits.
           // Tool settings and dimensions must be captured here so they stay
@@ -541,6 +557,7 @@ export class DrawingApp extends LitElement {
           const layerHashes = layerSnapshots.map(snap =>
             snap.imageData ? hashImageData(snap.imageData) : this._savedLayerBlobs.get(snap.id)!.hash);
           const viewport = this.canvas?.getViewport() ?? { zoom: 1, panX: 0, panY: 0 };
+          const viewportSize = this.canvas?.getViewportSize();
           const historySnapshot = this.canvas?.getHistory() ?? [];
           const historyIndex = this.canvas?.getHistoryIndex() ?? -1;
           const trackingGeneration = this._trackingGeneration;
@@ -624,6 +641,8 @@ export class DrawingApp extends LitElement {
             zoom: viewport.zoom,
             panX: viewport.panX,
             panY: viewport.panY,
+            viewportWidth: viewportSize?.width,
+            viewportHeight: viewportSize?.height,
           };
 
           let thumbnail: Blob | null = null;
@@ -723,7 +742,7 @@ export class DrawingApp extends LitElement {
           // Show saving indicator for a minimum duration so it doesn't flash,
           // but skip the delay when flushing (beforeunload/visibilitychange)
           // to avoid data loss on page close.
-          if (!skipDelay) {
+          if (!skipDelay && this._saving) {
             const elapsed = Date.now() - saveStartTime;
             if (elapsed < 1500) {
               await new Promise(resolve => setTimeout(resolve, 1500 - elapsed));
@@ -832,7 +851,7 @@ export class DrawingApp extends LitElement {
         this.canvas?.cancelCrop();
         this.canvas?.clearSelection();
         this._state = { ...this._state, activeTool: 'select' };
-        this._markDirty();
+        this._markDirty('setting');
       }
       this.canvas?.duplicateInPlace();
     } else if (
@@ -858,7 +877,7 @@ export class DrawingApp extends LitElement {
         this.canvas?.cancelCrop();
         this.canvas?.clearSelection();
         this._state = { ...this._state, activeTool: 'select' };
-        this._markDirty();
+        this._markDirty('setting');
       }
       this.canvas?.selectAllCanvas();
     } else if (ctrl && key === 'a' && !e.shiftKey) {
@@ -867,7 +886,7 @@ export class DrawingApp extends LitElement {
         this.canvas?.cancelCrop();
         this.canvas?.clearSelection();
         this._state = { ...this._state, activeTool: 'select' };
-        this._markDirty();
+        this._markDirty('setting');
       }
       this.canvas?.selectAll();
     } else if (e.key === '0' && ctrl) {
@@ -914,7 +933,7 @@ export class DrawingApp extends LitElement {
         this.canvas?.cancelCrop();
         this.canvas?.clearSelection();
         this._state = { ...this._state, activeTool: tool };
-        this._markDirty();
+        this._markDirty('setting');
       }
     }
   };
@@ -1059,7 +1078,10 @@ export class DrawingApp extends LitElement {
       this._trackLoadedProject(projectId, history, historyRecords, layerBlobs);
       // Restore saved viewport or fall back to centering for legacy records
       if (record.zoom != null && record.panX != null && record.panY != null) {
-        this.canvas?.setViewport(record.zoom, record.panX, record.panY);
+        const savedSize = record.viewportWidth != null && record.viewportHeight != null
+          ? { width: record.viewportWidth, height: record.viewportHeight }
+          : undefined;
+        this.canvas?.restoreViewport(record.zoom, record.panX, record.panY, savedSize);
       } else {
         this.canvas?.resetView();
       }
@@ -1087,19 +1109,19 @@ export class DrawingApp extends LitElement {
           this.canvas?.clearSelection();
         }
         this._state = { ...this._state, activeTool: tool };
-        this._markDirty();
+        this._markDirty('setting');
       },
       setStrokeColor: (color: string) => {
         this._state = { ...this._state, strokeColor: color };
-        this._markDirty();
+        this._markDirty('setting');
       },
       setFillColor: (color: string) => {
         this._state = { ...this._state, fillColor: color };
-        this._markDirty();
+        this._markDirty('setting');
       },
       setUseFill: (useFill: boolean) => {
         this._state = { ...this._state, useFill };
-        this._markDirty();
+        this._markDirty('setting');
       },
       setBrushSize: (size: number) => {
         const safe = Number.isNaN(size) ? this._state.brush.size : size;
@@ -1110,7 +1132,7 @@ export class DrawingApp extends LitElement {
       },
       setStampImage: (img: HTMLImageElement | null, stampId: string | null = null) => {
         this._state = { ...this._state, stampImage: img, activeStampId: img ? stampId : null };
-        this._markDirty();
+        this._markDirty('setting');
       },
       undo: () => this.canvas?.undo(),
       redo: () => this.canvas?.redo(),
@@ -1156,7 +1178,7 @@ export class DrawingApp extends LitElement {
         if (id === this._state.activeLayerId) return;
         this.canvas?.clearSelection();
         this._state = { ...this._state, activeLayerId: id };
-        this._markDirty();
+        this._markDirty('setting');
       },
       setLayerVisibility: (id: string, visible: boolean) => {
         const layer = this._state.layers.find(l => l.id === id);
@@ -1316,28 +1338,28 @@ export class DrawingApp extends LitElement {
       },
       toggleLayersPanel: () => {
         this._state = { ...this._state, layersPanelOpen: !this._state.layersPanelOpen };
-        this._markDirty();
+        this._markDirty('setting');
       },
       setCropAspectRatio: (ratio: string) => {
         this._state = { ...this._state, cropAspectRatio: ratio };
-        this._markDirty();
+        this._markDirty('setting');
       },
       setFontFamily: (family: string) => {
         this._state = { ...this._state, fontFamily: family };
-        this._markDirty();
+        this._markDirty('setting');
       },
       setFontSize: (size: number) => {
         const safe = Number.isFinite(size) ? size : 8;
         this._state = { ...this._state, fontSize: Math.max(8, Math.min(200, safe)) };
-        this._markDirty();
+        this._markDirty('setting');
       },
       setFontBold: (bold: boolean) => {
         this._state = { ...this._state, fontBold: bold };
-        this._markDirty();
+        this._markDirty('setting');
       },
       setFontItalic: (italic: boolean) => {
         this._state = { ...this._state, fontItalic: italic };
-        this._markDirty();
+        this._markDirty('setting');
       },
       setBrush: (partial: Partial<BrushDescriptor>) => { this._updateBrush(partial); },
       setBrushTip: (tip: Partial<TipDescriptor>) => {
@@ -1356,9 +1378,9 @@ export class DrawingApp extends LitElement {
           activePreset: presetId,
           isPresetModified: false,
         };
-        this._markDirty();
+        this._markDirty('setting');
       },
-      setEyedropperSampleAll: (v: boolean) => { this._state = { ...this._state, eyedropperSampleAll: v }; this._markDirty(); },
+      setEyedropperSampleAll: (v: boolean) => { this._state = { ...this._state, eyedropperSampleAll: v }; this._markDirty('setting'); },
       canUndo: this._canUndo,
       canRedo: this._canRedo,
       // Project operations
@@ -1442,7 +1464,7 @@ export class DrawingApp extends LitElement {
         if (on && !CHILD_TOOL_SET.has(this._state.activeTool)) {
           this._state = { ...this._state, activeTool: 'pencil' };
         }
-        this._markDirty();
+        this._markDirty('setting');
       },
     };
   }
@@ -1467,7 +1489,7 @@ export class DrawingApp extends LitElement {
       this._viewportWidth = this.canvas.clientWidth;
       this._viewportHeight = this.canvas.clientHeight;
     }
-    this._markDirty(true);
+    this._markDirty('viewport');
   }
 
   private _onTransformChange() {
