@@ -172,6 +172,10 @@ export class DrawingApp extends LitElement {
   private _saveRequested = false;
   private _forceFlushNextSave = false;
   private _dirtyVersion = 0;
+  /** Bumped by every dirty mark except pure viewport changes (pan/zoom). */
+  private _contentVersion = 0;
+  /** `_contentVersion` as of the last save's snapshot; equal means no layer or setting changed since. */
+  private _savedContentVersion = -1;
   /**
    * History entries already in storage for the current project, by entry
    * identity, with the record index each was stored under and the blobs it
@@ -320,7 +324,8 @@ export class DrawingApp extends LitElement {
     await this._save(true);
   }
 
-  private _markDirty() {
+  private _markDirty(viewportOnly = false) {
+    if (!viewportOnly) this._contentVersion++;
     this._dirty = true;
     this._dirtyVersion++;
     this._saveRequested = true;
@@ -420,6 +425,8 @@ export class DrawingApp extends LitElement {
     this._nextHistoryRecordIndex = records.reduce((next, r) => Math.max(next, r.index + 1), 0);
     this._historyNeedsRewrite = false;
     this._savedLayerBlobs = layerBlobs;
+    // The first save after a load always reads the layers back.
+    this._savedContentVersion = -1;
   }
 
   /**
@@ -464,6 +471,7 @@ export class DrawingApp extends LitElement {
         while (this._currentProject && this._dirty && this._projectLoads === 0) {
           const projectId = this._currentProject.id;
           const dirtyVersionAtSnapshot = this._dirtyVersion;
+          const contentVersionAtSnapshot = this._contentVersion;
           const saveStartTime = Date.now();
           const forceFlush = this._forceFlushNextSave;
           this._forceFlushNextSave = false;
@@ -507,7 +515,15 @@ export class DrawingApp extends LitElement {
           // If a floating selection is active, composite it into the owning
           // layer's snapshot so persisted data never has a hole from the lift.
           const floatSnap = this.canvas?.getFloatSnapshot() ?? null;
+          // Only the viewport moved since the last save and every layer still has
+          // its stored blob: skip the full-canvas readback and hashing.
+          const reuseSaved = !floatSnap
+            && contentVersionAtSnapshot === this._savedContentVersion
+            && this._trackedProjectId === projectId
+            && this._state.layers.every(l => this._savedLayerBlobs.has(l.id));
           const layerSnapshots = this._state.layers.map(l => {
+            const meta = { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode };
+            if (reuseSaved) return { ...meta, imageData: null as ImageData | null };
             const ctx = l.canvas.getContext('2d')!;
             const imageData = ctx.getImageData(0, 0, l.canvas.width, l.canvas.height);
             if (floatSnap && l.id === floatSnap.layerId) {
@@ -518,12 +534,12 @@ export class DrawingApp extends LitElement {
               const tmpCtx = tmp.getContext('2d')!;
               tmpCtx.putImageData(imageData, 0, 0);
               tmpCtx.drawImage(floatSnap.tempCanvas, floatSnap.x, floatSnap.y);
-              return { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode,
-                imageData: tmpCtx.getImageData(0, 0, tmp.width, tmp.height) };
+              return { ...meta, imageData: tmpCtx.getImageData(0, 0, tmp.width, tmp.height) as ImageData | null };
             }
-            return { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode, imageData };
+            return { ...meta, imageData: imageData as ImageData | null };
           });
-          const layerHashes = layerSnapshots.map(snap => hashImageData(snap.imageData));
+          const layerHashes = layerSnapshots.map(snap =>
+            snap.imageData ? hashImageData(snap.imageData) : this._savedLayerBlobs.get(snap.id)!.hash);
           const viewport = this.canvas?.getViewport() ?? { zoom: 1, panX: 0, panY: 0 };
           const historySnapshot = this.canvas?.getHistory() ?? [];
           const historyIndex = this.canvas?.getHistoryIndex() ?? -1;
@@ -577,7 +593,7 @@ export class DrawingApp extends LitElement {
                     blendMode: snap.blendMode, imageBlobRef: saved.blobRef,
                   };
                 }
-                return serializeLayerFromImageData(snap, snap.imageData, trackingBlobs);
+                return serializeLayerFromImageData(snap, snap.imageData!, trackingBlobs);
               }),
             );
 
@@ -650,6 +666,7 @@ export class DrawingApp extends LitElement {
             this._savedLayerBlobs = new Map(layerSnapshots.map((snap, i) => (
               [snap.id, { hash: layerHashes[i], blobRef: layers[i].imageBlobRef }]
             )));
+            this._savedContentVersion = contentVersionAtSnapshot;
           }
 
           // Update project metadata (thumbnail failure is non-fatal for data integrity)
@@ -1448,7 +1465,7 @@ export class DrawingApp extends LitElement {
       this._viewportWidth = this.canvas.clientWidth;
       this._viewportHeight = this.canvas.clientHeight;
     }
-    this._markDirty();
+    this._markDirty(true);
   }
 
   private _onTransformChange() {
