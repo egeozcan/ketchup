@@ -14,21 +14,24 @@ function appWithHistory(embedded: boolean) {
   app.embedded = embedded;
   let history: HistoryEntry[] = [];
   let index = -1;
+  let trimmed = 0;
   const stub = makeAppCanvasStub({
     getHistory: vi.fn(() => [...history]),
     getHistoryIndex: vi.fn(() => index),
+    getHistoryTrimmedCount: vi.fn(() => trimmed),
   });
   Object.defineProperty(app, 'canvas', { configurable: true, value: stub });
-  const setHistory = (entries: HistoryEntry[], i = entries.length - 1) => {
+  const setHistory = (entries: HistoryEntry[], i = entries.length - 1, dropped = trimmed) => {
     history = entries;
     index = i;
+    trimmed = dropped;
     (app as any)._onHistoryChange(new CustomEvent('history-change', { detail: { canUndo: i >= 0, canRedo: i < entries.length - 1 } }));
   };
   return { app, stub, setHistory };
 }
 
-function keydown(app: DrawingApp, key: string, ctrlKey = true) {
-  const e = { key, ctrlKey, metaKey: false, shiftKey: false, altKey: false, preventDefault: vi.fn(), composedPath: () => [app] } as unknown as KeyboardEvent;
+function keydown(app: DrawingApp, key: string, ctrlKey = true, path: EventTarget[] = [app]) {
+  const e = { key, ctrlKey, metaKey: false, shiftKey: false, altKey: false, preventDefault: vi.fn(), composedPath: () => path } as unknown as KeyboardEvent;
   (app as any)._onKeyDown(e);
   return e;
 }
@@ -151,6 +154,75 @@ describe('embedded host API', () => {
     expect(changes).toEqual([true, false, true, false]);
   });
 
+  it('reads as modified once the saved state has dropped off the bottom of the undo history', () => {
+    const { app, setHistory } = appWithHistory(true);
+    const entries = Array.from({ length: 50 }, (_, n) => patch(n));
+    // Fifty-one edits: the first fell off the capped stack.
+    setHistory(entries, 49, 1);
+    // Undoing everything that is left does not undo the edit that was dropped.
+    setHistory(entries, -1, 1);
+    expect(app.modified).toBe(true);
+
+    app.markSaved();
+    expect(app.modified).toBe(false);
+  });
+
+  it('marks saved what was exported, not what was drawn while the host stored it', async () => {
+    const { app, setHistory } = appWithHistory(true);
+    (app as any)._resolveReady();
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb, type) {
+      cb(new Blob(['x'], { type: type ?? 'image/png' }));
+    });
+    const [a, b] = [patch(1), patch(2)];
+    setHistory([a]);
+
+    await app.exportImage();
+    setHistory([a, b]); // drawn during the upload
+    app.markSaved();
+    expect(app.modified).toBe(true);
+
+    setHistory([a, b], 0); // back to what the host stored
+    expect(app.modified).toBe(false);
+
+    // With no export since, markSaved takes the document as it is.
+    setHistory([a, b]);
+    app.markSaved();
+    expect(app.modified).toBe(false);
+  });
+
+  it('commits work in progress before exporting it', async () => {
+    const { app, stub } = appWithHistory(true);
+    (app as any)._resolveReady();
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb, type) {
+      cb(new Blob(['x'], { type: type ?? 'image/png' }));
+    });
+    await app.exportImage();
+    const committed = (stub.clearSelection as any).mock.invocationCallOrder[0];
+    const rendered = (stub.renderFlattened as any).mock.invocationCallOrder[0];
+    expect(committed).toBeLessThan(rendered);
+  });
+
+  it('saves on Ctrl+S from inside a text field when embedded', () => {
+    const { app } = appWithHistory(true);
+    const requests: Event[] = [];
+    app.addEventListener('save-request', (e) => requests.push(e));
+    const input = document.createElement('input');
+    const e = keydown(app, 's', true, [input, app]);
+    expect(e.preventDefault).toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+  });
+
+  it('reports a transform starting and ending as modified-change', () => {
+    const { app, stub } = appWithHistory(true);
+    const changes: boolean[] = [];
+    app.addEventListener('modified-change', (e) => changes.push((e as CustomEvent).detail.modified));
+    (stub.isTransformActive as any).mockReturnValue(true);
+    (app as any)._onTransformChange();
+    (stub.isTransformActive as any).mockReturnValue(false);
+    (app as any)._onTransformChange();
+    expect(changes).toEqual([true, false]);
+  });
+
   it('counts an uncommitted transform as a modification', () => {
     const { app, stub } = appWithHistory(true);
     (stub.isTransformActive as any).mockReturnValue(true);
@@ -201,5 +273,26 @@ describe('embedded host API', () => {
     expect((app as any)._state.documentWidth).toBe(64);
     expect((app as any)._state.documentHeight).toBe(32);
     expect(app.modified).toBe(false);
+  });
+
+  it('replaces the document one call at a time, in the order the calls were made', async () => {
+    const app = new DrawingApp();
+    app.embedded = true;
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    Object.defineProperty(app, 'canvas', { configurable: true, value: makeAppCanvasStub() });
+    document.body.append(app);
+    await app.whenReady();
+    const backend = (app as any)._backend as MemoryBackend;
+
+    const first = app.newDocument(64, 32, { name: 'First' });
+    const refused = app.newDocument(0, 0, { name: 'Refused' });
+    const second = app.newDocument(16, 8, { name: 'Second' });
+    await first;
+    await expect(refused).rejects.toBeInstanceOf(RangeError);
+    await second;
+
+    expect((await backend.projects.list()).map(p => p.name)).toEqual(['Second']);
+    expect((app as any)._state.documentWidth).toBe(16);
+    expect((app as any)._state.documentHeight).toBe(8);
   });
 });

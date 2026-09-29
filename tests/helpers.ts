@@ -156,6 +156,7 @@ export function makeAppCanvasStub(overrides: Record<string, unknown> = {}) {
     getViewportSize: vi.fn(() => ({ width: 800, height: 600 })),
     getHistory: vi.fn(() => []),
     getHistoryIndex: vi.fn(() => -1),
+    getHistoryTrimmedCount: vi.fn(() => 0),
     selectAll: vi.fn(),
     selectAllCanvas: vi.fn(),
     duplicateInPlace: vi.fn(),

@@ -609,7 +609,8 @@ export class AppToolbar extends LitElement {
 
           <button
             class="child-tool-btn"
-            title="Save picture"
+            title=${this._saveLabel}
+            aria-label=${this._saveLabel}
             @click=${() => this.ctx.saveCanvas()}
           >${actionIcons.save}</button>
           <button

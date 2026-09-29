@@ -728,6 +728,8 @@ export class DrawingCanvas extends LitElement {
   private _history: HistoryEntry[] = [];
   private _historyIndex = -1;
   private _maxHistory = 50;
+  /** Entries dropped off the bottom of the stack at the cap, ever; the states before them can no longer be undone to. */
+  private _historyTrimmed = 0;
 
   // --- Public history access for persistence ---
   /** Returns a shallow copy of the history array. Note: entries contain shared
@@ -735,6 +737,7 @@ export class DrawingCanvas extends LitElement {
    *  isolation should snapshot data synchronously before any async work. */
   public getHistory(): HistoryEntry[] { return [...this._history]; }
   public getHistoryIndex(): number { return this._historyIndex; }
+  public getHistoryTrimmedCount(): number { return this._historyTrimmed; }
   public setHistory(entries: HistoryEntry[], index: number) {
     this._history = entries;
     this._historyIndex = Math.max(-1, Math.min(index, entries.length - 1));
@@ -864,6 +867,7 @@ export class DrawingCanvas extends LitElement {
     this._history.push(entry);
     if (this._history.length > this._maxHistory) {
       this._history.shift();
+      this._historyTrimmed++;
     } else {
       this._historyIndex++;
     }
