@@ -4,6 +4,7 @@
 // page goes away. Hosts that embed <drawing-app> and own the document
 // themselves (see `DrawingApp.embedded`) use it so nothing lingers in the
 // browser's IndexedDB; the tests use it through MockBackend.
+import { generateUUID } from '../../utils/uuid.js';
 import type {
   StorageBackend,
   ProjectStore,
@@ -176,7 +177,7 @@ export class MemoryBackend implements StorageBackend {
   readonly stamps: StampStore;
 
   /** `newId` generates project, blob and stamp ids; defaults to random UUIDs. */
-  constructor(newId: () => string = () => crypto.randomUUID()) {
+  constructor(newId: () => string = generateUUID) {
     this.blobs = new MemoryBlobStore(newId);
     this.projects = new MemoryProjectStore(newId);
     this.state = new MemoryStateStore();

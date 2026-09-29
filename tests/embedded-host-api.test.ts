@@ -30,8 +30,8 @@ function appWithHistory(embedded: boolean) {
   return { app, stub, setHistory };
 }
 
-function keydown(app: DrawingApp, key: string, ctrlKey = true, path: EventTarget[] = [app]) {
-  const e = { key, ctrlKey, metaKey: false, shiftKey: false, altKey: false, preventDefault: vi.fn(), composedPath: () => path } as unknown as KeyboardEvent;
+function keydown(app: DrawingApp, key: string, ctrlKey = true, path: EventTarget[] = [app], repeat = false) {
+  const e = { key, ctrlKey, repeat, metaKey: false, shiftKey: false, altKey: false, preventDefault: vi.fn(), composedPath: () => path } as unknown as KeyboardEvent;
   (app as any)._onKeyDown(e);
   return e;
 }
@@ -223,6 +223,51 @@ describe('embedded host API', () => {
     expect(changes).toEqual([true, false]);
   });
 
+  it('starts on a plain-HTTP page, where crypto.randomUUID is missing', async () => {
+    const real = globalThis.crypto;
+    vi.stubGlobal('crypto', { getRandomValues: (a: Uint8Array) => real.getRandomValues(a) });
+    const app = new DrawingApp();
+    app.embedded = true;
+    await connected(app);
+    expect((app as any)._currentProject.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect((app as any)._state.layers[0].id).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('marks saved the export that landed, even after a later export', async () => {
+    const { app, setHistory } = appWithHistory(true);
+    (app as any)._resolveReady();
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb, type) {
+      cb(new Blob(['x'], { type: type ?? 'image/png' }));
+    });
+    const [a, b] = [patch(1), patch(2)];
+    setHistory([a]);
+    const first = await app.exportImage();
+    setHistory([a, b]);
+    await app.exportImage(); // a second save, still uploading
+    app.markSaved(first);   // the first one landed
+    expect(app.modified).toBe(true);
+    setHistory([a, b], 0);
+    expect(app.modified).toBe(false);
+  });
+
+  it('leaves the leave-page prompt to the host when embedded', () => {
+    const { app } = appWithHistory(true);
+    (app as any)._dirty = true;
+    const e = { preventDefault: vi.fn() } as unknown as BeforeUnloadEvent;
+    (app as any)._onBeforeUnload(e);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it('asks for one save per Ctrl+S press, not per key repeat', () => {
+    const { app } = appWithHistory(true);
+    const requests: Event[] = [];
+    app.addEventListener('save-request', (e) => requests.push(e));
+    keydown(app, 's');
+    const held = keydown(app, 's', true, [app], true);
+    expect(held.preventDefault).toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+  });
+
   it('counts an uncommitted transform as a modification', () => {
     const { app, stub } = appWithHistory(true);
     (stub.isTransformActive as any).mockReturnValue(true);
@@ -253,6 +298,8 @@ describe('embedded host API', () => {
     const { app } = appWithHistory(true);
     await expect((app as any)._replaceDocument(20000, 10, null, 'big')).rejects.toBeInstanceOf(RangeError);
     await expect((app as any)._replaceDocument(0, 10, null, 'empty')).rejects.toBeInstanceOf(RangeError);
+    // Validated after rounding, or 0.4 would pass and make a 0-pixel canvas.
+    await expect((app as any)._replaceDocument(0.4, 10, null, 'thin')).rejects.toBeInstanceOf(RangeError);
   });
 
   it('replaces the embedded document without keeping the previous project', async () => {

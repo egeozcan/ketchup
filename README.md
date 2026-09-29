@@ -21,7 +21,7 @@ Another page can host the editor and keep the image itself, for example an app t
   app.addEventListener('save-request', async () => {
     const blob = await app.exportImage({ type: 'image/png' });
     const res = await fetch('/image.png', { method: 'PUT', body: blob });
-    if (res.ok) app.markSaved();
+    if (res.ok) app.markSaved(blob);
   });
 </script>
 ```
@@ -33,9 +33,9 @@ The `embedded` attribute (or property, set before the element is connected) mean
 | `whenReady()` | Resolves once storage is open and a document is on the canvas. |
 | `openImage(blob, { name })` | Replaces the document with the image, at its own size, on one layer, with empty history. Transparency is kept. This and `newDocument` run one at a time, in call order. |
 | `newDocument(width, height, { name, background })` | Replaces the document with a blank one; `background: null` makes it transparent (default white). |
-| `exportImage({ type, quality, background })` | Commits work in progress (a transform, a floating selection, text) and flattens the visible layers into a `Blob`. Transparent by default; JPEG gets a white background. |
+| `exportImage({ type, quality, background })` | Commits work in progress (a transform, a floating selection, text) and flattens the visible layers into a `Blob`. Transparent by default; JPEG gets a white background. A browser that cannot encode `type` returns PNG, so check the Blob's `type`. |
 | `modified` | True when the document changed since it was opened or last marked saved. Undoing back to that point makes it false again, unless the undo history has since dropped it (it keeps 50 steps). |
-| `markSaved()` | Records the document as the last `exportImage()` rendered it as saved, so edits made while the host was storing it still count as modified. With no export since the document was opened, records the document as it is. |
+| `markSaved(blob?)` | Records the document as saved as the export that produced `blob` rendered it, so edits made while the host was storing it, and later exports still in flight, still count as modified. Without `blob`, the last export's document, or the document as it is if nothing was exported. |
 | `save-request` event | Save was asked for (button or Ctrl/Cmd+S). Only fired when embedded. |
 | `modified-change` event | `modified` flipped; `detail.modified` is the new value. |
 

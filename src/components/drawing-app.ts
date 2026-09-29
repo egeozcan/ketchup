@@ -18,6 +18,7 @@ import { toolForShortcut, CHILD_TOOL_SET } from './tool-icons.js';
 import { DEFAULT_STAMP_SIZE, normalizeStampSize } from '../tools/stamp-size.js';
 import './app-toolbar.js';
 import './tool-settings.js';
+import { generateUUID } from '../utils/uuid.js';
 import './drawing-canvas.js';
 import './layers-panel.js';
 import './navigator-panel.js';
@@ -119,7 +120,7 @@ export class DrawingApp extends LitElement {
     canvas.width = width;
     canvas.height = height;
     return {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       name: `Layer ${this._layerCounter}`,
       visible: true,
       opacity: 1.0,
@@ -188,8 +189,10 @@ export class DrawingApp extends LitElement {
    * which no amount of undoing returns to.
    */
   private _savedDocument: DocumentMark = { top: null, trimmed: 0 };
-  /** The document as `exportImage` last rendered it; what `markSaved` records. */
+  /** The document as `exportImage` last rendered it; what `markSaved()` records. */
   private _exportedDocument: DocumentMark | null = null;
+  /** The document each exported Blob was rendered from, for `markSaved(blob)`. */
+  private _exportMarks = new WeakMap<Blob, DocumentMark>();
   private _lastReportedModified = false;
   /** Serializes `openImage`/`newDocument`, which each replace the whole document. */
   private _documentReplacement: Promise<unknown> = Promise.resolve();
@@ -338,6 +341,9 @@ export class DrawingApp extends LitElement {
   }
 
   private _onBeforeUnload = (e: BeforeUnloadEvent) => {
+    // Embedded, the working copy is in memory and the host owns the document;
+    // the host decides whether leaving needs a prompt (from `modified`).
+    if (this.embedded) return;
     // Commit any active float so the layer canvas includes the selection content.
     this.canvas?.clearSelection();
     if (this._dirty) {
@@ -860,7 +866,8 @@ export class DrawingApp extends LitElement {
     // than falling through to the browser's "Save page as".
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && this.embedded) {
       e.preventDefault();
-      this._requestSave();
+      // A held key repeats; one press is one save.
+      if (!e.repeat) this._requestSave();
       return;
     }
     if (this._isTextEntryTarget(e)) {
@@ -1599,11 +1606,16 @@ export class DrawingApp extends LitElement {
       : (type === 'image/jpeg' ? '#ffffff' : null);
     this.canvas.clearSelection();
     const canvas = this.canvas.renderFlattened(background);
-    this._exportedDocument = this._markDocument();
+    const mark = this._markDocument();
+    this._exportedDocument = mark;
     return new Promise((resolve, reject) => {
       canvas.toBlob((blob) => {
-        if (blob) resolve(blob);
-        else reject(new Error(`Could not encode the image as ${type}`));
+        if (!blob) {
+          reject(new Error(`Could not encode the image as ${type}`));
+          return;
+        }
+        this._exportMarks.set(blob, mark);
+        resolve(blob);
       }, type, options.quality);
     });
   }
@@ -1618,13 +1630,15 @@ export class DrawingApp extends LitElement {
   }
 
   /**
-   * Record the host's copy as current: the document as the last `exportImage()`
-   * rendered it, so changes made while the host was storing that image still
-   * read as modified. Without an export since the document was opened, the
-   * document as it is now.
+   * Record the host's copy as current. Given the Blob `exportImage()` returned,
+   * the document as that export rendered it, so changes made while the host
+   * was storing it, and later exports that have not landed, still read as
+   * modified. Without one, the last export's document, or the document as it
+   * is now if nothing was exported since it was opened.
    */
-  markSaved(): void {
-    this._savedDocument = this._exportedDocument ?? this._markDocument();
+  markSaved(exported?: Blob): void {
+    const fromExport = exported ? this._exportMarks.get(exported) : undefined;
+    this._savedDocument = fromExport ?? this._exportedDocument ?? this._markDocument();
     this._exportedDocument = null;
     this._reportModified();
   }
@@ -1704,6 +1718,8 @@ export class DrawingApp extends LitElement {
     paint?: (layer: Layer) => void,
   ) {
     const MAX_DIMENSION = 16384;
+    width = Math.round(width);
+    height = Math.round(height);
     if (!(width > 0 && height > 0 && width <= MAX_DIMENSION && height <= MAX_DIMENSION)) {
       throw new RangeError(`Document size ${width}\u00d7${height} is outside 1\u2013${MAX_DIMENSION} pixels`);
     }
@@ -1715,7 +1731,7 @@ export class DrawingApp extends LitElement {
     const previous = this._currentProject;
     const meta = await this._backend!.projects.create({ name, thumbnailRef: null });
     await this._enterProject(meta, async () => {
-      await this._resetToFreshProject(Math.round(width), Math.round(height), background);
+      await this._resetToFreshProject(width, height, background);
       // Painted while the load holds autosave off, so no save sees the blank layer.
       if (paint) {
         paint(this._state.layers[0]);
@@ -1723,7 +1739,13 @@ export class DrawingApp extends LitElement {
       }
     });
     if (this.embedded && previous) {
-      await this._projectService!.deleteProject(previous.id);
+      // The new document is already on screen; failing to free the old one
+      // only costs memory, and must not fail the replacement.
+      try {
+        await this._projectService!.deleteProject(previous.id);
+      } catch (err) {
+        console.warn('Could not discard the previous document:', err);
+      }
     }
     this._projectList = await this._backend!.projects.list();
   }
