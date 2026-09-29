@@ -1245,14 +1245,24 @@ export class LayersPanel extends LitElement {
     });
   }
 
+  private _miniCheckerboardPattern: CanvasPattern | null = null;
+
   private _drawMiniCheckerboard(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const size = 4;
-    for (let y = 0; y < h; y += size) {
-      for (let x = 0; x < w; x += size) {
-        ctx.fillStyle = ((x / size + y / size) % 2 === 0) ? '#ffffff' : '#e0e0e0';
-        ctx.fillRect(x, y, size, size);
-      }
+    if (!this._miniCheckerboardPattern) {
+      const size = 4;
+      const tile = document.createElement('canvas');
+      tile.width = size * 2;
+      tile.height = size * 2;
+      const tileCtx = tile.getContext('2d')!;
+      tileCtx.fillStyle = '#ffffff';
+      tileCtx.fillRect(0, 0, size * 2, size * 2);
+      tileCtx.fillStyle = '#e0e0e0';
+      tileCtx.fillRect(size, 0, size, size);
+      tileCtx.fillRect(0, size, size, size);
+      this._miniCheckerboardPattern = ctx.createPattern(tile, 'repeat')!;
     }
+    ctx.fillStyle = this._miniCheckerboardPattern;
+    ctx.fillRect(0, 0, w, h);
   }
 }
 
