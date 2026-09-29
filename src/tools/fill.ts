@@ -1,5 +1,11 @@
 /**
  * Flood fill using a scanline approach for performance.
+ *
+ * The work stack holds flat (x, y) pairs and only span seeds are pushed: after a
+ * run is filled, the rows above and below are scanned once and a seed is pushed
+ * per contiguous matching segment, not per pixel. Filling a large empty layer
+ * therefore touches a few thousand stack entries instead of allocating a tuple
+ * for every pixel twice over.
  */
 export function floodFill(
   ctx: CanvasRenderingContext2D,
@@ -9,13 +15,14 @@ export function floodFill(
   tolerance: number = 32,
 ): boolean {
   const { width, height } = ctx.canvas;
-  const imageData = ctx.getImageData(0, 0, width, height);
-  const data = imageData.data;
 
   const sx = Math.floor(startX);
   const sy = Math.floor(startY);
 
   if (sx < 0 || sx >= width || sy < 0 || sy >= height) return false;
+
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const data = imageData.data;
 
   // Parse fill color
   const fc = parseColor(fillColor);
@@ -30,52 +37,61 @@ export function floodFill(
   if (tolerance === 0 && tr === fc.r && tg === fc.g && tb === fc.b && ta === fc.a) return false;
 
   const visited = new Uint8Array(width * height);
+  const matches = (vi: number) => colorMatch(data, vi * 4, tr, tg, tb, ta, tolerance);
 
-  const stack: [number, number][] = [[sx, sy]];
+  const stack: number[] = [sx, sy];
 
   while (stack.length > 0) {
-    const [x, y] = stack.pop()!;
+    const y = stack.pop()!;
+    const x = stack.pop()!;
 
-    if (x < 0 || x >= width || y < 0 || y >= height) continue;
-
-    const vi = y * width + x;
-    if (visited[vi]) continue;
-
-    const idx = vi * 4;
-    if (!colorMatch(data, idx, tr, tg, tb, ta, tolerance)) continue;
+    const row = y * width;
+    if (visited[row + x] || !matches(row + x)) continue;
 
     // Scan left
     let lx = x;
-    while (lx > 0) {
-      const li = (y * width + (lx - 1)) * 4;
-      if (visited[y * width + (lx - 1)] || !colorMatch(data, li, tr, tg, tb, ta, tolerance)) break;
-      lx--;
-    }
+    while (lx > 0 && !visited[row + lx - 1] && matches(row + lx - 1)) lx--;
 
     // Scan right
     let rx = x;
-    while (rx < width - 1) {
-      const ri = (y * width + (rx + 1)) * 4;
-      if (visited[y * width + (rx + 1)] || !colorMatch(data, ri, tr, tg, tb, ta, tolerance)) break;
-      rx++;
-    }
+    while (rx < width - 1 && !visited[row + rx + 1] && matches(row + rx + 1)) rx++;
 
-    // Fill the scanline and check neighbors
+    // Fill the span
     for (let px = lx; px <= rx; px++) {
-      const pi = (y * width + px) * 4;
+      const pi = (row + px) * 4;
       data[pi] = fc.r;
       data[pi + 1] = fc.g;
       data[pi + 2] = fc.b;
       data[pi + 3] = fc.a;
-      visited[y * width + px] = 1;
-
-      if (y > 0) stack.push([px, y - 1]);
-      if (y < height - 1) stack.push([px, y + 1]);
+      visited[row + px] = 1;
     }
+
+    // Seed one entry per contiguous run of fillable pixels in the adjacent rows
+    if (y > 0) seedRow(stack, visited, matches, width, y - 1, lx, rx);
+    if (y < height - 1) seedRow(stack, visited, matches, width, y + 1, lx, rx);
   }
 
   ctx.putImageData(imageData, 0, 0);
   return true;
+}
+
+/** Push the left edge of each unvisited, matching run in row `y` between `lx` and `rx`. */
+function seedRow(
+  stack: number[],
+  visited: Uint8Array,
+  matches: (vi: number) => boolean,
+  width: number,
+  y: number,
+  lx: number,
+  rx: number,
+): void {
+  const row = y * width;
+  let inRun = false;
+  for (let x = lx; x <= rx; x++) {
+    const fillable = !visited[row + x] && matches(row + x);
+    if (fillable && !inRun) stack.push(x, y);
+    inRun = fillable;
+  }
 }
 
 function colorMatch(

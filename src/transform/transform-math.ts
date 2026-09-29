@@ -118,21 +118,24 @@ export function constrainToAxis(point: Point, origin: Point): Point {
  */
 export function detectContentBounds(imageData: ImageData): TransformRect | null {
   const { data, width, height } = imageData;
-  let minX = width, minY = height, maxX = -1, maxY = -1;
+  let minX = width, minY = -1, maxX = -1, maxY = -1;
 
+  // Per row, only the first and last opaque pixels matter; columns already
+  // inside the running [minX, maxX] range are never rescanned.
   for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const alpha = data[(y * width + x) * 4 + 3];
-      if (alpha > 0) {
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-    }
+    const rowAlpha = y * width * 4 + 3;
+    let x = 0;
+    while (x < width && data[rowAlpha + x * 4] === 0) x++;
+    if (x === width) continue;
+    if (minY < 0) minY = y;
+    maxY = y;
+    if (x < minX) minX = x;
+    let r = width - 1;
+    while (r > maxX && data[rowAlpha + r * 4] === 0) r--;
+    if (r > maxX) maxX = r;
   }
 
-  if (maxX < 0) return null;
+  if (minY < 0) return null;
   return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
 }
 
