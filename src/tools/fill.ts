@@ -145,6 +145,8 @@ function parseColor(color: string): RGBA {
     parseCtx = canvas.getContext('2d', { willReadFrequently: true })!;
   }
   parseCtx.clearRect(0, 0, 1, 1);
+  // Reset first: an unparseable color leaves fillStyle unchanged on a shared ctx.
+  parseCtx.fillStyle = '#000';
   parseCtx.fillStyle = color;
   parseCtx.fillRect(0, 0, 1, 1);
   const [r, g, b, a] = parseCtx.getImageData(0, 0, 1, 1).data;
