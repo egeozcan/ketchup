@@ -240,13 +240,19 @@ export class NavigatorPanel extends LitElement {
 
     // Use device pixel ratio for crisp rendering
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(cw * dpr);
-    canvas.height = Math.round(ch * dpr);
+    // Assigning width/height reallocates the backing store and resets context state
+    // even when the value is unchanged, so only do it when the size really changed.
+    const pw = Math.round(cw * dpr);
+    const ph = Math.round(ch * dpr);
+    if (canvas.width !== pw || canvas.height !== ph) {
+      canvas.width = pw;
+      canvas.height = ph;
+    }
     canvas.style.width = `${cw}px`;
     canvas.style.height = `${ch}px`;
 
     const ctx = canvas.getContext('2d')!;
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     const scale = Math.min(cw / docW, ch / docH);
     this._minimapScale = scale;
