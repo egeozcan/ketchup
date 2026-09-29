@@ -102,6 +102,38 @@ describe('Desktop settings bar panels', () => {
     await settings.updateComplete;
     await settings.updateComplete;
 
-    expect((settings as any)._openPanel).toBeNull();
+    expect(root.querySelector('.brush-panel')).toBeNull();
+    expect(root.querySelector('button[aria-label="Brush settings"]')).toBeNull();
+  });
+
+  it('closes on Escape even when focus never entered the panel', async () => {
+    const { settings, root, click } = await renderDesktopSettings();
+    await click('button[aria-label="Brush settings"]');
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    document.body.dispatchEvent(escape);
+    await settings.updateComplete;
+    expect(root.querySelector('.brush-panel')).toBeNull();
+  });
+
+  it('closes when focus tabs out of the panel', async () => {
+    const { settings, root, click } = await renderDesktopSettings();
+    await click('button[aria-label="Brush settings"]');
+
+    const flow = root.querySelector<HTMLInputElement>('input[aria-label="Brush flow"]')!;
+    const outside = root.querySelector<HTMLInputElement>('input[aria-label="Brush size"]')!;
+    flow.dispatchEvent(new FocusEvent('focusout', { bubbles: true, composed: true, relatedTarget: outside }));
+    await settings.updateComplete;
+    expect(root.querySelector('.brush-panel')).toBeNull();
+  });
+
+  it('stays open when focus moves to a native picker (no related target)', async () => {
+    const { settings, root, click } = await renderDesktopSettings();
+    await click('button[aria-label="Color"]');
+
+    const picker = root.querySelector<HTMLInputElement>('input[aria-label="Stroke color"]')!;
+    picker.dispatchEvent(new FocusEvent('focusout', { bubbles: true, composed: true, relatedTarget: null }));
+    await settings.updateComplete;
+    expect(root.querySelector('.color-panel')).not.toBeNull();
   });
 });

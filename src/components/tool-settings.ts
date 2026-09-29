@@ -1059,7 +1059,7 @@ export class ToolSettings extends LitElement {
         width: 100%;
       }
 
-      .brush-trigger-label {
+      :host(:not([mobile])) .brush-trigger-label {
         display: none;
       }
     }
@@ -1110,6 +1110,7 @@ export class ToolSettings extends LitElement {
   @state() private _brushDropdownOpen = false;
   /** Which desktop settings panel (color or brush) is open, if any. */
   @state() private _openPanel: 'color' | 'brush' | null = null;
+  private _refocusAfterClose = false;
   private _previewCache = new Map<string, string>();
   private _customPreviewKey = '';
   private _customPreviewUrl = '';
@@ -1146,7 +1147,13 @@ export class ToolSettings extends LitElement {
     this.toggleAttribute('mobile', this._ctx.value?.isMobile ?? false);
     // A tool or layout switch can remove the open panel's trigger; drop the
     // panel and its outside-press listener with it.
-    if (this._openPanel && !this._panelAvailable(this._openPanel)) this._closePanel();
+    if (this._openPanel && !this._panelAvailable(this._openPanel)) {
+      // A shortcut pressed inside the panel would otherwise drop focus to
+      // <body>, where later shortcuts no longer reach the app.
+      const wrap = this._openPanelWrap();
+      this._refocusAfterClose = !!wrap && wrap.contains(this.shadowRoot!.activeElement);
+      this._closePanel();
+    }
     const projectId = this._ctx.value?.currentProject?.id ?? null;
     if (projectId && projectId !== this._lastProjectId) {
       this._lastProjectId = projectId;
@@ -1562,6 +1569,28 @@ export class ToolSettings extends LitElement {
     return canvas.toDataURL();
   }
 
+  override updated() {
+    if (this._refocusAfterClose) {
+      this._refocusAfterClose = false;
+      this.shadowRoot?.querySelector<HTMLElement>('.panel-trigger, .project-name-btn')?.focus();
+    }
+    this._clampOpenPanel();
+  }
+
+  /** Keep the open panel inside the window; the bar's last item sits near the right edge. */
+  private _clampOpenPanel() {
+    const panel = this._openPanelWrap()?.querySelector<HTMLElement>('.settings-panel');
+    if (!panel) return;
+    panel.style.left = '';
+    const margin = 8;
+    const rect = panel.getBoundingClientRect();
+    const overflow = rect.right - (window.innerWidth - margin);
+    if (overflow > 0) {
+      // Shift left, but never past the window's left edge.
+      panel.style.left = `${-Math.min(overflow, Math.max(0, rect.left - margin))}px`;
+    }
+  }
+
   /** Whether the desktop bar currently renders the given panel's trigger. */
   private _panelAvailable(panel: 'color' | 'brush'): boolean {
     const ctx = this._ctx.value;
@@ -1578,26 +1607,49 @@ export class ToolSettings extends LitElement {
     }
     this._openPanel = panel;
     document.addEventListener('pointerdown', this._onPanelOutsidePointer, true);
+    document.addEventListener('keydown', this._onPanelEscape, true);
+    window.addEventListener('resize', this._onPanelResize);
   }
 
   private _closePanel() {
     if (this._openPanel === null) return;
     this._openPanel = null;
     document.removeEventListener('pointerdown', this._onPanelOutsidePointer, true);
+    document.removeEventListener('keydown', this._onPanelEscape, true);
+    window.removeEventListener('resize', this._onPanelResize);
+  }
+
+  private _onPanelResize = () => this._clampOpenPanel();
+
+  private _openPanelWrap(): HTMLElement | null {
+    if (this._openPanel === null) return null;
+    return this.shadowRoot?.querySelector<HTMLElement>(`.panel-wrap[data-panel="${this._openPanel}"]`) ?? null;
   }
 
   private _onPanelOutsidePointer = (e: PointerEvent) => {
-    const wrap = this.shadowRoot?.querySelector(`.panel-wrap[data-panel="${this._openPanel}"]`);
+    const wrap = this._openPanelWrap();
     if (wrap && !e.composedPath().includes(wrap)) this._closePanel();
   };
 
-  private _onPanelKeydown = (e: KeyboardEvent) => {
+  /**
+   * Escape closes the open panel wherever focus is (some browsers don't focus
+   * a clicked button), and keeps it from also reaching canvas shortcuts.
+   */
+  private _onPanelEscape = (e: KeyboardEvent) => {
     if (e.key !== 'Escape' || this._openPanel === null) return;
-    // Keep Escape from also reaching canvas shortcuts (e.g. deselect).
     e.stopPropagation();
-    const trigger = (e.currentTarget as HTMLElement).querySelector<HTMLButtonElement>('.panel-trigger');
+    const wrap = this._openPanelWrap();
+    const focusInside = !!wrap && e.composedPath().includes(wrap);
     this._closePanel();
-    trigger?.focus();
+    if (focusInside) wrap!.querySelector<HTMLButtonElement>('.panel-trigger')?.focus();
+  };
+
+  /** Tabbing out of a panel closes it. Native pickers blur with no target. */
+  private _onPanelFocusOut = (e: FocusEvent) => {
+    const next = e.relatedTarget as Node | null;
+    if (!next) return;
+    const wrap = e.currentTarget as HTMLElement;
+    if (!wrap.contains(next)) this._closePanel();
   };
 
   private _renderColorControls(strokeColor: string) {
@@ -2038,12 +2090,13 @@ export class ToolSettings extends LitElement {
           ${this._renderColorControls(strokeColor)}
         </div>
       ` : html`
-        <div class="section panel-wrap" data-panel="color" @keydown=${this._onPanelKeydown}>
+        <div class="section panel-wrap" data-panel="color" @focusout=${this._onPanelFocusOut}>
           <button
             class="panel-trigger color-trigger ${this._openPanel === 'color' ? 'open' : ''}"
             title="Color"
             aria-label="Color"
-            aria-haspopup="true"
+            aria-haspopup="dialog"
+            aria-controls="color-panel"
             aria-expanded=${this._openPanel === 'color' ? 'true' : 'false'}
             @click=${() => this._togglePanel('color')}
           >
@@ -2051,7 +2104,7 @@ export class ToolSettings extends LitElement {
             <span class="chevron">&#9660;</span>
           </button>
           ${this._openPanel === 'color' ? html`
-            <div class="settings-panel color-panel" role="group" aria-label="Color">
+            <div id="color-panel" class="settings-panel color-panel" role="dialog" aria-label="Color">
               <div class="panel-heading">Color</div>
               ${this._renderColorControls(strokeColor)}
             </div>
@@ -2126,12 +2179,13 @@ export class ToolSettings extends LitElement {
           <span class="size-value">${Math.round(brush.opacity * 100)}%</span>
         </div>
         ${isMobile ? this._renderBrushDetails() : html`
-          <div class="section panel-wrap" data-panel="brush" @keydown=${this._onPanelKeydown}>
+          <div class="section panel-wrap" data-panel="brush" @focusout=${this._onPanelFocusOut}>
             <button
               class="panel-trigger ${this._openPanel === 'brush' ? 'open' : ''}"
               title="Brush settings"
               aria-label="Brush settings"
-              aria-haspopup="true"
+              aria-haspopup="dialog"
+              aria-controls="brush-panel"
               aria-expanded=${this._openPanel === 'brush' ? 'true' : 'false'}
               @click=${() => this._togglePanel('brush')}
             >
@@ -2140,7 +2194,7 @@ export class ToolSettings extends LitElement {
               <span class="chevron">&#9660;</span>
             </button>
             ${this._openPanel === 'brush' ? html`
-              <div class="settings-panel brush-panel" role="group" aria-label="Brush settings">
+              <div id="brush-panel" class="settings-panel brush-panel" role="dialog" aria-label="Brush settings">
                 ${this._renderBrushDetails()}
               </div>
             ` : nothing}
