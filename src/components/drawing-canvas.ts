@@ -30,6 +30,16 @@ function isNoOpPatch(entry: Extract<HistoryEntry, { type: 'patch' }>): boolean {
   return entry.before.width === 1 && entry.before.height === 1 && !diffBounds(entry.before, entry.after);
 }
 
+/** Turn a project name into a safe download file name (without extension). */
+export function exportFileBaseName(projectName: string | undefined): string {
+  const cleaned = (projectName ?? '')
+    .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^[.-]+|[.-]+$/g, '');
+  return cleaned || 'drawing';
+}
+
 @customElement('drawing-canvas')
 export class DrawingCanvas extends LitElement {
   static override styles = css`
@@ -641,7 +651,8 @@ export class DrawingCanvas extends LitElement {
     this.previewCanvas.width = vw;
     this.previewCanvas.height = vh;
 
-    // Center document in viewport
+    // Center document in viewport, shrinking it to fit small screens
+    this._zoom = Math.max(DrawingCanvas.MIN_ZOOM, Math.min(this._zoom, this._fitZoom()));
     this._panX = Math.round((vw - this._docWidth * this._zoom) / 2);
     this._panY = Math.round((vh - this._docHeight * this._zoom) / 2);
 
@@ -1253,7 +1264,7 @@ export class DrawingCanvas extends LitElement {
       exportCtx.globalAlpha = 1.0;
     }
     const link = document.createElement('a');
-    link.download = 'drawing.png';
+    link.download = `${exportFileBaseName(this._ctx.value?.currentProject?.name)}.png`;
     link.href = exportCanvas.toDataURL('image/png');
     link.click();
   }
@@ -1405,12 +1416,24 @@ export class DrawingCanvas extends LitElement {
     this._zoomToCenter(this._zoom / DrawingCanvas.ZOOM_STEP);
   }
 
+  /** Show the whole document: 100% when it fits, otherwise fit it to the viewport. */
+  public resetView() {
+    this._setCenteredZoom(Math.min(1, this._fitZoom()));
+  }
+
   public zoomToFit() {
-    const fitZoom = Math.min(
+    this._setCenteredZoom(this._fitZoom());
+  }
+
+  private _fitZoom(): number {
+    return Math.min(
       this._vw / this._docWidth,
       this._vh / this._docHeight,
     ) * 0.9;
-    this._zoom = Math.min(DrawingCanvas.MAX_ZOOM, Math.max(DrawingCanvas.MIN_ZOOM, fitZoom));
+  }
+
+  private _setCenteredZoom(zoom: number) {
+    this._zoom = Math.min(DrawingCanvas.MAX_ZOOM, Math.max(DrawingCanvas.MIN_ZOOM, zoom));
     this._panX = Math.round((this._vw - this._docWidth * this._zoom) / 2);
     this._panY = Math.round((this._vh - this._docHeight * this._zoom) / 2);
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });

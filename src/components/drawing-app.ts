@@ -938,7 +938,8 @@ export class DrawingApp extends LitElement {
       stampSize: DEFAULT_STAMP_SIZE,
       layers: [layer],
       activeLayerId: layer.id,
-      layersPanelOpen: true,
+      // On phones the layers sheet would cover the toolbar, so start it closed.
+      layersPanelOpen: !this._isMobile,
       documentWidth: w,
       documentHeight: h,
       cropAspectRatio: 'free',
@@ -960,6 +961,8 @@ export class DrawingApp extends LitElement {
     // failed part-way), so the next save must replace it rather than append.
     this._trackLoadedProject(this._currentProject?.id ?? null, [], []);
     this._historyNeedsRewrite = true;
+    // Make the whole new document visible, whatever its size or the screen's.
+    this.canvas?.resetView();
   }
 
   private async _loadProject(projectId: string) {
@@ -1039,7 +1042,7 @@ export class DrawingApp extends LitElement {
         stampSize: normalizeStampSize(ts.stampSize),
         layers,
         activeLayerId: validActiveId,
-        layersPanelOpen: record.layersPanelOpen,
+        layersPanelOpen: record.layersPanelOpen && !this._isMobile,
         documentWidth: record.canvasWidth,
         documentHeight: record.canvasHeight,
         cropAspectRatio: ts.cropAspectRatio ?? 'free',
@@ -1058,8 +1061,7 @@ export class DrawingApp extends LitElement {
       if (record.zoom != null && record.panX != null && record.panY != null) {
         this.canvas?.setViewport(record.zoom, record.panX, record.panY);
       } else {
-        this.canvas?.centerDocument();
-        this.canvas?.composite();
+        this.canvas?.resetView();
       }
     } catch (err) {
       console.error('Failed to load project:', err);
@@ -1590,6 +1592,11 @@ export class DrawingApp extends LitElement {
     if (useMobileLayout === this._isMobile) return;
 
     this._isMobile = useMobileLayout;
+    // The layers sheet covers the mobile toolbar; don't carry an open desktop
+    // sidebar over into it.
+    if (useMobileLayout && this._state.layersPanelOpen) {
+      this._state = { ...this._state, layersPanelOpen: false };
+    }
     // Child mode uses the compact toolbar; disable it when switching to desktop.
     if (!useMobileLayout && this._state.childMode) {
       this._state = { ...this._state, childMode: false };

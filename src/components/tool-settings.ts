@@ -38,7 +38,8 @@ export class ToolSettings extends LitElement {
       display: flex;
       align-items: center;
       background: #333;
-      padding: 0.375rem 1rem;
+      /* Right padding keeps controls clear of the saving indicator */
+      padding: 0.375rem 2.75rem 0.375rem 1rem;
       column-gap: 1rem;
       row-gap: 0.25rem;
       color: #ddd;
