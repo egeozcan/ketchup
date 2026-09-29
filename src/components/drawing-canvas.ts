@@ -249,6 +249,19 @@ export class DrawingCanvas extends LitElement {
     return this._transformManager !== null;
   }
 
+  /** True while the text tool holds typed text that is not on a layer yet. */
+  hasPendingText(): boolean {
+    return this._textEditing && !!this._textAreaEl?.value;
+  }
+
+  private _dispatchPendingTextChange() {
+    this.dispatchEvent(new CustomEvent('pending-text-change', {
+      bubbles: true,
+      composed: true,
+      detail: { pending: this.hasPendingText() },
+    }));
+  }
+
   enterTransformMode(): void {
     if (this._transformManager) return;
     const state = this._ctx.value?.state;
@@ -2919,10 +2932,12 @@ export class DrawingCanvas extends LitElement {
     canvas.toBlob((blob) => {
       if (!blob) return;
       this._clipboardBlobSize = blob.size;
+      // Absent outside secure contexts (plain HTTP); the internal clipboard still works.
+      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') return;
       navigator.clipboard.write([
         new ClipboardItem({ 'image/png': blob }),
       ]).catch(() => {
-        // Clipboard API denied or unavailable — internal clipboard still works
+        // Clipboard API denied — internal clipboard still works
       });
     }, 'image/png');
   }
@@ -3320,6 +3335,7 @@ export class DrawingCanvas extends LitElement {
       if (this._textEditing) {
         this._startTextCursorBlink();
         this._renderTextPreview();
+        this._dispatchPendingTextChange();
       }
     });
     ta.addEventListener('keydown', (e) => this._onTextKeydown(e));
@@ -3627,6 +3643,7 @@ export class DrawingCanvas extends LitElement {
       this._textAreaEl.value = '';
       this._textAreaEl.blur();
     }
+    this._dispatchPendingTextChange();
     if (this.previewCanvas) {
       this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
     }

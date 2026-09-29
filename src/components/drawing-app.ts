@@ -27,6 +27,8 @@ import './navigator-panel.js';
 interface DocumentMark {
   top: HistoryEntry | null;
   trimmed: number;
+  /** Which document this was: `DrawingApp._documentGeneration` when it was taken. */
+  generation: number;
 }
 
 const MOBILE_ENTER_WIDTH = 768;
@@ -168,6 +170,12 @@ export class DrawingApp extends LitElement {
   @state() private _backend?: StorageBackend;
   /** True when we created the backend ourselves (not caller-supplied). Only dispose what we own. */
   private _ownsBackend = false;
+  /**
+   * False when embedded on the in-memory backend we created: the host keeps
+   * the document and nothing ever reads that copy back, so autosaving it would
+   * only spend CPU and memory on every edit.
+   */
+  private _autosave = true;
   @state() private _projectService?: ProjectService;
 
   private _storageProvider?: ContextProvider<typeof storageBackendContext>;
@@ -188,7 +196,9 @@ export class DrawingApp extends LitElement {
    * the saved state was the bottom of a stack that has since dropped entries,
    * which no amount of undoing returns to.
    */
-  private _savedDocument: DocumentMark = { top: null, trimmed: 0 };
+  private _savedDocument: DocumentMark = { top: null, trimmed: 0, generation: 0 };
+  /** Counts documents opened or replaced, so a mark from an earlier one is recognised. */
+  private _documentGeneration = 0;
   /** The document as `exportImage` last rendered it; what `markSaved()` records. */
   private _exportedDocument: DocumentMark | null = null;
   /** The document each exported Blob was rendered from, for `markSaved(blob)`. */
@@ -392,6 +402,7 @@ export class DrawingApp extends LitElement {
    */
   private _markDirty(kind: 'work' | 'setting' | 'viewport' = 'work') {
     if (kind !== 'viewport') this._contentVersion++;
+    if (!this._autosave) return;
     if (kind === 'work') this._unsavedWork = true;
     this._dirty = true;
     this._dirtyVersion++;
@@ -864,7 +875,7 @@ export class DrawingApp extends LitElement {
   private _onKeyDown = (e: KeyboardEvent) => {
     // Embedded, Ctrl/Cmd+S saves from anywhere, text fields included, rather
     // than falling through to the browser's "Save page as".
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && this.embedded) {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's' && this.embedded) {
       e.preventDefault();
       // A held key repeats; one press is one save.
       if (!e.repeat) this._requestSave();
@@ -1573,6 +1584,17 @@ export class DrawingApp extends LitElement {
     return this._replaceDocumentInTurn(async () => {
       const bitmap = await createImageBitmap(source);
       try {
+        // Refuse before anything changes when this browser cannot hold a
+        // canvas this large (iOS caps the area), rather than leaving a blank
+        // document named after the image on screen.
+        const probe = document.createElement('canvas');
+        probe.width = bitmap.width;
+        probe.height = bitmap.height;
+        const fits = !!probe.getContext('2d');
+        probe.width = probe.height = 0;
+        if (!fits) {
+          throw new RangeError(`This browser cannot open a ${bitmap.width}\u00d7${bitmap.height} image`);
+        }
         await this._replaceDocument(bitmap.width, bitmap.height, null, options.name ?? 'Untitled',
           (layer) => layer.canvas.getContext('2d')!.drawImage(bitmap, 0, 0));
       } finally {
@@ -1595,11 +1617,14 @@ export class DrawingApp extends LitElement {
    * Flatten the visible layers into an encoded image. `background` defaults
    * to none (transparent), except for JPEG, which has no alpha and gets white.
    * Work in progress (a transform, a floating selection, text being typed) is
-   * committed first, so the image is what the reader sees. The rendered state
-   * is what a later `markSaved()` records.
+   * committed first, so the image is what the reader sees. A document
+   * replacement in progress is waited for, so the image is never the blank
+   * canvas between two documents. The rendered state is what a later
+   * `markSaved()` records.
    */
   async exportImage(options: { type?: string; quality?: number; background?: string | null } = {}): Promise<Blob> {
     await this._ready;
+    await this._replacementsSettled();
     const type = options.type ?? 'image/png';
     const background = options.background !== undefined
       ? options.background
@@ -1623,7 +1648,7 @@ export class DrawingApp extends LitElement {
   /** True when the document differs from the one opened or last saved (see `markSaved`). */
   get modified(): boolean {
     if (!this.canvas) return false;
-    if (this.canvas.isTransformActive()) return true;
+    if (this.canvas.isTransformActive() || this.canvas.hasPendingText()) return true;
     const top = this._historyTop();
     if (top !== this._savedDocument.top) return true;
     return top === null && this.canvas.getHistoryTrimmedCount() !== this._savedDocument.trimmed;
@@ -1634,10 +1659,13 @@ export class DrawingApp extends LitElement {
    * the document as that export rendered it, so changes made while the host
    * was storing it, and later exports that have not landed, still read as
    * modified. Without one, the last export's document, or the document as it
-   * is now if nothing was exported since it was opened.
+   * is now if nothing was exported since it was opened. An export of a
+   * document that has since been replaced is ignored: it says nothing about
+   * the one open now.
    */
   markSaved(exported?: Blob): void {
     const fromExport = exported ? this._exportMarks.get(exported) : undefined;
+    if (fromExport && fromExport.generation !== this._documentGeneration) return;
     this._savedDocument = fromExport ?? this._exportedDocument ?? this._markDocument();
     this._exportedDocument = null;
     this._reportModified();
@@ -1659,11 +1687,25 @@ export class DrawingApp extends LitElement {
   }
 
   private _markDocument(): DocumentMark {
-    return { top: this._historyTop(), trimmed: this.canvas?.getHistoryTrimmedCount() ?? 0 };
+    return {
+      top: this._historyTop(),
+      trimmed: this.canvas?.getHistoryTrimmedCount() ?? 0,
+      generation: this._documentGeneration,
+    };
   }
 
-  /** The document as it is now becomes the saved one (opening, replacing). */
+  /** Resolves once no `openImage`/`newDocument` is running or queued. */
+  private async _replacementsSettled() {
+    let turn: Promise<unknown>;
+    do {
+      turn = this._documentReplacement;
+      await turn;
+    } while (turn !== this._documentReplacement);
+  }
+
+  /** A new document is open, and as it is now it is the saved one. */
   private _markSaved() {
+    this._documentGeneration++;
     this._savedDocument = this._markDocument();
     this._exportedDocument = null;
     this._reportModified();
@@ -1926,6 +1968,7 @@ export class DrawingApp extends LitElement {
       await backend.init();
       this._backend = backend;
       this._ownsBackend = !callerSupplied;
+      this._autosave = !(this.embedded && !callerSupplied);
       this._projectService = new ProjectService(backend);
       this._storageProvider = new ContextProvider(this, {
         context: storageBackendContext,
@@ -2017,6 +2060,7 @@ export class DrawingApp extends LitElement {
           @layer-undo=${this._onLayerUndo}
           @crop-commit=${this._onCropCommit}
           @transform-change=${this._onTransformChange}
+          @pending-text-change=${this._reportModified}
           @viewport-change=${this._onViewportChange}
         ></drawing-canvas>
         ${!this._isMobile ? html`

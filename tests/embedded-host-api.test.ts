@@ -342,4 +342,73 @@ describe('embedded host API', () => {
     expect((app as any)._state.documentWidth).toBe(16);
     expect((app as any)._state.documentHeight).toBe(8);
   });
+
+  it('counts text still being typed as a modification, and reports it', () => {
+    const { app, stub } = appWithHistory(true);
+    const changes: boolean[] = [];
+    app.addEventListener('modified-change', (e) => changes.push((e as CustomEvent).detail.modified));
+    (stub.hasPendingText as any).mockReturnValue(true);
+    (app as any)._reportModified();
+    expect(app.modified).toBe(true);
+    (stub.hasPendingText as any).mockReturnValue(false);
+    (app as any)._reportModified();
+    expect(changes).toEqual([true, false]);
+  });
+
+  it('ignores Ctrl+Shift+S and Ctrl+Alt+S when embedded', () => {
+    const { app } = appWithHistory(true);
+    const requests: Event[] = [];
+    app.addEventListener('save-request', (e) => requests.push(e));
+    for (const mod of [{ shiftKey: true }, { altKey: true }]) {
+      const e = { key: 'S', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false, repeat: false,
+        ...mod, preventDefault: vi.fn(), composedPath: () => [app] } as unknown as KeyboardEvent;
+      (app as any)._onKeyDown(e);
+    }
+    expect(requests).toHaveLength(0);
+  });
+
+  it('ignores markSaved for an export of a document that has since been replaced', async () => {
+    const app = await connected(Object.assign(new DrawingApp(), { embedded: true }));
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb, type) {
+      cb(new Blob(['x'], { type: type ?? 'image/png' }));
+    });
+    const old = await app.exportImage();   // uploading while...
+    await app.newDocument(16, 8);          // ...the host opens the next image
+    const saved = (app as any)._savedDocument;
+    app.markSaved(old);                    // the old upload lands
+    expect((app as any)._savedDocument).toBe(saved);
+    expect(app.modified).toBe(false);
+  });
+
+  it('exports the new document, not the blank between two, while one is being opened', async () => {
+    const app = await connected(Object.assign(new DrawingApp(), { embedded: true }));
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb, type) {
+      cb(new Blob(['x'], { type: type ?? 'image/png' }));
+    });
+    const order: string[] = [];
+    const replacing = app.newDocument(16, 8).then(() => order.push('replaced'));
+    const exporting = app.exportImage().then(() => order.push('exported'));
+    await Promise.all([replacing, exporting]);
+    expect(order).toEqual(['replaced', 'exported']);
+  });
+
+  it('does not autosave an embedded document on the in-memory backend it created', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const app = await connected(Object.assign(new DrawingApp(), { embedded: true }));
+    const save = vi.spyOn(app as any, '_save');
+    (app as any)._markDirty();
+    vi.advanceTimersByTime(1000);
+    expect(save).not.toHaveBeenCalled();
+    expect((app as any)._dirty).toBe(false);
+  });
+
+  it('still autosaves an embedded document on a backend the host supplied', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const app = Object.assign(new DrawingApp(), { embedded: true, storageBackend: new MemoryBackend() });
+    await connected(app);
+    const save = vi.spyOn(app as any, '_save');
+    (app as any)._markDirty();
+    vi.advanceTimersByTime(1000);
+    expect(save).toHaveBeenCalled();
+  });
 });

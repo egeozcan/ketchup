@@ -149,6 +149,7 @@ export function makeAppCanvasStub(overrides: Record<string, unknown> = {}) {
     composite: vi.fn(),
     pushLayerOperation: vi.fn(),
     isTransformActive: vi.fn(() => false),
+    hasPendingText: vi.fn(() => false),
     getTransformValues: vi.fn(() => null),
     setTransformValue: vi.fn(),
     getFloatSnapshot: vi.fn(() => null),
