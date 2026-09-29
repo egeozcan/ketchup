@@ -247,9 +247,9 @@ export class NavigatorPanel extends LitElement {
     if (canvas.width !== pw || canvas.height !== ph) {
       canvas.width = pw;
       canvas.height = ph;
-      canvas.style.width = `${cw}px`;
-      canvas.style.height = `${ch}px`;
     }
+    canvas.style.width = `${cw}px`;
+    canvas.style.height = `${ch}px`;
 
     const ctx = canvas.getContext('2d')!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
