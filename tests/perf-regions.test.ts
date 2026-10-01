@@ -9,6 +9,7 @@ import { DrawingApp } from '../src/components/drawing-app.ts';
 import { MemoryBackend } from '../src/storage/memory/index.ts';
 import { MockBackend } from '../src/storage/testing/mock-backend.ts';
 import { hashImageData } from '../src/utils/image-diff.ts';
+import { drawPerspectiveMesh } from '../src/transform/transform-math.ts';
 import { attachCanvasElements, makeAppCanvasStub, makeBrush, makeCanvas, makeLayer, makeState } from './helpers.ts';
 
 function setupCanvas(stateOverrides: Record<string, unknown> = {}) {
@@ -340,6 +341,17 @@ describe('saves that reuse stored layers', () => {
     await save('setting');
     expect(update.mock.calls.at(-1)![1]).toEqual({});
   });
+
+  it('renders a new thumbnail when the view moved, since it shows the view', async () => {
+    let viewport = { zoom: 1, panX: 0, panY: 0 };
+    const { backend, save } = await setupSave({ getViewport: () => viewport });
+    const update = vi.spyOn(backend.projects, 'update');
+    await save('work');
+    viewport = { zoom: 4, panX: -300, panY: -200 };
+    update.mockClear();
+    await save('setting');
+    expect(update.mock.calls.at(-1)![1]).toHaveProperty('thumbnailRef');
+  });
 });
 
 describe('coalesced viewport-change', () => {
@@ -353,5 +365,19 @@ describe('coalesced viewport-change', () => {
     canvas.flushViewportChange();
 
     expect(seen).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('perspective mesh', () => {
+  it('composes each triangle with the caller\'s transform instead of replacing it', () => {
+    const ctx = document.createElement('canvas').getContext('2d')!;
+    const src = makeCanvas(10, 10);
+    const setTransform = vi.spyOn(ctx, 'setTransform');
+    const transform = vi.spyOn(ctx, 'transform');
+    ctx.translate(-50, -60);
+    const corners = [{ x: 50, y: 60 }, { x: 60, y: 60 }, { x: 60, y: 70 }, { x: 50, y: 70 }] as const;
+    drawPerspectiveMesh(ctx, src, [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }], [...corners] as any, 1);
+    expect(transform).toHaveBeenCalled();
+    expect(setTransform).not.toHaveBeenCalled();
   });
 });

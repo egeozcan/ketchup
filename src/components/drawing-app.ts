@@ -243,8 +243,11 @@ export class DrawingApp extends LitElement {
   private _contentVersion = 0;
   /** `_contentVersion` as of the last save's snapshot; equal means no layer changed since. */
   private _savedContentVersion = -1;
-  /** `_contentVersion` the stored project thumbnail was rendered at; -1 forces a new one. */
-  private _savedThumbContentVersion = -1;
+  /**
+   * Content version and viewport the stored project thumbnail was rendered at
+   * (it is a downscale of the on-screen view); null forces a new one.
+   */
+  private _savedThumbKey: string | null = null;
   /** A drawing change is waiting to be saved, so the next save shows the saving indicator. */
   private _unsavedWork = false;
   /**
@@ -539,7 +542,7 @@ export class DrawingApp extends LitElement {
     this._savedLayerBlobs = layerBlobs;
     // The first save after a load always reads the layers back.
     this._savedContentVersion = -1;
-    this._savedThumbContentVersion = -1;
+    this._savedThumbKey = null;
     // Restoring history during the load isn't a new edit to show as saving.
     this._unsavedWork = false;
   }
@@ -772,8 +775,9 @@ export class DrawingApp extends LitElement {
           // The thumbnail only needs refreshing when the drawing changed; a
           // viewport- or setting-only save keeps the stored one.
           let thumbnail: Blob | null = null;
-          const thumbnailCurrent = !floatSnap && oldThumbRef
-            && contentVersionAtSnapshot === this._savedThumbContentVersion;
+          const thumbKey = `${contentVersionAtSnapshot}|${viewport.zoom},${viewport.panX},${viewport.panY}`
+            + `|${viewportSize?.width}x${viewportSize?.height}`;
+          const thumbnailCurrent = !floatSnap && oldThumbRef && thumbKey === this._savedThumbKey;
           if (this.canvas?.mainCanvas && !thumbnailCurrent) {
             try { thumbnail = await canvasToBlob(this._renderThumbnail(this.canvas.mainCanvas)); } catch { /* non-critical */ }
           }
@@ -823,7 +827,7 @@ export class DrawingApp extends LitElement {
               newThumbRef = await blobs.put(thumbnail);
               await this._backend!.projects.update(projectId, { thumbnailRef: newThumbRef });
               if (this._currentProject?.id === projectId && this._trackingGeneration === trackingGeneration) {
-                this._savedThumbContentVersion = snapshotTrusted ? contentVersionAtSnapshot : -1;
+                this._savedThumbKey = snapshotTrusted ? thumbKey : null;
               }
             } else {
               await this._backend!.projects.update(projectId, {});

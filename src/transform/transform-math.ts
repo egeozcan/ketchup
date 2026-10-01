@@ -240,7 +240,9 @@ function drawTexturedTriangle(
   ctx.lineTo(d2.x, d2.y);
   ctx.closePath();
   ctx.clip();
-  ctx.setTransform(ma, mc, mb, md, me, mf);
+  // Compose with, not replace, the caller's transform: the preview renders
+  // into an offscreen canvas translated to the warped bounds' origin.
+  ctx.transform(ma, mc, mb, md, me, mf);
   ctx.drawImage(img, 0, 0);
   ctx.restore();
 }
