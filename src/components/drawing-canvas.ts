@@ -3429,7 +3429,8 @@ export class DrawingCanvas extends LitElement {
     this._resizeObserver?.disconnect();
     this._resizeObserver = null;
     this._compositeScheduler.cancel();
-    this._viewportChangeScheduler.cancel();
+    // Deliver a coalesced viewport change now; its frame won't run once detached.
+    this.flushViewportChange();
     if (this._transformManager) {
       this._transformManager.dispose();
       this._transformManager = null;

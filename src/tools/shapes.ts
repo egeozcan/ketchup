@@ -66,6 +66,9 @@ export function drawShapePreview(
   ctx.save();
   ctx.strokeStyle = strokeColor;
   ctx.lineWidth = lineWidth;
+  // shapeBounds() relies on round caps/joins and on every point (Bézier control
+  // points included) staying inside the start/end box; keep both true here, or
+  // undo patches for shapes will be cut short.
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
