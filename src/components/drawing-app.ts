@@ -217,6 +217,8 @@ export class DrawingApp extends LitElement {
 
   /** Longest side of the project thumbnail stored with each save. */
   private static readonly THUMBNAIL_SIZE = 256;
+  /** Autosave waits at most this many debounce periods for a pointer gesture to end. */
+  private static readonly MAX_SAVE_DEFERRALS = 20;
   private static readonly NON_TEXT_INPUT_TYPES = new Set([
     'button',
     'checkbox',
@@ -237,9 +239,9 @@ export class DrawingApp extends LitElement {
   private _saveRequested = false;
   private _forceFlushNextSave = false;
   private _dirtyVersion = 0;
-  /** Bumped by every dirty mark except pure viewport changes (pan/zoom). */
+  /** Bumped by every `'work'` dirty mark: anything that can change layer pixels. */
   private _contentVersion = 0;
-  /** `_contentVersion` as of the last save's snapshot; equal means no layer or setting changed since. */
+  /** `_contentVersion` as of the last save's snapshot; equal means no layer changed since. */
   private _savedContentVersion = -1;
   /** A drawing change is waiting to be saved, so the next save shows the saving indicator. */
   private _unsavedWork = false;
@@ -409,14 +411,32 @@ export class DrawingApp extends LitElement {
    * `'viewport'` (pan/zoom) are saved quietly.
    */
   private _markDirty(kind: 'work' | 'setting' | 'viewport' = 'work') {
-    if (kind !== 'viewport') this._contentVersion++;
+    // Only 'work' can change layer pixels (every pixel change lands in history,
+    // whose history-change event marks 'work'); settings and viewport changes
+    // let the next save reuse the stored layer blobs without reading them back.
+    if (kind === 'work') this._contentVersion++;
     if (!this._autosave) return;
     if (kind === 'work') this._unsavedWork = true;
     this._dirty = true;
     this._dirtyVersion++;
     this._saveRequested = true;
+    this._scheduleSave();
+  }
+
+  /**
+   * Debounce an autosave. A save reads back and encodes layers on the main
+   * thread, so while a pointer gesture is in progress it waits for the gesture
+   * to end rather than stalling the stroke — up to a bound, so a pointer whose
+   * pointerup never arrived can't hold saving off indefinitely.
+   */
+  private _scheduleSave(deferrals = 0) {
     if (this._saveTimer) clearTimeout(this._saveTimer);
     this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      if (deferrals < DrawingApp.MAX_SAVE_DEFERRALS && this.canvas?.isGestureActive?.()) {
+        this._scheduleSave(deferrals + 1);
+        return;
+      }
       void this._save();
     }, 500);
   }
@@ -621,18 +641,18 @@ export class DrawingApp extends LitElement {
           const layerSnapshots = this._state.layers.map(l => {
             const meta = { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode };
             if (reuseSaved) return { ...meta, imageData: null as ImageData | null };
-            const ctx = l.canvas.getContext('2d')!;
-            const imageData = ctx.getImageData(0, 0, l.canvas.width, l.canvas.height);
             if (floatSnap && l.id === floatSnap.layerId) {
               // Draw the float onto a temp canvas copy so the live canvas is untouched.
               const tmp = document.createElement('canvas');
               tmp.width = l.canvas.width;
               tmp.height = l.canvas.height;
               const tmpCtx = tmp.getContext('2d')!;
-              tmpCtx.putImageData(imageData, 0, 0);
+              tmpCtx.drawImage(l.canvas, 0, 0);
               tmpCtx.drawImage(floatSnap.tempCanvas, floatSnap.x, floatSnap.y);
               return { ...meta, imageData: tmpCtx.getImageData(0, 0, tmp.width, tmp.height) as ImageData | null };
             }
+            const ctx = l.canvas.getContext('2d')!;
+            const imageData = ctx.getImageData(0, 0, l.canvas.width, l.canvas.height);
             return { ...meta, imageData: imageData as ImageData | null };
           });
           const layerHashes = layerSnapshots.map(snap =>
@@ -726,8 +746,10 @@ export class DrawingApp extends LitElement {
             viewportHeight: viewportSize?.height,
           };
 
+          // The thumbnail only needs refreshing when the drawing changed; a
+          // viewport- or setting-only save keeps the stored one.
           let thumbnail: Blob | null = null;
-          if (this.canvas?.mainCanvas) {
+          if (this.canvas?.mainCanvas && !(reuseSaved && oldThumbRef)) {
             try { thumbnail = await canvasToBlob(this._renderThumbnail(this.canvas.mainCanvas)); } catch { /* non-critical */ }
           }
 
@@ -831,6 +853,12 @@ export class DrawingApp extends LitElement {
           }
 
           if (!this._saveRequested || !this._dirty) {
+            break;
+          }
+          // Edits landed during this save. Unless flushing, let the debounce
+          // pick them up so the next save also waits out a stroke in progress.
+          if (!this._forceFlushNextSave && this.canvas?.isGestureActive?.()) {
+            this._scheduleSave();
             break;
           }
           flushingThisRun = false;

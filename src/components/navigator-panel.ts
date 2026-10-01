@@ -180,7 +180,12 @@ export class NavigatorPanel extends LitElement {
    */
   private _minimapScheduler = createThrottledScheduler(() => this._renderMinimap(), 100);
 
-  private _onComposited = () => {
+  private _onComposited = (e: Event) => {
+    // Pan, zoom and in-progress strokes leave layer pixels alone: the cached
+    // document image stays valid and only the viewport rectangle moves.
+    if ((e as CustomEvent<{ contentChanged?: boolean } | null>).detail?.contentChanged !== false) {
+      this._docImageDirty = true;
+    }
     this._minimapScheduler.schedule();
   };
 
@@ -211,6 +216,16 @@ export class NavigatorPanel extends LitElement {
   /** Offset to center the document thumbnail within the minimap canvas */
   private _minimapOffsetX = 0;
   private _minimapOffsetY = 0;
+
+  /**
+   * The document downscaled to minimap size (white background plus visible
+   * layers), so a viewport-only redraw doesn't downscale every full-size layer.
+   */
+  private _docImage: HTMLCanvasElement | null = null;
+  private _docImageDirty = true;
+  private _docImageLayers: readonly unknown[] | null = null;
+  private _docImageDocW = 0;
+  private _docImageDocH = 0;
 
   // --- Minimap drag state ---
   private _dragging = false;
@@ -266,25 +281,39 @@ export class NavigatorPanel extends LitElement {
     ctx.fillStyle = '#3a3a3a';
     ctx.fillRect(0, 0, cw, ch);
 
-    // Draw document area (white background)
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(this._minimapOffsetX, this._minimapOffsetY, scaledW, scaledH);
-
-    // Composite visible layers (matching main canvas blend mode handling)
-    ctx.save();
-    ctx.translate(this._minimapOffsetX, this._minimapOffsetY);
-    const hasBlend = layers.some(l => l.visible && l.blendMode !== 'normal');
-    for (const layer of layers) {
-      if (!layer.visible) continue;
-      ctx.globalAlpha = layer.opacity;
-      if (hasBlend) {
-        ctx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
-      }
-      ctx.drawImage(layer.canvas, 0, 0, scaledW, scaledH);
+    const iw = Math.max(1, Math.round(scaledW * dpr));
+    const ih = Math.max(1, Math.round(scaledH * dpr));
+    let docImage = this._docImage;
+    if (!docImage || docImage.width !== iw || docImage.height !== ih) {
+      docImage = this._docImage = document.createElement('canvas');
+      docImage.width = iw;
+      docImage.height = ih;
+      this._docImageDirty = true;
     }
-    ctx.globalAlpha = 1.0;
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.restore();
+    if (this._docImageDirty || this._docImageLayers !== layers
+      || this._docImageDocW !== docW || this._docImageDocH !== docH) {
+      this._docImageDirty = false;
+      this._docImageLayers = layers;
+      this._docImageDocW = docW;
+      this._docImageDocH = docH;
+      const imgCtx = docImage.getContext('2d')!;
+      // Document area (white background)
+      imgCtx.fillStyle = '#ffffff';
+      imgCtx.fillRect(0, 0, iw, ih);
+      // Composite visible layers (matching main canvas blend mode handling)
+      const hasBlend = layers.some(l => l.visible && l.blendMode !== 'normal');
+      for (const layer of layers) {
+        if (!layer.visible) continue;
+        imgCtx.globalAlpha = layer.opacity;
+        if (hasBlend) {
+          imgCtx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
+        }
+        imgCtx.drawImage(layer.canvas, 0, 0, iw, ih);
+      }
+      imgCtx.globalAlpha = 1.0;
+      imgCtx.globalCompositeOperation = 'source-over';
+    }
+    ctx.drawImage(docImage, this._minimapOffsetX, this._minimapOffsetY, scaledW, scaledH);
 
     // Draw viewport rectangle
     this._drawViewportRect(ctx, scale, cw, ch);

@@ -153,7 +153,13 @@ class MemoryStampStore implements StampStore {
     return entry;
   }
   async delete(id: string): Promise<void> {
+    const entry = this._stamps.get(id);
+    if (!entry) return;
     this._stamps.delete(id);
+    // Each stamp owns its blob (carried stamps are re-added with a copy), so
+    // free it as the IndexedDB store does; pruning would otherwise leak one
+    // full-size image per stamp.
+    this._blobs.delete(entry.blobRef).catch(() => {});
   }
   async deleteForProject(projectId: string): Promise<void> {
     const blobRefs: BlobRef[] = [];

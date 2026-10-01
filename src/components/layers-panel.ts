@@ -502,8 +502,6 @@ export class LayersPanel extends LitElement {
     return this._ctx.value!;
   }
 
-  private _floatDetail: { tempCanvas: HTMLCanvasElement; rect: { x: number; y: number; w: number; h: number }; layerId: string; rotation?: number } | null = null;
-
   /**
    * Redrawing every layer thumbnail means downscaling every full-size layer canvas.
    * A stroke composites once per frame, so throttle thumbnails to a slower cadence —
@@ -512,7 +510,8 @@ export class LayersPanel extends LitElement {
   private _thumbnailScheduler = createThrottledScheduler(() => this._updateThumbnails(), 250);
 
   private _onComposited = (e: Event) => {
-    this._floatDetail = (e as CustomEvent).detail;
+    // Pan, zoom and in-progress strokes recomposite without touching layer pixels.
+    if ((e as CustomEvent<{ contentChanged?: boolean } | null>).detail?.contentChanged === false) return;
     this._thumbnailScheduler.schedule();
   };
 
@@ -1189,9 +1188,9 @@ export class LayersPanel extends LitElement {
     super.updated(changed);
 
     // Every viewport change (wheel zoom, pan, pinch) rebuilds the context value and
-    // re-renders this panel, so painting thumbnails here unthrottled would redraw
+    // re-renders this panel, so painting thumbnails on every update would redraw
     // every layer once per wheel tick. Only a structural change — a row added,
-    // removed, reordered, or rendered for the first time — needs them immediately;
+    // removed, reordered, or rendered for the first time — needs them here;
     // content changes come through the throttled `composited` path instead.
     const layers = this._ctx.value?.state.layers ?? null;
     const rowCount = this.shadowRoot?.querySelectorAll('.layer-thumb').length ?? 0;
@@ -1199,8 +1198,6 @@ export class LayersPanel extends LitElement {
       this._lastThumbLayers = layers;
       this._lastThumbRowCount = rowCount;
       this._updateThumbnails();
-    } else {
-      this._thumbnailScheduler.schedule();
     }
   }
 
@@ -1223,27 +1220,6 @@ export class LayersPanel extends LitElement {
       // Scale layer content to thumbnail
       ctx.globalAlpha = layer.opacity;
       ctx.drawImage(layer.canvas, 0, 0, thumb.width, thumb.height);
-      // Draw floating selection content onto the active layer's thumbnail
-      if (this._floatDetail && layer.id === this._floatDetail.layerId) {
-        const { tempCanvas, rect, rotation } = this._floatDetail;
-        const cw = layer.canvas.width;
-        const ch = layer.canvas.height;
-        const sx = (rect.x / cw) * thumb.width;
-        const sy = (rect.y / ch) * thumb.height;
-        const sw = (rect.w / cw) * thumb.width;
-        const sh = (rect.h / ch) * thumb.height;
-        if (rotation) {
-          const cx = sx + sw / 2;
-          const cy = sy + sh / 2;
-          ctx.save();
-          ctx.translate(cx, cy);
-          ctx.rotate(rotation);
-          ctx.drawImage(tempCanvas, -sw / 2, -sh / 2, sw, sh);
-          ctx.restore();
-        } else {
-          ctx.drawImage(tempCanvas, sx, sy, sw, sh);
-        }
-      }
       ctx.globalAlpha = 1.0;
     });
   }

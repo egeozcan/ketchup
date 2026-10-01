@@ -1,3 +1,5 @@
+import type { PixelRect } from '../utils/image-diff.js';
+
 /**
  * Flood fill using a scanline approach for performance.
  *
@@ -6,6 +8,10 @@
  * per contiguous matching run, not per pixel. A run can occasionally be seeded
  * by more than one span; the duplicate is discarded by the `visited` check when
  * popped, so it costs a stack slot but never changes the result.
+ *
+ * Returns the rectangle of filled pixels, or null when nothing was filled.
+ * Only that rectangle is written back to the canvas, and callers can pass it
+ * on as the region to diff for history.
  */
 export function floodFill(
   ctx: CanvasRenderingContext2D,
@@ -13,13 +19,13 @@ export function floodFill(
   startY: number,
   fillColor: string,
   tolerance: number = 32,
-): boolean {
+): PixelRect | null {
   const { width, height } = ctx.canvas;
 
   const sx = Math.floor(startX);
   const sy = Math.floor(startY);
 
-  if (sx < 0 || sx >= width || sy < 0 || sy >= height) return false;
+  if (sx < 0 || sx >= width || sy < 0 || sy >= height) return null;
 
   const imageData = ctx.getImageData(0, 0, width, height);
   const data = imageData.data;
@@ -34,13 +40,14 @@ export function floodFill(
 
   // Don't fill if target is the same color (only safe with zero tolerance;
   // with tolerance > 0, neighbors may differ and still need filling).
-  if (tolerance === 0 && tr === fc.r && tg === fc.g && tb === fc.b && ta === fc.a) return false;
+  if (tolerance === 0 && tr === fc.r && tg === fc.g && tb === fc.b && ta === fc.a) return null;
 
   const visited = acquireVisited(width * height);
   const mark = visitedGen;
   const matches = (vi: number) => colorMatch(data, vi * 4, tr, tg, tb, ta, tolerance);
 
   const stack: number[] = [sx, sy];
+  let minX = width, minY = height, maxX = -1, maxY = -1;
 
   while (stack.length > 0) {
     const y = stack.pop()!;
@@ -66,14 +73,20 @@ export function floodFill(
       data[pi + 3] = fc.a;
       visited[row + px] = mark;
     }
+    if (lx < minX) minX = lx;
+    if (rx > maxX) maxX = rx;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
 
     // Seed one entry per contiguous run of fillable pixels in the adjacent rows
     if (y > 0) seedRow(stack, visited, mark, matches, width, y - 1, lx, rx);
     if (y < height - 1) seedRow(stack, visited, mark, matches, width, y + 1, lx, rx);
   }
 
-  ctx.putImageData(imageData, 0, 0);
-  return true;
+  if (maxX < 0) return null;
+  const bounds = { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+  ctx.putImageData(imageData, 0, 0, bounds.x, bounds.y, bounds.w, bounds.h);
+  return bounds;
 }
 
 /** Push the left edge of each unvisited, matching run in row `y` between `lx` and `rx`. */

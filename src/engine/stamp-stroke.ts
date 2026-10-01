@@ -46,6 +46,10 @@ export class StampStrokeEngine {
   private _tintCanvas: AnyCanvas | null = null;
   private _tintW = 0;
   private _tintH = 0;
+  // What the tint canvas currently holds, so consecutive dabs with the same
+  // tip and picked-up colour skip re-tinting it.
+  private _tintedTip: AnyCanvas | null = null;
+  private _tintedColor = '';
   // Union of every stamp footprint laid down this stroke, in document pixels.
   // Lets the canvas repaint only the touched region of the stroke buffer.
   private _dirtyMinX = Infinity;
@@ -60,7 +64,7 @@ export class StampStrokeEngine {
     this._colorMode = !eraser && descriptor.ink.wetness > 0;
     this._docWidth = docWidth;
     this._docHeight = docHeight;
-    this._bufferPool.acquire(docWidth, docHeight);
+    this._bufferPool.acquire(docWidth, docHeight, this._rawDirtyRect());
     this._smoother.reset();
     this._prevStamp = null;
     this._variantCounter = 0;
@@ -167,12 +171,17 @@ export class StampStrokeEngine {
           this._tintW = Math.max(this._tintW, tipW);
           this._tintH = Math.max(this._tintH, tipH);
           this._tintCanvas = createOffscreenCanvas(this._tintW, this._tintH);
+          this._tintedTip = null;
         }
-        const tCtx = get2dContext(this._tintCanvas!);
-        tCtx.globalCompositeOperation = 'source-over';
-        tCtx.clearRect(0, 0, this._tintW, this._tintH);
-        drawImageSafe(tCtx, tip, 0, 0);
-        tintAlphaMask(tCtx, state.currentColor, tipW, tipH);
+        if (tip !== this._tintedTip || state.currentColor !== this._tintedColor) {
+          const tCtx = get2dContext(this._tintCanvas!);
+          tCtx.globalCompositeOperation = 'source-over';
+          tCtx.clearRect(0, 0, this._tintW, this._tintH);
+          drawImageSafe(tCtx, tip, 0, 0);
+          tintAlphaMask(tCtx, state.currentColor, tipW, tipH);
+          this._tintedTip = tip;
+          this._tintedColor = state.currentColor;
+        }
 
         ctx.globalAlpha = stampAlpha;
         ctx.globalCompositeOperation = 'source-over';
@@ -225,8 +234,7 @@ export class StampStrokeEngine {
       this._color,
       this._descriptor.opacity,
       this._eraser,
-      this._docWidth,
-      this._docHeight,
+      this.getDirtyBounds(),
       this._colorMode,
     );
     this._descriptor = null;
@@ -252,6 +260,18 @@ export class StampStrokeEngine {
     const h = Math.min(this._docHeight, Math.ceil(this._dirtyMaxY)) - y;
     if (w <= 0 || h <= 0) return null;
     return { x, y, w, h };
+  }
+
+  /**
+   * Everything stamped since the last begin(), unclamped: stamps near an edge
+   * can write past the document into a larger (grow-only) buffer, and that
+   * must be cleared before the next stroke too.
+   */
+  private _rawDirtyRect(): { x: number; y: number; w: number; h: number } | null {
+    if (this._dirtyMaxX < this._dirtyMinX) return null;
+    const x = Math.floor(this._dirtyMinX);
+    const y = Math.floor(this._dirtyMinY);
+    return { x, y, w: Math.ceil(this._dirtyMaxX) - x, h: Math.ceil(this._dirtyMaxY) - y };
   }
 
   getStrokePreview(): {
