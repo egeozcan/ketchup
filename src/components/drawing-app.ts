@@ -729,6 +729,9 @@ export class DrawingApp extends LitElement {
                   const live = this._state.layers.find(l => l.id === snap.id)?.canvas;
                   if (!live) throw new Error(`Layer ${snap.id} disappeared during save`);
                   imageData = live.getContext('2d')!.getImageData(0, 0, live.width, live.height);
+                  // Record the hash of what is actually stored, so a later save
+                  // can't match the old hash and keep these different pixels.
+                  layerHashes[i] = hashImageData(imageData);
                   snapshotTrusted = false;
                 }
                 return serializeLayerFromImageData(snap, imageData, trackingBlobs);
@@ -2101,6 +2104,8 @@ export class DrawingApp extends LitElement {
     this.removeEventListener('keydown', this._onKeyDown);
     window.removeEventListener('beforeunload', this._onBeforeUnload);
     document.removeEventListener('visibilitychange', this._onVisibilityChange);
+    // Deliver a coalesced wheel/pinch viewport change while it can still be saved.
+    this.canvas?.flushViewportChange?.();
     // Flush any pending save, then dispose the backend only after the save
     // settles. dispose() closes the IDBDatabase, so calling it while _save()
     // still has open transactions would cause InvalidStateError and silently

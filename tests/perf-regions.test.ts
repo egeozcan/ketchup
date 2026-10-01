@@ -8,6 +8,7 @@ import { BrushTipCache } from '../src/engine/brush-tip-cache.ts';
 import { DrawingApp } from '../src/components/drawing-app.ts';
 import { MemoryBackend } from '../src/storage/memory/index.ts';
 import { MockBackend } from '../src/storage/testing/mock-backend.ts';
+import { hashImageData } from '../src/utils/image-diff.ts';
 import { attachCanvasElements, makeAppCanvasStub, makeBrush, makeCanvas, makeLayer, makeState } from './helpers.ts';
 
 function setupCanvas(stateOverrides: Record<string, unknown> = {}) {
@@ -304,8 +305,12 @@ describe('saves that reuse stored layers', () => {
   });
 
   it('encodes the live layer when the stored state lost the reused blob', async () => {
-    const { app, backend, project, save } = await setupSave();
+    const { app, backend, project, layer, save } = await setupSave();
     await save('work');
+    // The layer now differs from what the first save hashed.
+    const live = new ImageData(20, 20);
+    live.data[3] = 255;
+    vi.spyOn(layer.canvas.getContext('2d')!, 'getImageData').mockReturnValue(live);
     // Another tab saved this project with different layer blobs.
     const state = (await backend.state.get(project.id))!;
     const otherRef = await backend.blobs.put(new Blob(['other']));
@@ -319,6 +324,8 @@ describe('saves that reuse stored layers', () => {
     expect(ref).not.toBe(otherRef);
     expect(await backend.blobs.get(ref)).toBeInstanceOf(Blob);
     expect((app as any)._savedContentVersion).toBe(-1);
+    // The recorded hash is that of the pixels stored, not the stale one.
+    expect((app as any)._savedLayerBlobs.get('l1')).toEqual({ hash: hashImageData(live), blobRef: ref });
   });
 
   it('keeps the thumbnail on a settings-only save, and retries one that failed', async () => {
