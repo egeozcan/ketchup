@@ -827,7 +827,12 @@ export class DrawingApp extends LitElement {
               newThumbRef = await blobs.put(thumbnail);
               await this._backend!.projects.update(projectId, { thumbnailRef: newThumbRef });
               if (this._currentProject?.id === projectId && this._trackingGeneration === trackingGeneration) {
-                this._savedThumbKey = snapshotTrusted ? thumbKey : null;
+                // The thumbnail is rendered after the snapshot's awaits; trust it
+                // only if the view it captured is still the snapshot's.
+                const vpNow = this.canvas?.getViewport();
+                const viewUnchanged = vpNow?.zoom === viewport.zoom
+                  && vpNow.panX === viewport.panX && vpNow.panY === viewport.panY;
+                this._savedThumbKey = snapshotTrusted && viewUnchanged ? thumbKey : null;
               }
             } else {
               await this._backend!.projects.update(projectId, {});

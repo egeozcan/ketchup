@@ -48,7 +48,18 @@ Ordered by expected impact.
 10. **Layers panel** redraws every thumbnail when the `layers` array changes (e.g. on each opacity-slider input). Keyed rows and per-thumbnail keys would limit that to the changed layer.
 11. **Memory:** the document-sized scratch canvases (`_beforeDrawBuffer`, both tint canvases, the sampling buffer, the stroke buffer) live for the component's lifetime. At 4000² that is about 300 MB, close to iOS Safari's canvas memory cap.
 
+Fixed during review of this change (pre-existing bugs in code it touched):
+the wet brush scaled its whole grow-only tint canvas into each smaller dab
+instead of cropping it; the perspective preview (and copy/export/snapshot
+during a perspective transform) drew the image offset by the warped bounds'
+origin, because each mesh triangle replaced the context transform.
+
 Correctness issues noticed along the way (not performance, left alone here):
+committed perspective warps show faint see-through seams (each mesh triangle
+is clipped with anti-aliasing; grid 32 at commit is worse than the grid-8
+preview), and preview/export use a coarser mesh than commit; transform
+previews draw with the layer's blend mode while commit merges with
+source-over;
 the rename field in the layers panel re-selects its text on every re-render;
 `drawing-canvas` creates its `ResizeObserver` and text input only in
 `firstUpdated`, so they don't come back after a disconnect/reconnect.
