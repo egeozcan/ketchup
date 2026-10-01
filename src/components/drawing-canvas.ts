@@ -172,6 +172,7 @@ export class DrawingCanvas extends LitElement {
    * them to one per frame.
    */
   private _viewportChangeScheduler = createThrottledScheduler(() => this._dispatchViewportChange());
+  private _viewportChangePending = false;
   /** A scheduled composite follows a change to layer (or transform) content, not just the view. */
   private _compositeContentPending = false;
   /** Cached mainCanvas bounding rect — avoids a forced layout on every pointer move. */
@@ -1451,7 +1452,7 @@ export class DrawingCanvas extends LitElement {
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.scheduleComposite(false);
     if (this._textEditing) this._renderTextPreview();
-    this._viewportChangeScheduler.schedule();
+    this._scheduleViewportChange();
   };
 
   /** `coalesce` defers viewport-change to the next frame, for continuous gestures. */
@@ -1462,14 +1463,25 @@ export class DrawingCanvas extends LitElement {
       detail: { zoom: this._zoom },
     }));
     if (coalesce) {
-      this._viewportChangeScheduler.schedule();
+      this._scheduleViewportChange();
     } else {
       this._dispatchViewportChange();
     }
   }
 
+  private _scheduleViewportChange() {
+    this._viewportChangePending = true;
+    this._viewportChangeScheduler.schedule();
+  }
+
+  /** Dispatch a coalesced viewport-change now rather than on the next frame. */
+  public flushViewportChange() {
+    if (this._viewportChangePending) this._dispatchViewportChange();
+  }
+
   private _dispatchViewportChange() {
     this._viewportChangeScheduler.cancel();
+    this._viewportChangePending = false;
     this.dispatchEvent(new CustomEvent('viewport-change', {
       bubbles: true,
       composed: true,
@@ -1864,7 +1876,12 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
-    if (e.button !== 0) return;
+    if (e.button !== 0) {
+      // Not a gesture we track (e.g. right-click, whose pointerup a context
+      // menu can swallow); don't leave it counted as a pointer down.
+      this._pointers.delete(e.pointerId);
+      return;
+    }
 
     // TransformManager intercepts all pointer events when active
     if (this._transformManager) {

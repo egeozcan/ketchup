@@ -7,7 +7,8 @@ import { StampStrokeEngine } from '../src/engine/stamp-stroke.ts';
 import { BrushTipCache } from '../src/engine/brush-tip-cache.ts';
 import { DrawingApp } from '../src/components/drawing-app.ts';
 import { MemoryBackend } from '../src/storage/memory/index.ts';
-import { attachCanvasElements, makeBrush, makeLayer, makeState } from './helpers.ts';
+import { MockBackend } from '../src/storage/testing/mock-backend.ts';
+import { attachCanvasElements, makeAppCanvasStub, makeBrush, makeCanvas, makeLayer, makeState } from './helpers.ts';
 
 function setupCanvas(stateOverrides: Record<string, unknown> = {}) {
   const canvas = new DrawingCanvas();
@@ -255,5 +256,95 @@ describe('wet brush tinting', () => {
     expect(call[3]).toBe(call[7]);
     expect(call[4]).toBe(call[8]);
     expect(call[3]).toBeLessThan(tint.width);
+  });
+});
+
+describe('saves that reuse stored layers', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function setupSave(canvasOverrides: Record<string, unknown> = {}) {
+    const backend = new MockBackend();
+    await backend.init();
+    const project = await backend.projects.create({ name: 'P', thumbnailRef: null });
+    const app = new DrawingApp();
+    const layer = makeLayer(20, 20, { id: 'l1' });
+    (app as any)._state = makeState({ layers: [layer], activeLayerId: 'l1', documentWidth: 20, documentHeight: 20 });
+    (app as any)._currentProject = project;
+    (app as any)._backend = backend;
+    Object.defineProperty(app, 'canvas', {
+      configurable: true,
+      value: makeAppCanvasStub({ mainCanvas: makeCanvas(40, 30), ...canvasOverrides }),
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb) {
+      cb(new Blob(['png'], { type: 'image/png' }));
+    });
+    const save = async (kind: 'work' | 'setting') => {
+      (app as any)._dirty = true;
+      (app as any)._dirtyVersion++;
+      if (kind === 'work') (app as any)._contentVersion++;
+      await (app as any)._save(true);
+    };
+    return { app, backend, project, layer, save };
+  }
+
+  it('does not trust layers snapshotted during a pointer gesture', async () => {
+    let gesture = true;
+    const { app, layer, save } = await setupSave({ isGestureActive: () => gesture });
+    await save('work');
+    expect((app as any)._savedContentVersion).toBe(-1);
+
+    gesture = false;
+    const read = vi.spyOn(layer.canvas.getContext('2d')!, 'getImageData');
+    await save('setting');
+    // The next save re-reads the layer instead of keeping the mid-gesture blob.
+    expect(read).toHaveBeenCalled();
+    expect((app as any)._savedContentVersion).toBe((app as any)._contentVersion);
+  });
+
+  it('encodes the live layer when the stored state lost the reused blob', async () => {
+    const { app, backend, project, save } = await setupSave();
+    await save('work');
+    // Another tab saved this project with different layer blobs.
+    const state = (await backend.state.get(project.id))!;
+    const otherRef = await backend.blobs.put(new Blob(['other']));
+    await backend.state.save({ ...state, layers: state.layers.map(l => ({ ...l, imageBlobRef: otherRef })) });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await save('setting');
+
+    expect(error).not.toHaveBeenCalled();
+    const ref = (await backend.state.get(project.id))!.layers[0].imageBlobRef;
+    expect(ref).not.toBe(otherRef);
+    expect(await backend.blobs.get(ref)).toBeInstanceOf(Blob);
+    expect((app as any)._savedContentVersion).toBe(-1);
+  });
+
+  it('keeps the thumbnail on a settings-only save, and retries one that failed', async () => {
+    const { backend, save } = await setupSave();
+    const update = vi.spyOn(backend.projects, 'update').mockRejectedValueOnce(new Error('quota'));
+    await save('work');
+    // The thumbnail write failed, so the next save, even settings-only, retries it.
+    await save('setting');
+    expect(update.mock.calls.at(-1)![1]).toHaveProperty('thumbnailRef');
+
+    update.mockClear();
+    await save('setting');
+    expect(update.mock.calls.at(-1)![1]).toEqual({});
+  });
+});
+
+describe('coalesced viewport-change', () => {
+  it('can be flushed before the next frame, once', () => {
+    const { canvas } = setupCanvas();
+    const seen = vi.fn();
+    canvas.addEventListener('viewport-change', seen);
+
+    (canvas as any)._scheduleViewportChange();
+    canvas.flushViewportChange();
+    canvas.flushViewportChange();
+
+    expect(seen).toHaveBeenCalledTimes(1);
   });
 });

@@ -243,6 +243,8 @@ export class DrawingApp extends LitElement {
   private _contentVersion = 0;
   /** `_contentVersion` as of the last save's snapshot; equal means no layer changed since. */
   private _savedContentVersion = -1;
+  /** `_contentVersion` the stored project thumbnail was rendered at; -1 forces a new one. */
+  private _savedThumbContentVersion = -1;
   /** A drawing change is waiting to be saved, so the next save shows the saving indicator. */
   private _unsavedWork = false;
   /**
@@ -366,6 +368,7 @@ export class DrawingApp extends LitElement {
     if (this.embedded) return;
     // Commit any active float so the layer canvas includes the selection content.
     this.canvas?.clearSelection();
+    this.canvas?.flushViewportChange?.();
     if (this._dirty) {
       // Start the async save — it may or may not complete before unload.
       this._flushPendingSave();
@@ -378,6 +381,9 @@ export class DrawingApp extends LitElement {
     if (document.hidden) {
       // Commit any active float so the layer canvas includes the selection content.
       this.canvas?.clearSelection();
+      // A coalesced wheel/pinch viewport change waits for a frame, and hidden
+      // pages don't render frames.
+      this.canvas?.flushViewportChange?.();
       // When the page is hidden (tab switch, close, refresh), flush immediately.
       // This fires before beforeunload and gives the save more time to complete.
       if (this._dirty) {
@@ -533,6 +539,7 @@ export class DrawingApp extends LitElement {
     this._savedLayerBlobs = layerBlobs;
     // The first save after a load always reads the layers back.
     this._savedContentVersion = -1;
+    this._savedThumbContentVersion = -1;
     // Restoring history during the load isn't a new edit to show as saving.
     this._unsavedWork = false;
   }
@@ -583,6 +590,10 @@ export class DrawingApp extends LitElement {
           const projectId = this._currentProject.id;
           const dirtyVersionAtSnapshot = this._dirtyVersion;
           const contentVersionAtSnapshot = this._contentVersion;
+          // A gesture can leave layers mid-change (a move drag shifts the layer
+          // and may restore it without a history entry), so a snapshot taken
+          // during one is stored but not trusted as the saved content.
+          let snapshotTrusted = !this.canvas?.isGestureActive?.();
           const saveStartTime = Date.now();
           const forceFlush = this._forceFlushNextSave;
           this._forceFlushNextSave = false;
@@ -711,7 +722,16 @@ export class DrawingApp extends LitElement {
                     blendMode: snap.blendMode, imageBlobRef: saved.blobRef,
                   };
                 }
-                return serializeLayerFromImageData(snap, snap.imageData!, trackingBlobs);
+                let imageData = snap.imageData;
+                if (!imageData) {
+                  // Reused, but the stored state no longer references our blob
+                  // (e.g. another tab saved this project): encode the live layer.
+                  const live = this._state.layers.find(l => l.id === snap.id)?.canvas;
+                  if (!live) throw new Error(`Layer ${snap.id} disappeared during save`);
+                  imageData = live.getContext('2d')!.getImageData(0, 0, live.width, live.height);
+                  snapshotTrusted = false;
+                }
+                return serializeLayerFromImageData(snap, imageData, trackingBlobs);
               }),
             );
 
@@ -749,7 +769,9 @@ export class DrawingApp extends LitElement {
           // The thumbnail only needs refreshing when the drawing changed; a
           // viewport- or setting-only save keeps the stored one.
           let thumbnail: Blob | null = null;
-          if (this.canvas?.mainCanvas && !(reuseSaved && oldThumbRef)) {
+          const thumbnailCurrent = !floatSnap && oldThumbRef
+            && contentVersionAtSnapshot === this._savedThumbContentVersion;
+          if (this.canvas?.mainCanvas && !thumbnailCurrent) {
             try { thumbnail = await canvasToBlob(this._renderThumbnail(this.canvas.mainCanvas)); } catch { /* non-critical */ }
           }
 
@@ -788,7 +810,7 @@ export class DrawingApp extends LitElement {
             this._savedLayerBlobs = new Map(layerSnapshots.map((snap, i) => (
               [snap.id, { hash: layerHashes[i], blobRef: layers[i].imageBlobRef }]
             )));
-            this._savedContentVersion = contentVersionAtSnapshot;
+            this._savedContentVersion = snapshotTrusted ? contentVersionAtSnapshot : -1;
           }
 
           // Update project metadata (thumbnail failure is non-fatal for data integrity)
@@ -797,6 +819,9 @@ export class DrawingApp extends LitElement {
             if (thumbnail) {
               newThumbRef = await blobs.put(thumbnail);
               await this._backend!.projects.update(projectId, { thumbnailRef: newThumbRef });
+              if (this._currentProject?.id === projectId && this._trackingGeneration === trackingGeneration) {
+                this._savedThumbContentVersion = snapshotTrusted ? contentVersionAtSnapshot : -1;
+              }
             } else {
               await this._backend!.projects.update(projectId, {});
             }
@@ -857,7 +882,7 @@ export class DrawingApp extends LitElement {
           }
           // Edits landed during this save. Unless flushing, let the debounce
           // pick them up so the next save also waits out a stroke in progress.
-          if (!this._forceFlushNextSave && this.canvas?.isGestureActive?.()) {
+          if (!flushingThisRun && !this._forceFlushNextSave && this.canvas?.isGestureActive?.()) {
             this._scheduleSave();
             break;
           }
