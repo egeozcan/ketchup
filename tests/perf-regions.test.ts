@@ -229,3 +229,31 @@ describe('memory backend stamps', () => {
     expect(await backend.blobs.get(stamp.blobRef).catch(() => null)).toBeNull();
   });
 });
+
+describe('wet brush tinting', () => {
+  it('crops a smaller tip out of the grown tint canvas instead of scaling it', () => {
+    const engine = new StampStrokeEngine();
+    const layer = document.createElement('canvas').getContext('2d')!;
+    const brush = (size: number) => makeBrush({ size, pressureSize: false, ink: { wetness: 0.5 } });
+
+    engine.begin(brush(60), '#ff0000', false, 200, 200);
+    engine.stroke(100, 100, 1, layer);
+    engine.commit(layer);
+
+    engine.begin(brush(10), '#ff0000', false, 200, 200);
+    const buffer = (engine as any)._bufferPool.current as HTMLCanvasElement;
+    const draw = vi.spyOn(buffer.getContext('2d')!, 'drawImage');
+    engine.stroke(100, 100, 1, layer);
+
+    const tint = (engine as any)._tintCanvas as HTMLCanvasElement;
+    // The canvas mock's drawImage is already a mock carrying the first stroke's
+    // calls, so take the last draw of the tint canvas.
+    const call = draw.mock.calls.filter(args => args[0] === tint).at(-1)!;
+    expect(tint.width).toBeGreaterThan(10);
+    expect(call).toHaveLength(9);
+    // Source rectangle is the tip's own size, matching the destination size.
+    expect(call[3]).toBe(call[7]);
+    expect(call[4]).toBe(call[8]);
+    expect(call[3]).toBeLessThan(tint.width);
+  });
+});

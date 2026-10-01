@@ -183,16 +183,19 @@ export class StampStrokeEngine {
           this._tintedColor = state.currentColor;
         }
 
+        // The tint canvas only grows, so it can be larger than this tip: crop
+        // its top-left tipW×tipH rather than scaling the whole canvas down.
+        const tint = this._tintCanvas as HTMLCanvasElement;
         ctx.globalAlpha = stampAlpha;
         ctx.globalCompositeOperation = 'source-over';
         if (rotation !== 0) {
           ctx.save();
           ctx.translate(Math.round(stamp.x), Math.round(stamp.y));
           ctx.rotate(rotation);
-          drawImageSafe(ctx, this._tintCanvas!, -tipW / 2, -tipH / 2, tipW, tipH);
+          ctx.drawImage(tint, 0, 0, tipW, tipH, -tipW / 2, -tipH / 2, tipW, tipH);
           ctx.restore();
         } else {
-          drawImageSafe(ctx, this._tintCanvas!, Math.round(stamp.x - tipW / 2), Math.round(stamp.y - tipH / 2), tipW, tipH);
+          ctx.drawImage(tint, 0, 0, tipW, tipH, Math.round(stamp.x - tipW / 2), Math.round(stamp.y - tipH / 2), tipW, tipH);
         }
       } else {
         ctx.globalAlpha = stampAlpha;
