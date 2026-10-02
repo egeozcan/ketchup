@@ -1100,7 +1100,8 @@ export class DrawingApp extends LitElement {
       if (tool && tool !== this._state.activeTool) {
         e.preventDefault();
         this.canvas?.cancelCrop();
-        this.canvas?.clearSelection();
+        // As the toolbar does: the select tool keeps an active float.
+        if (!(tool === 'select' && this.canvas?.isTransformActive())) this.canvas?.clearSelection();
         this._state = { ...this._state, activeTool: tool };
         this._markDirty('setting');
       }
@@ -1651,6 +1652,10 @@ export class DrawingApp extends LitElement {
         this._state = { ...this._state, childMode: on };
         // Switch to pencil when entering child mode if current tool isn't child-friendly
         if (on && !CHILD_TOOL_SET.has(this._state.activeTool)) {
+          // As any tool switch does: a float, crop or text in progress ends.
+          if (this.canvas?.isTransformActive()) this.canvas.commitTransform();
+          this.canvas?.cancelCrop();
+          this.canvas?.clearSelection();
           this._state = { ...this._state, activeTool: 'pencil' };
         }
         this._markDirty('setting');

@@ -5,7 +5,7 @@ import {
   HANDLE_CONFIG_DESKTOP, HANDLE_CONFIG_TOUCH, MIN_TRANSFORM_SIZE,
 } from './transform-types.js';
 import {
-  composeMatrix, docToLocal, localToDoc, getTransformCenter, getTransformedCorners,
+  composeMatrix, docToLocal, localToDoc, getTransformCenter,
   snapAngle, getPerspectiveDestCorners, warpPerspective,
 } from './transform-math.js';
 import { canWarpOnGpu, releaseGpuSource, warpPerspectiveGpu } from './perspective-gl.js';
@@ -13,7 +13,7 @@ import {
   hitTestHandle, hitTestRotationHandle, isInsideTransform,
   getCommitCancelPositions,
   drawHandles, drawRotationHandle as drawRotationHandleUI, drawCommitCancelButtons, getCursorForPoint,
-  getHandleCursor,
+  getHandleCursor, getDocHandlePositions, getRotationHandlePos,
 } from './transform-handles.js';
 
 /**
@@ -180,7 +180,12 @@ export class TransformManager {
 
   // --- Pointer event handlers ---
 
-  onPointerDown(docPoint: Point, modifiers: { shift: boolean; ctrl: boolean; alt: boolean }): boolean {
+  /**
+   * `slop`: how far (viewport pixels) a press outside may move and still be a
+   * click that commits; the layout's own (by default) fits a mouse or finger,
+   * a pen drifts more than a mouse.
+   */
+  onPointerDown(docPoint: Point, modifiers: { shift: boolean; ctrl: boolean; alt: boolean }, slop?: number): boolean {
     const button = this.buttonAt(docPoint);
     if (button) {
       this.pressButton(button);
@@ -221,7 +226,7 @@ export class TransformManager {
       return true;
     }
 
-    this._interaction = { type: 'outside-pending', startPoint: docPoint };
+    this._interaction = { type: 'outside-pending', startPoint: docPoint, slop: slop ?? this._handleConfig.outsideDragThreshold };
     return true;
   }
 
@@ -237,7 +242,7 @@ export class TransformManager {
         const dx = docPoint.x - this._interaction.startPoint.x;
         const dy = docPoint.y - this._interaction.startPoint.y;
         const distVp = Math.sqrt(dx * dx + dy * dy) * this._zoom;
-        if (distVp > this._handleConfig.outsideDragThreshold) {
+        if (distVp > this._interaction.slop) {
           const center = getTransformCenter(this._state);
           const startAngle = Math.atan2(
             this._interaction.startPoint.y - center.y,
@@ -298,23 +303,40 @@ export class TransformManager {
   }
 
   /**
-   * Where ✓ and ✗ are: out from the top-right corner as shown, or (when that
-   * is off screen: a phone has no Escape key) mirrored into the float through
-   * that corner, or failing that, pulled onto the screen.
+   * Where ✓ and ✗ are: out from the top-right corner as shown, or, where that
+   * is off screen (a phone has no Escape key) or over a handle, out from
+   * another corner; inside the float only when it is big enough on screen to
+   * leave its handles and middle clear; failing all that, pulled onscreen.
    */
   getButtons(): { commitCenter: Point; cancelCenter: Point; buttonRadius: number } {
     const corners = this._getCorners();
-    const out = getCommitCancelPositions(corners, this._handleConfig, this._zoom);
+    const config = this._handleConfig, zoom = this._zoom;
+    const out = getCommitCancelPositions(corners, config, zoom);
     const r = out.buttonRadius;
-    const x0 = -this._pan.x / this._zoom, y0 = -this._pan.y / this._zoom;
-    const x1 = (this._previewCanvas.width - this._pan.x) / this._zoom;
-    const y1 = (this._previewCanvas.height - this._pan.y) / this._zoom;
+    const x0 = -this._pan.x / zoom, y0 = -this._pan.y / zoom;
+    const x1 = (this._previewCanvas.width - this._pan.x) / zoom;
+    const y1 = (this._previewCanvas.height - this._pan.y) / zoom;
     const fits = (p: Point) => p.x - r >= x0 && p.x + r <= x1 && p.y - r >= y0 && p.y + r <= y1;
-    if (fits(out.commitCenter) && fits(out.cancelCenter)) return out;
+    // Buttons are hit first, so none may cover a drawn handle, the rotation
+    // handle or the float's middle (to move it by).
+    const center = {
+      x: (corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4,
+      y: (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4,
+    };
+    const keepClear = [
+      ...Object.values(getDocHandlePositions(corners)), getRotationHandlePos(corners, config, zoom), center,
+    ];
+    const reach = r + config.size / 2 / zoom;
+    const usable = (b: typeof out) => [b.commitCenter, b.cancelCenter].every(c => fits(c)
+      && keepClear.every(t => Math.hypot(t.x - c.x, t.y - c.y) >= reach));
+    for (const corner of [1, 0, 2, 3] as const) {
+      const b = corner === 1 ? out : getCommitCancelPositions(corners, config, zoom, corner);
+      if (usable(b)) return b;
+    }
     const tr = corners[1];
     const mirror = (p: Point) => ({ x: 2 * tr.x - p.x, y: 2 * tr.y - p.y });
     const inside = { commitCenter: mirror(out.commitCenter), cancelCenter: mirror(out.cancelCenter), buttonRadius: r };
-    if (fits(inside.commitCenter) && fits(inside.cancelCenter)) return inside;
+    if (usable(inside)) return inside;
     const clamp = (p: Point) => ({
       x: Math.min(Math.max(p.x, x0 + r), Math.max(x0 + r, x1 - r)),
       y: Math.min(Math.max(p.y, y0 + r), Math.max(y0 + r, y1 - r)),
@@ -714,26 +736,42 @@ export class TransformManager {
     const xs = [m.e, m.a * s.width + m.e, m.c * s.height + m.e, m.a * s.width + m.c * s.height + m.e];
     const ys = [m.f, m.b * s.width + m.f, m.d * s.height + m.f, m.b * s.width + m.d * s.height + m.f];
     const left = Math.min(...xs), top = Math.min(...ys);
-    m.e += Math.round(left) - left;
-    m.f += Math.round(top) - top;
+    // Halves always round up, whatever floating-point error lands them on.
+    const snap = (v: number) => Math.floor(v + 0.5 + 1e-7);
+    m.e += snap(left) - left;
+    m.f += snap(top) - top;
     return m;
   }
 
   /** The corners as shown (top-left, top-right, bottom-right, bottom-left), perspective included. */
   private _getCorners(): [Point, Point, Point, Point] {
-    return this._perspectiveActive
-      ? getPerspectiveDestCorners(this._state, this._perspectiveCorners)
-      : getTransformedCorners(this._state);
+    if (this._perspectiveActive) return getPerspectiveDestCorners(this._state, this._perspectiveCorners);
+    // Where the pixels are drawn, so the outline, handles and bounds match them.
+    const m = this._matrix(), { width: w, height: h } = this._state;
+    const at = (x: number, y: number): Point => ({ x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f });
+    return [at(0, 0), at(w, 0), at(w, h), at(0, h)];
+  }
+
+  /** What a press at a point would grab, as laid out now. */
+  hitKind(docPoint: Point): string {
+    const button = this.buttonAt(docPoint);
+    if (button) return button.button;
+    const corners = this._getCorners();
+    if (hitTestRotationHandle(docPoint, corners, this._handleConfig, this._zoom)) return 'rotate';
+    return hitTestHandle(docPoint, corners, this._handleConfig, this._zoom)
+      ?? (isInsideTransform(docPoint, corners) ? 'inside' : 'outside');
   }
 
   private _getSnapshotBounds(): { x: number; y: number; w: number; h: number } {
     const corners = this._getCorners();
     const xs = corners.map(c => c.x);
     const ys = corners.map(c => c.y);
-    const x = Math.floor(Math.min(...xs));
-    const y = Math.floor(Math.min(...ys));
-    const w = Math.max(1, Math.ceil(Math.max(...xs)) - x);
-    const h = Math.max(1, Math.ceil(Math.max(...ys)) - y);
+    // Within a millionth of a pixel of a whole one is on it (a quarter turn's
+    // cosine is not quite 0), or the bounds grow a row of nothing.
+    const x = Math.floor(Math.min(...xs) + 1e-6);
+    const y = Math.floor(Math.min(...ys) + 1e-6);
+    const w = Math.max(1, Math.ceil(Math.max(...xs) - 1e-6) - x);
+    const h = Math.max(1, Math.ceil(Math.max(...ys) - 1e-6) - y);
     return { x, y, w, h };
   }
 

@@ -6,6 +6,7 @@ import {
 } from '../src/transform/transform-handles.ts';
 import { HANDLE_CONFIG_DESKTOP, HANDLE_CONFIG_TOUCH } from '../src/transform/transform-types.ts';
 import { attachCanvasElements, makeCanvas, makeLayer, makeState } from './helpers.ts';
+import type { Point } from '../src/types.ts';
 
 const none = { shift: false, ctrl: false, alt: false };
 const ctrl = { shift: false, ctrl: true, alt: false };
@@ -301,6 +302,21 @@ describe('perspective corners', () => {
     expect(cancelCenter.x).toBeGreaterThan(commitCenter.x);
   });
 
+  it('outlines a quarter-turned float where its pixels land, so its bounds are its size', () => {
+    const tm = new TransformManager(new ImageData(111, 70), { x: 100, y: 100, w: 111, h: 70 }, makeCanvas(400, 400), 1, { x: 0, y: 0 });
+    for (const deg of [90, 270]) {
+      tm.rotation = deg;
+      expect(tm.getBounds(), `${deg}°`).toMatchObject({ w: 70, h: 111 });
+    }
+  });
+
+  it('commits a pen tap outside that drifts a little, rather than rotating', () => {
+    const tm = makeManager();
+    tm.onPointerDown({ x: 250, y: 250 }, none, 10);
+    expect(tm.onPointerMove({ x: 257, y: 254 }, none)).toBe(false);
+    expect(tm.onPointerUp({ x: 257, y: 254 })).toBe('commit');
+  });
+
   it('lands a float turned by quarter turns on whole pixels, whatever its sides\' parity', () => {
     const tm = new TransformManager(new ImageData(111, 70), { x: 100, y: 100, w: 111, h: 70 }, makeCanvas(400, 400), 1, { x: 0, y: 0 });
     for (const deg of [90, 180, 270]) {
@@ -326,6 +342,32 @@ describe('perspective corners', () => {
     // And they still work where they are drawn.
     tm.onPointerDown(cancelCenter, none);
     expect(tm.onPointerUp(cancelCenter)).toBe('cancel-button');
+  });
+
+  it('keeps ✓ and ✗ on screen and off the handles and middle, wherever the float is on screen', () => {
+    for (const config of [HANDLE_CONFIG_DESKTOP, HANDLE_CONFIG_TOUCH]) {
+      for (const size of [40, 60, 100, 160]) {
+        for (const [fx, fy] of [[0, 0], [400 - size, 0], [0, 400 - size], [400 - size, 400 - size], [150, 0], [400 - size, 150], [150, 150]]) {
+          for (const deg of [0, 30, 90, 180]) {
+            const tm = new TransformManager(new ImageData(size, size), { x: fx, y: fy, w: size, h: size }, makeCanvas(400, 400), 1, { x: 0, y: 0 });
+            tm.setTouchMode(config === HANDLE_CONFIG_TOUCH);
+            tm.rotation = deg;
+            const corners = (tm as any)._getCorners();
+            // A float itself partly off screen may leave no room at all.
+            if (!corners.every((c: Point) => c.x >= 0 && c.x <= 400 && c.y >= 0 && c.y <= 400)) continue;
+            const { commitCenter, cancelCenter, buttonRadius: r } = tm.getButtons();
+            const at = `${config.shape} ${size}px at ${fx},${fy} ${deg}°`;
+            const middle = { x: corners.reduce((a: number, c: Point) => a + c.x, 0) / 4, y: corners.reduce((a: number, c: Point) => a + c.y, 0) / 4 };
+            for (const b of [commitCenter, cancelCenter]) {
+              expect(b.x - r >= 0 && b.x + r <= 400 && b.y - r >= 0 && b.y + r <= 400, `${at} on screen`).toBe(true);
+              for (const t of [...Object.values(getDocHandlePositions(corners)), getRotationHandlePos(corners, config, 1), middle]) {
+                expect(Math.hypot(t.x - b.x, t.y - b.y), `${at} clear`).toBeGreaterThanOrEqual(r + config.size / 2 - 1e-9);
+              }
+            }
+          }
+        }
+      }
+    }
   });
 
   it('grabs a thin float\'s end handles from inside along its length', () => {

@@ -206,14 +206,18 @@ export function getCommitCancelPositions(
   corners: Corners,
   config: HandleConfig,
   zoom: number,
+  /** The corner they sit out from: 1, the top-right, unless there is no room there. */
+  corner: 0 | 1 | 2 | 3 = 1,
 ): { commitCenter: Point; cancelCenter: Point; buttonRadius: number } {
-  const tr = corners[1];
+  const tr = corners[corner];
   const center = cornersCenter(corners);
   const unit = (p: Point) => {
     const l = Math.hypot(p.x - center.x, p.y - center.y);
     return l > 0 ? { x: (p.x - center.x) / l, y: (p.y - center.y) / l } : { x: 0, y: 0 };
   };
-  const up = unit(mid(corners[0], corners[1])), right = unit(mid(corners[1], corners[2]));
+  // The corner's two edges' outward directions: up or down, right or left.
+  const up = unit(corner < 2 ? mid(corners[0], corners[1]) : mid(corners[2], corners[3]));
+  const right = unit(corner === 1 || corner === 2 ? mid(corners[1], corners[2]) : mid(corners[3], corners[0]));
   let dx = up.x + right.x;
   let dy = up.y + right.y;
   let len = Math.sqrt(dx * dx + dy * dy);
@@ -228,9 +232,9 @@ export function getCommitCancelPositions(
   const gap = (touch ? 48 : 28) / zoom;
 
   const ux = len > 1e-6 ? dx / len : Math.SQRT1_2, uy = len > 1e-6 ? dy / len : -Math.SQRT1_2;
-  // The cancel button beside it, further along the float's own right (level
-  // with it on an upright float), so it stays clear of the handles however
-  // the float is turned or flipped.
+  // The cancel button beside it, further out along that side (level with it
+  // on an upright float), so it stays clear of the handles however the float
+  // is turned or flipped.
   const px = right.x || right.y ? right.x : 1, py = right.x || right.y ? right.y : 0;
 
   return {

@@ -12,7 +12,7 @@ export type TransformInteraction =
   | { type: 'rotating'; startAngle: number; startRotation: number }
   | { type: 'skewing'; edge: 'n' | 'e' | 's' | 'w'; startPoint: Point; startSkewX: number; startSkewY: number }
   | { type: 'perspective'; corner: 'nw' | 'ne' | 'se' | 'sw'; startPoint: Point; startOffset: Point }
-  | { type: 'outside-pending'; startPoint: Point }
+  | { type: 'outside-pending'; startPoint: Point; slop: number }
   /**
    * Pressed on the commit or cancel button, which acts only if released on it
    * too (where it was when pressed: a typed value applied on blur may move it).

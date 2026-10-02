@@ -819,11 +819,12 @@ export class DrawingCanvas extends LitElement {
     this.previewCanvas.width = newWidth;
     this.previewCanvas.height = newHeight;
 
-    // Adjust pan to keep the center stable
+    // Adjust pan to keep the center stable, on whole pixels (a half-pixel pan
+    // would blur the document at 100%).
     const oldCenterDocX = (oldWidth / 2 - this._panX) / this._zoom;
     const oldCenterDocY = (oldHeight / 2 - this._panY) / this._zoom;
-    this._panX = newWidth / 2 - oldCenterDocX * this._zoom;
-    this._panY = newHeight / 2 - oldCenterDocY * this._zoom;
+    this._panX = Math.round(newWidth / 2 - oldCenterDocX * this._zoom);
+    this._panY = Math.round(newHeight / 2 - oldCenterDocY * this._zoom);
 
     // Pattern is tied to canvas context, must recreate
     this._checkerboardPattern = null;
@@ -1887,11 +1888,7 @@ export class DrawingCanvas extends LitElement {
     }
   }
 
-  /** The transform's values and the ✓/✗ at a point, as currently drawn. */
-  private _transformLayoutAt(p: Point) {
-    const tm = this._transformManager!;
-    return { values: JSON.stringify(this.getTransformValues()), button: tm.buttonAt(p) };
-  }
+
 
   private _isInTextBox(p: Point): boolean {
     const box = this._getTextBoundingBox();
@@ -2041,9 +2038,10 @@ export class DrawingCanvas extends LitElement {
       // move the float: the press means what was on screen.
       if (e.button === 0) {
         const tm = this._transformManager;
-        const drawn = tm && this._transformLayoutAt(this._getDocPoint(e));
+        const p = this._getDocPoint(e);
+        const drawn = tm && { kind: tm.hitKind(p), button: tm.buttonAt(p) };
         this._blurFocusedField();
-        if (tm && drawn && tm === this._transformManager && drawn.values !== JSON.stringify(this.getTransformValues())) {
+        if (tm && drawn && tm === this._transformManager && drawn.kind !== tm.hitKind(p)) {
           this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
           // A button as drawn still acts on release; anything else, the float
           // has moved out from under, so this press only applied the value.
@@ -2081,6 +2079,12 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
+    // The hand tool pans, a float or not.
+    if (this._transformManager && this.ctx.state.activeTool === 'hand') {
+      this._startPan(e);
+      return;
+    }
+
     // TransformManager intercepts all pointer events when active
     if (this._transformManager) {
       const p = this._getDocPoint(e);
@@ -2088,13 +2092,15 @@ export class DrawingCanvas extends LitElement {
       // tap on the ✓/✗ drawn for the mouse still means them.
       const tm = this._transformManager;
       if (e.pointerType === 'touch' && !tm.touchMode && !tm.hitTestButton(p)) {
+        const drawn = tm.hitKind(p);
         tm.setTouchMode(true);
-        // A touch-layout button here was never on screen: this tap only
-        // switches layouts.
-        if (tm.hitTestButton(p)) return;
+        // The bigger touch layout puts something else under the finger than
+        // what was on screen: this tap only switches layouts.
+        if (tm.hitKind(p) !== drawn) return;
       }
       const modifiers = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey };
-      this._transformManager.onPointerDown(p, modifiers);
+      // A pen tap drifts more than a click.
+      this._transformManager.onPointerDown(p, modifiers, e.pointerType === 'pen' ? HANDLE_CONFIG_TOUCH.outsideDragThreshold : undefined);
       if (!this._replayingTap) this.mainCanvas.setPointerCapture(e.pointerId);
       return;
     }

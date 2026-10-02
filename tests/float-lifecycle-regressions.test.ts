@@ -246,6 +246,31 @@ describe('touches, missed releases and context menus', () => {
     field.remove();
   });
 
+  it('lets a press act normally after a typed value that changed nothing under it', () => {
+    const { canvas } = setupTool('select');
+    const tm = new TransformManager(new ImageData(100, 80), { x: 0, y: 0, w: 100, h: 80 }, makeCanvas(100, 100), 1, { x: 100, y: 100 });
+    (canvas as any)._transformManager = tm;
+    (canvas as any)._panX = 100;
+    (canvas as any)._panY = 100;
+    const field = document.createElement('input');
+    document.body.append(field);
+    field.focus();
+    // A full turn: nothing visibly moves.
+    field.addEventListener('blur', () => { tm.rotation = 360; });
+    const press = { button: 0, pointerId: 1, clientX: 150, clientY: 140, pointerType: 'mouse', isPrimary: true, preventDefault() {} } as unknown as PointerEvent;
+    (canvas as any)._onPointerDown(press);
+    expect((tm as any)._interaction.type).toBe('moving');
+    field.remove();
+  });
+
+  it('pans with the hand tool over a float', () => {
+    const { canvas } = setupTool('hand');
+    (canvas as any)._transformManager = float();
+    (canvas as any)._onPointerDown({ button: 0, pointerId: 1, clientX: 25, clientY: 25, pointerType: 'mouse', isPrimary: true, preventDefault() {} });
+    expect((canvas as any)._panning).toBe(true);
+    expect((canvas as any)._transformManager._interaction.type).toBe('idle');
+  });
+
   it('lets a lifted palm\'s leave pass without ending the pen stroke', () => {
     const { canvas } = setupTool('pencil');
     const pen = { button: 0, pointerId: 5, clientX: 20, clientY: 20, pointerType: 'pen', isPrimary: true, pressure: 0.5, preventDefault() {} };
@@ -389,6 +414,19 @@ describe('app shortcuts and layer changes with a float', () => {
     (other.app as any)._onKeyDown(key('t'));
     expect((other.app as any)._state.activeTool).toBe('select');
     expect(other.canvas.enterTransformMode).toHaveBeenCalled();
+  });
+
+  it('keeps a float when V switches to the select tool, and ends it for Child Mode\'s pencil', () => {
+    const { app, canvas } = makeApp({ isTransformActive: vi.fn(() => true) });
+    (app as any)._state = { ...(app as any)._state, activeTool: 'stamp' };
+    (app as any)._onKeyDown({ ...key('v'), ctrlKey: false });
+    expect((app as any)._state.activeTool).toBe('select');
+    expect(canvas.clearSelection).not.toHaveBeenCalled();
+
+    (app as any)._state = { ...(app as any)._state, activeTool: 'select' };
+    (app as any)._buildContextValue().setChildMode(true);
+    expect(canvas.commitTransform).toHaveBeenCalled();
+    expect((app as any)._state.activeTool).toBe('pencil');
   });
 
   it('deletes an active float under any tool', () => {
