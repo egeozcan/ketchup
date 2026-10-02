@@ -161,12 +161,28 @@ describe('keys and the editor they are for', () => {
 });
 
 describe('panels moved with the editor', () => {
-  it('lets go of a scale question when moved, keeping the image\'s size, so the next drop can ask', async () => {
+  it('leaves a scale question unanswered when moved, to ask again on its return', async () => {
     const { ResizeDialog } = await import('../src/components/resize-dialog.ts');
     const dialog = new ResizeDialog();
-    const answer = dialog.show(600, 500, 400, 300);
+    let answered = false;
+    void dialog.show(600, 500, 400, 300).then(() => { answered = true; });
     dialog.disconnectedCallback();
-    await expect(answer).resolves.toBe(false);
+    await new Promise(r => setTimeout(r, 0));
+    expect(answered).toBe(false);
+  });
+
+  it('keeps an open colour or brush panel from taking Escape typed for another editor or the page', () => {
+    const settings = new ToolSettings();
+    (settings as any)._openPanel = 'color';
+    const wrapper = document.createElement('div');
+    const editor = document.createElement('drawing-app');
+    wrapper.append(editor);
+    editor.attachShadow({ mode: 'open' }).append(settings);
+    const field = document.createElement('input');
+    const esc = { key: 'Escape', target: field, composedPath: () => [field, document.body], stopPropagation: vi.fn(), preventDefault: vi.fn() };
+    (settings as any)._onPanelEscape(esc);
+    expect(esc.stopPropagation).not.toHaveBeenCalled();
+    expect((settings as any)._openPanel).toBe('color');
   });
 
   it('loads its stamp thumbnails again when it comes back', () => {

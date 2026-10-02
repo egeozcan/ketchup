@@ -390,7 +390,8 @@ export class DrawingApp extends LitElement {
     // the host decides whether leaving needs a prompt (from `modified`).
     if (this.embedded) return;
     // Commit any active float so the layer canvas includes the selection content.
-    this.canvas?.clearSelection();
+    // A crop being set up isn't work to commit; it stays (Stay on the prompt).
+    this.canvas?.clearSelection({ keepCrop: true });
     this.canvas?.flushViewportChange?.();
     if (this._dirty) {
       // Start the async save — it may or may not complete before unload.
@@ -402,8 +403,9 @@ export class DrawingApp extends LitElement {
 
   private _onVisibilityChange = () => {
     if (document.hidden) {
-      // Commit any active float so the layer canvas includes the selection content.
-      this.canvas?.clearSelection();
+      // Commit any active float so the layer canvas includes the selection
+      // content; a crop being set up stays for the user's return.
+      this.canvas?.clearSelection({ keepCrop: true });
       // A coalesced wheel/pinch viewport change waits for a frame, and hidden
       // pages don't render frames.
       this.canvas?.flushViewportChange?.();
@@ -1078,6 +1080,8 @@ export class DrawingApp extends LitElement {
         e.preventDefault();
         this.canvas.cancelExternalFloat();
       } else {
+        // Ending text being typed uses it too (focus was on Bold, say).
+        if (this.canvas?.isTextEditing?.()) e.preventDefault();
         this.canvas?.clearSelection();
       }
     } else if (ctrl && key === 'a' && e.shiftKey) {

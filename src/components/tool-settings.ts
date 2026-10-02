@@ -1673,7 +1673,7 @@ export class ToolSettings extends LitElement {
    * a clicked button), and keeps it from also reaching canvas shortcuts.
    */
   private _onPanelEscape = (e: KeyboardEvent) => {
-    if (e.key !== 'Escape' || this._openPanel === null) return;
+    if (e.key !== 'Escape' || this._openPanel === null || !keyIsForEditorOf(this, e)) return;
     e.stopPropagation();
     e.preventDefault();
     const wrap = this._openPanelWrap();

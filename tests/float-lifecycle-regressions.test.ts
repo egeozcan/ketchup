@@ -725,6 +725,26 @@ describe('app shortcuts and layer changes with a float', () => {
     expect(canvas.undo).toHaveBeenCalled();
   });
 
+  it('keeps an Escape that ends text being typed from also closing a host dialog', () => {
+    const { app, canvas } = makeApp({ isTextEditing: vi.fn(() => true) });
+    (app as any)._state = { ...(app as any)._state, activeTool: 'text' };
+    const esc = { ...key('Escape'), ctrlKey: false };
+    (app as any)._onKeyDown(esc);
+    expect(canvas.clearSelection).toHaveBeenCalled();
+    expect(esc.preventDefault).toHaveBeenCalled();
+  });
+
+  it('keeps a crop being set up when the page is hidden', () => {
+    const { app, canvas } = makeApp();
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+    try {
+      (app as any)._onVisibilityChange();
+    } finally {
+      hidden.mockRestore();
+    }
+    expect(canvas.clearSelection).toHaveBeenCalledWith({ keepCrop: true });
+  });
+
   it('keeps an Escape it uses (cancelling a crop) from also closing a host dialog', () => {
     const { app, canvas } = makeApp({ hasCropRect: true });
     (app as any)._state = { ...(app as any)._state, activeTool: 'crop' };

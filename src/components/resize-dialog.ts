@@ -91,8 +91,16 @@ export class ResizeDialog extends LitElement {
   override disconnectedCallback() {
     super.disconnectedCallback();
     // Moved with the editor, a modal would come back neither modal nor in
-    // view; an unanswered question keeps the image's size.
-    if (this._resolve) this.dismiss();
+    // view: it closes, still unanswered, and asks again on its return.
+    if (this._dialog?.open) this._dialog.close();
+  }
+
+  override connectedCallback() {
+    super.connectedCallback();
+    if (!this._resolve) return;
+    void this.updateComplete.then(() => {
+      if (this._resolve && this.isConnected && this._dialog && !this._dialog.open) this._dialog.showModal();
+    });
   }
 
   override render() {

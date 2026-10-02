@@ -314,6 +314,11 @@ export class DrawingCanvas extends LitElement {
     return true;
   }
 
+  /** Whether a text box is open for typing. */
+  isTextEditing(): boolean {
+    return this._textEditing;
+  }
+
   /** Puts text still being typed onto its layer (before an export, say). */
   commitPendingText() {
     if (this._textEditing) this._commitText();
