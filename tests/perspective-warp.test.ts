@@ -137,7 +137,7 @@ describe('warpPerspective', () => {
     expect(pixel(out, 3, 3)).toEqual([1, 2, 3, 255]);
   });
 
-  it('covers each edge pixel by the area of it inside the outline, sharp corners included', () => {
+  it('covers each pixel by the area of it inside the outline, sharp and collapsed corners included', () => {
     const quads: Quad[] = [
       // A corner of about 10°, a needle thinner than a quarter pixel at its tip,
       // a kite, a concave quad and a bow-tie.
@@ -146,9 +146,15 @@ describe('warpPerspective', () => {
       [{ x: 30.5, y: 1.1 }, { x: 34.2, y: 30.3 }, { x: 30.7, y: 58.6 }, { x: 26.9, y: 30.1 }],
       [{ x: 1, y: 1 }, { x: 60, y: 3 }, { x: 10, y: 6 }, { x: 3, y: 50 }],
       [{ x: 2.5, y: 2.2 }, { x: 50.3, y: 40.7 }, { x: 50.1, y: 2.9 }, { x: 2.2, y: 40.1 }],
-      // Two corners dragged together: triangles.
+      // Two corners dragged together: triangles, including tips a whole
+      // source edge maps onto.
       [{ x: 2.2, y: 2.7 }, { x: 60.4, y: 5.1 }, { x: 30.3, y: 50.6 }, { x: 30.3, y: 50.6 }],
       [{ x: 2.2, y: 2.7 }, { x: 60.4, y: 5.1 }, { x: 60.4, y: 5.1 }, { x: 10.3, y: 50.6 }],
+      [{ x: 10.6, y: 10.6 }, { x: 40, y: 20 }, { x: 20, y: 40 }, { x: 10.6, y: 10.6 }],
+      [{ x: 40, y: 20 }, { x: 10.6, y: 10.6 }, { x: 10.6, y: 10.6 }, { x: 20, y: 40 }],
+      // Symmetric bow-ties crossing on a pixel centre.
+      [{ x: 9, y: 6 }, { x: 8, y: 7 }, { x: 7, y: 6 }, { x: 6, y: 7 }],
+      [{ x: 47, y: 24.5 }, { x: 36, y: 36.5 }, { x: 25, y: 24.5 }, { x: 14, y: 36.5 }],
     ];
     const src = solid(8, 8, [255, 255, 255, 255]);
     for (const q of quads) {
@@ -156,8 +162,12 @@ describe('warpPerspective', () => {
       for (let y = 0; y < 64; y++) {
         for (let x = 0; x < 64; x++) {
           const alpha = pixel(out, x, y)[3] / 255;
-          if (alpha === 1 || (alpha === 0 && signedOutlineDistance(q, x + 0.5, y + 0.5) < -1)) continue;
-          expect(alpha, `(${x}, ${y}) of ${JSON.stringify(q)}`).toBeCloseTo(supersampledCoverage(q, x, y), 1.5);
+          const at = `(${x}, ${y}) of ${JSON.stringify(q)}`;
+          // A pixel whose centre is more than √½ from the outline is wholly in or out.
+          const d = signedOutlineDistance(q, x + 0.5, y + 0.5);
+          if (d >= 0.75) expect(alpha, at).toBe(1);
+          else if (d <= -0.75) expect(alpha, at).toBe(0);
+          else expect(alpha, at).toBeCloseTo(supersampledCoverage(q, x, y), 1.5);
         }
       }
     }
@@ -208,15 +218,15 @@ describe('warpPerspective', () => {
   });
 });
 
-/** How much of pixel (x, y) the quad covers by nonzero winding, from 32 × 32 samples. */
+/** How much of pixel (x, y) the quad covers by nonzero winding, from 64 × 64 samples. */
 function supersampledCoverage(q: Quad, x: number, y: number): number {
   let inside = 0;
-  for (let j = 0; j < 32; j++) {
-    for (let i = 0; i < 32; i++) {
-      if (signedOutlineDistance(q, x + (i + 0.5) / 32, y + (j + 0.5) / 32) > 0) inside++;
+  for (let j = 0; j < 64; j++) {
+    for (let i = 0; i < 64; i++) {
+      if (signedOutlineDistance(q, x + (i + 0.5) / 64, y + (j + 0.5) / 64) > 0) inside++;
     }
   }
-  return inside / 1024;
+  return inside / 4096;
 }
 
 /** Distance from (x, y) to the quad's outline: positive inside (nonzero winding), negative outside. */

@@ -35,6 +35,7 @@ uniform bool uLinear, uConvex;
 uniform vec2 uQuad[4];
 uniform vec4 uLines[4];
 uniform vec4 uLobes[8];
+uniform vec2 uCentroids[2];
 out vec4 outColor;
 
 float meanClamped(float la, float lb) {
@@ -84,7 +85,8 @@ float nearestOnQuad(vec2 p, out vec2 nearest, out vec2 edge) {
   for (int i = 0; i < 4; i++) {
     vec2 a = uQuad[i], q = uQuad[(i + 1) % 4] - a, w = p - a;
     float len2 = dot(q, q);
-    float t = len2 > 0.0 ? clamp(dot(w, q) / len2, 0.0, 1.0) : 0.0;
+    if (len2 == 0.0) continue;
+    float t = clamp(dot(w, q) / len2, 0.0, 1.0);
     vec2 d = w - q * t;
     float d2 = dot(d, d);
     if (d2 < best) {
@@ -176,7 +178,15 @@ void main() {
     }
   }
   vec2 uv;
-  if (!unmapBilinear(h, uv)) return;
+  if (!unmapBilinear(h, uv)) {
+    bool mapped = false;
+    for (int i = 0; i < 2 && !mapped; i++) {
+      vec2 d = uCentroids[i] - h;
+      float len = length(d);
+      if (len > 0.0) mapped = unmapBilinear(h + d * (0.01 / len), uv);
+    }
+    if (!mapped) return;
+  }
 
   ivec2 size = textureSize(uSrc, 0);
   vec2 st = clamp(uv * vec2(size) - 0.5, vec2(0.0), vec2(size - 1));
@@ -194,7 +204,7 @@ void main() {
 }`;
 
 const UNIFORMS = [
-  'uSrc', 'uOrigin', 'uTileH', 'uE', 'uF', 'uG', 'uK2', 'uEF', 'uLinear', 'uConvex', 'uQuad', 'uLines', 'uLobes',
+  'uSrc', 'uOrigin', 'uTileH', 'uE', 'uF', 'uG', 'uK2', 'uEF', 'uLinear', 'uConvex', 'uQuad', 'uLines', 'uLobes', 'uCentroids',
 ] as const;
 
 /** Largest tile drawn at once, keeping each draw well clear of GPU watchdogs. */
@@ -367,6 +377,7 @@ export function warpPerspectiveGpu(
   gl.uniform2fv(u.uQuad, geo.quad.flatMap(p => [p.x, p.y]));
   gl.uniform4fv(u.uLines, Float32Array.from(geo.lines));
   gl.uniform4fv(u.uLobes, Float32Array.from(geo.lobes));
+  gl.uniform2fv(u.uCentroids, geo.centroids.flatMap(p => [p.x, p.y]));
 
   out.save();
   out.setTransform(1, 0, 0, 1, 0, 0);
