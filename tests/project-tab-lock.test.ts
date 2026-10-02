@@ -439,22 +439,10 @@ describe('one tab edits a project at a time', () => {
     expect((editing as any)._projectLock?.id).toBe('p');
   });
 
-  it('lets a save under way when another tab takes the project land, and starts no other', async () => {
+  it('writes nothing once another tab has taken the project before the writes, and keeps the work here', async () => {
     const locks = fakeLocks();
-    const backend = new MockBackend();
-    await backend.init();
-    const project = await backend.projects.create({ name: 'P', thumbnailRef: null });
-    const { app } = makeApp();
-    const layer = makeLayer(20, 20, { id: 'l1' });
-    (app as any)._state = makeState({ layers: [layer], activeLayerId: 'l1', documentWidth: 20, documentHeight: 20 });
-    Object.defineProperty(app, 'canvas', { configurable: true, value: makeAppCanvasStub({ mainCanvas: makeCanvas(40, 30) }) });
-    (app as any)._backend = backend;
-    await (app as any)._enterProject(project, async () => {});
-    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb) {
-      cb(new Blob(['png'], { type: 'image/png' }));
-    });
-
-    // The save waits on storage; meanwhile another tab takes the project.
+    const { app, backend, project } = await makeSavingApp();
+    // The save waits on storage before its writes; meanwhile another tab takes the project.
     let resume!: () => void;
     const get = backend.state.get.bind(backend.state);
     vi.spyOn(backend.state, 'get').mockImplementation(async id => {
@@ -466,20 +454,49 @@ describe('one tab edits a project at a time', () => {
     (app as any)._dirty = true;
     const saving = (app as any)._save(true);
     await settle();
-    void locks.request(`ketchup-project:${project.id}`, { steal: true }, () => new Promise(() => {}));
-    await settle();
-    expect((app as any)._readOnly).toBe(true);
+    await stealElsewhere(locks, project.id);
     expect((app as any)._stranded).toBe(true);
     resume();
     await saving;
+    expect(write).not.toHaveBeenCalled();
+    expect((app as any)._stranded).toBe(true);
+  });
 
-    // The tab that took it waits for this save before loading.
-    expect(write).toHaveBeenCalledTimes(1);
+  it('lets writes under way when another tab takes the project land (that tab waits for them), and starts no other save', async () => {
+    const locks = fakeLocks();
+    const { app, backend, project } = await makeSavingApp();
+    let write!: () => void;
+    const save = backend.state.save.bind(backend.state);
+    const written = vi.spyOn(backend.state, 'save').mockImplementationOnce(async record => {
+      await new Promise<void>(r => { write = r; });
+      return save(record);
+    });
+    (app as any)._contentVersion++;
+    (app as any)._dirty = true;
+    const saving = (app as any)._save(true);
+    await vi.waitFor(() => expect(written).toHaveBeenCalled());
+    await stealElsewhere(locks, project.id);
+    write();
+    await saving;
+    expect(await backend.state.get(project.id)).toBeTruthy();
     expect((app as any)._stranded).toBe(false);
     (app as any)._contentVersion++;
     (app as any)._dirty = true;
     await (app as any)._save(true);
-    expect(write).toHaveBeenCalledTimes(1);
+    expect(written).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds the save lock only while writing, not through the pause between saves', async () => {
+    const locks = fakeLocks();
+    const { app, backend, project } = await makeSavingApp();
+    const written = vi.spyOn(backend.state, 'save');
+    (app as any)._contentVersion++;
+    (app as any)._dirty = true;
+    void (app as any)._save();
+    await vi.waitFor(() => expect(written).toHaveBeenCalled());
+    await settle();
+    expect((app as any)._savePromise).not.toBeNull();
+    expect(locks.held.has(`ketchup-save:${project.id}`)).toBe(false);
   });
 
   it('writes nothing when the browser says another tab took the project before the save began', async () => {
@@ -528,9 +545,51 @@ describe('one tab edits a project at a time', () => {
     const entering = (app as any)._enterProject(meta('p'), async () => { order.push('loaded'); });
     await settle();
     expect(order).toEqual([]);
+    // Shown, not editable, meanwhile.
+    expect((app as any)._readOnly).toBe(true);
+    expect((app as any)._opening).toBe(true);
     endSave();
     await entering;
     expect(order).toEqual(['saved', 'loaded']);
+    expect((app as any)._readOnly).toBe(false);
+    expect((app as any)._opening).toBe(false);
+  });
+
+  it('a project opened while another was still waiting to load stays: the earlier load never lands', async () => {
+    const locks = fakeLocks();
+    let endSave!: () => void;
+    void locks.request('ketchup-save:p', {}, () => new Promise<void>(r => { endSave = r; }));
+    await settle();
+    const { app } = makeApp();
+    const loadP = vi.fn(async () => {});
+    const entering = (app as any)._enterProject(meta('p'), loadP);
+    await settle();
+    await (app as any)._enterProject(meta('q'), async () => {});
+    endSave();
+    await entering;
+    expect(loadP).not.toHaveBeenCalled();
+    expect((app as any)._currentProject.id).toBe('q');
+    expect((app as any)._readOnly).toBe(false);
+    expect((app as any)._opening).toBe(false);
+    await settle();
+    expect(locks.held.has('ketchup-project:q')).toBe(true);
+    expect(locks.held.has('ketchup-project:p')).toBe(false);
+  });
+
+  it('a load overtaken by opening another project applies nothing', async () => {
+    fakeLocks();
+    const { app } = makeApp();
+    Object.defineProperty(app, 'updateComplete', { value: Promise.resolve(true) });
+    let answer!: (record: unknown) => void;
+    (app as any)._backend = { state: { get: vi.fn(() => new Promise(r => { answer = r; })) } };
+    const fresh = vi.spyOn(app as any, '_resetToFreshProject').mockResolvedValue(undefined);
+    const entering = (app as any)._enterProject(meta('p'), () => (app as any)._loadProject('p'));
+    await vi.waitFor(() => expect(answer).toBeTypeOf('function'));
+    await (app as any)._enterProject(meta('q'), async () => {});
+    answer(null);
+    await entering;
+    expect(fresh).not.toHaveBeenCalled();
+    expect((app as any)._currentProject.id).toBe('q');
   });
 
   it('locks the project made on a first visit', async () => {
