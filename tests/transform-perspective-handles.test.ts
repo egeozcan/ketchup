@@ -11,9 +11,10 @@ const none = { shift: false, ctrl: false, alt: false };
 const ctrl = { shift: false, ctrl: true, alt: false };
 
 function makeManager() {
-  // A 100×80 float at the document's origin, at zoom 1.
+  // A 100×80 float at the document's origin, at zoom 1, in from the screen's
+  // edges so ✓/✗ sit at their usual place.
   return new TransformManager(
-    new ImageData(100, 80), { x: 0, y: 0, w: 100, h: 80 }, makeCanvas(300, 300), 1, { x: 0, y: 0 },
+    new ImageData(100, 80), { x: 0, y: 0, w: 100, h: 80 }, makeCanvas(400, 400), 1, { x: 100, y: 100 },
   );
 }
 
@@ -298,6 +299,39 @@ describe('perspective corners', () => {
     const { commitCenter, cancelCenter } = getCommitCancelPositions((tm as any)._getCorners(), HANDLE_CONFIG_DESKTOP, 1);
     expect(cancelCenter.y).toBeCloseTo(commitCenter.y, 9);
     expect(cancelCenter.x).toBeGreaterThan(commitCenter.x);
+  });
+
+  it('lands a float turned by quarter turns on whole pixels, whatever its sides\' parity', () => {
+    const tm = new TransformManager(new ImageData(111, 70), { x: 100, y: 100, w: 111, h: 70 }, makeCanvas(400, 400), 1, { x: 0, y: 0 });
+    for (const deg of [90, 180, 270]) {
+      tm.rotation = deg;
+      const m = (tm as any)._matrix() as DOMMatrix;
+      for (const [x, y] of [[0, 0], [111, 0], [0, 70], [111, 70]]) {
+        const px = m.a * x + m.c * y + m.e, py = m.b * x + m.d * y + m.f;
+        expect(Math.abs(px - Math.round(px)), `${deg}°`).toBeLessThan(1e-9);
+        expect(Math.abs(py - Math.round(py)), `${deg}°`).toBeLessThan(1e-9);
+      }
+    }
+  });
+
+  it('keeps ✓ and ✗ on screen, inside the float if need be', () => {
+    // The float's top-right corner at the screen's top-right.
+    const tm = new TransformManager(new ImageData(100, 80), { x: 0, y: 0, w: 100, h: 80 }, makeCanvas(100, 300), 1, { x: 0, y: 0 });
+    const { commitCenter, cancelCenter, buttonRadius: r } = tm.getButtons();
+    for (const c of [commitCenter, cancelCenter]) {
+      expect(c.x - r).toBeGreaterThanOrEqual(0);
+      expect(c.x + r).toBeLessThanOrEqual(100);
+      expect(c.y - r).toBeGreaterThanOrEqual(0);
+    }
+    // And they still work where they are drawn.
+    tm.onPointerDown(cancelCenter, none);
+    expect(tm.onPointerUp(cancelCenter)).toBe('cancel-button');
+  });
+
+  it('grabs a thin float\'s end handles from inside along its length', () => {
+    const tm = new TransformManager(new ImageData(300, 10), { x: 0, y: 0, w: 300, h: 10 }, makeCanvas(600, 300), 1, { x: 100, y: 100 });
+    tm.onPointerDown({ x: 296.5, y: 5 }, none);
+    expect((tm as any)._interaction).toMatchObject({ type: 'resizing', handle: 'e' });
   });
 
   it('grabs the nearest of handles that have come together', () => {

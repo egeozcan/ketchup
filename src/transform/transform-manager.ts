@@ -181,11 +181,9 @@ export class TransformManager {
   // --- Pointer event handlers ---
 
   onPointerDown(docPoint: Point, modifiers: { shift: boolean; ctrl: boolean; alt: boolean }): boolean {
-    const button = this.hitTestButton(docPoint);
+    const button = this.buttonAt(docPoint);
     if (button) {
-      const { commitCenter, cancelCenter, buttonRadius } = getCommitCancelPositions(this._getCorners(), this._handleConfig, this._zoom);
-      const center = button === 'commit' ? commitCenter : cancelCenter;
-      this._interaction = { type: 'button', button, center, radius: buttonRadius };
+      this.pressButton(button);
       return true;
     }
 
@@ -275,12 +273,61 @@ export class TransformManager {
 
   /** The commit or cancel button at a point, as drawn now. */
   hitTestButton(docPoint: Point): 'commit' | 'cancel' | null {
-    const buttons = getCommitCancelPositions(this._getCorners(), this._handleConfig, this._zoom);
-    const commitDist = Math.hypot(docPoint.x - buttons.commitCenter.x, docPoint.y - buttons.commitCenter.y);
-    if (commitDist <= buttons.buttonRadius) return 'commit';
-    const cancelDist = Math.hypot(docPoint.x - buttons.cancelCenter.x, docPoint.y - buttons.cancelCenter.y);
-    if (cancelDist <= buttons.buttonRadius) return 'cancel';
+    return this.buttonAt(docPoint)?.button ?? null;
+  }
+
+  /** The commit or cancel button at a point, as drawn now, with where it is. */
+  buttonAt(docPoint: Point): { button: 'commit' | 'cancel'; center: Point; radius: number } | null {
+    const { commitCenter, cancelCenter, buttonRadius } = this.getButtons();
+    if (Math.hypot(docPoint.x - commitCenter.x, docPoint.y - commitCenter.y) <= buttonRadius) {
+      return { button: 'commit', center: commitCenter, radius: buttonRadius };
+    }
+    if (Math.hypot(docPoint.x - cancelCenter.x, docPoint.y - cancelCenter.y) <= buttonRadius) {
+      return { button: 'cancel', center: cancelCenter, radius: buttonRadius };
+    }
     return null;
+  }
+
+  /**
+   * Starts a press on a button found by `buttonAt` (perhaps before the layout
+   * moved: a typed value applied by this very press); its release must land
+   * on the button where it was.
+   */
+  pressButton(found: { button: 'commit' | 'cancel'; center: Point; radius: number }): void {
+    this._interaction = { type: 'button', ...found };
+  }
+
+  /**
+   * Where ✓ and ✗ are: out from the top-right corner as shown, or (when that
+   * is off screen: a phone has no Escape key) mirrored into the float through
+   * that corner, or failing that, pulled onto the screen.
+   */
+  getButtons(): { commitCenter: Point; cancelCenter: Point; buttonRadius: number } {
+    const corners = this._getCorners();
+    const out = getCommitCancelPositions(corners, this._handleConfig, this._zoom);
+    const r = out.buttonRadius;
+    const x0 = -this._pan.x / this._zoom, y0 = -this._pan.y / this._zoom;
+    const x1 = (this._previewCanvas.width - this._pan.x) / this._zoom;
+    const y1 = (this._previewCanvas.height - this._pan.y) / this._zoom;
+    const fits = (p: Point) => p.x - r >= x0 && p.x + r <= x1 && p.y - r >= y0 && p.y + r <= y1;
+    if (fits(out.commitCenter) && fits(out.cancelCenter)) return out;
+    const tr = corners[1];
+    const mirror = (p: Point) => ({ x: 2 * tr.x - p.x, y: 2 * tr.y - p.y });
+    const inside = { commitCenter: mirror(out.commitCenter), cancelCenter: mirror(out.cancelCenter), buttonRadius: r };
+    if (fits(inside.commitCenter) && fits(inside.cancelCenter)) return inside;
+    const clamp = (p: Point) => ({
+      x: Math.min(Math.max(p.x, x0 + r), Math.max(x0 + r, x1 - r)),
+      y: Math.min(Math.max(p.y, y0 + r), Math.max(y0 + r, y1 - r)),
+    });
+    const dx = clamp(out.commitCenter).x - out.commitCenter.x, dy = clamp(out.commitCenter).y - out.commitCenter.y;
+    const ex = clamp(out.cancelCenter).x - out.cancelCenter.x, ey = clamp(out.cancelCenter).y - out.cancelCenter.y;
+    // The same shift for both (the larger), so they stay side by side.
+    const sx = Math.abs(dx) > Math.abs(ex) ? dx : ex, sy = Math.abs(dy) > Math.abs(ey) ? dy : ey;
+    return {
+      commitCenter: { x: out.commitCenter.x + sx, y: out.commitCenter.y + sy },
+      cancelCenter: { x: out.cancelCenter.x + sx, y: out.cancelCenter.y + sy },
+      buttonRadius: r,
+    };
   }
 
   /**
@@ -434,7 +481,7 @@ export class TransformManager {
 
     drawHandles(ctx, corners, this._handleConfig, this._zoom);
     drawRotationHandleUI(ctx, corners, this._handleConfig, this._zoom);
-    drawCommitCancelButtons(ctx, corners, this._handleConfig, this._zoom);
+    drawCommitCancelButtons(ctx, this.getButtons(), this._zoom);
 
     ctx.restore();
   }
@@ -468,7 +515,7 @@ export class TransformManager {
         ctx.restore();
       }
     } else {
-      const matrix = composeMatrix(this._state);
+      const matrix = this._matrix();
       ctx.save();
       ctx.transform(matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f);
       ctx.drawImage(this._sourceCanvas, 0, 0, this._state.width, this._state.height);
@@ -596,7 +643,7 @@ export class TransformManager {
         ctx.restore();
       }
     } else {
-      const matrix = composeMatrix(this._state);
+      const matrix = this._matrix();
       ctx.save();
       ctx.setTransform(matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f);
       ctx.drawImage(this._sourceCanvas, 0, 0, this._state.width, this._state.height);
@@ -648,6 +695,28 @@ export class TransformManager {
 
   private _onChange(): void {
     this.renderPreview();
+  }
+
+  /**
+   * The matrix the float is drawn and committed with: `composeMatrix`, moved
+   * by under half a pixel so a float turned a whole number of quarter turns,
+   * unskewed and of whole-pixel size, lands on whole pixels and is copied,
+   * not resampled (a 111×70 float turned 90° about its middle has half-pixel
+   * corners).
+   */
+  private _matrix(): DOMMatrix {
+    const s = this._state;
+    const m = composeMatrix(s);
+    const quarters = s.rotation / (Math.PI / 2);
+    const w = Math.abs(s.width * s.scaleX), h = Math.abs(s.height * s.scaleY);
+    if (s.skewX !== 0 || s.skewY !== 0 || Math.abs(quarters - Math.round(quarters)) > 1e-9
+      || Math.abs(w - Math.round(w)) > 1e-9 || Math.abs(h - Math.round(h)) > 1e-9) return m;
+    const xs = [m.e, m.a * s.width + m.e, m.c * s.height + m.e, m.a * s.width + m.c * s.height + m.e];
+    const ys = [m.f, m.b * s.width + m.f, m.d * s.height + m.f, m.b * s.width + m.d * s.height + m.f];
+    const left = Math.min(...xs), top = Math.min(...ys);
+    m.e += Math.round(left) - left;
+    m.f += Math.round(top) - top;
+    return m;
   }
 
   /** The corners as shown (top-left, top-right, bottom-right, bottom-left), perspective included. */

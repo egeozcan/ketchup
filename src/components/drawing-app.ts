@@ -988,6 +988,13 @@ export class DrawingApp extends LitElement {
     }
     if (ctrl && key === 't') {
       e.preventDefault();
+      // As Ctrl+A and Ctrl+D do: the float's numeric panel is the select tool's.
+      if (this._state.activeTool !== 'select') {
+        this.canvas?.cancelCrop();
+        if (!this.canvas?.isTransformActive()) this.canvas?.clearSelection();
+        this._state = { ...this._state, activeTool: 'select' };
+        this._markDirty('setting');
+      }
       this.canvas?.enterTransformMode();
       return;
     }
@@ -1275,11 +1282,13 @@ export class DrawingApp extends LitElement {
       state: this._state,
       setTool: (tool: ToolType) => {
         if (this._state.activeTool !== tool) {
-          if (this.canvas?.isTransformActive()) {
-            this.canvas.commitTransform();
-          }
           this.canvas?.cancelCrop();
-          this.canvas?.clearSelection();
+          // The select tool is where a float is worked on (its numeric panel),
+          // so switching to it keeps an active float.
+          if (!(tool === 'select' && this.canvas?.isTransformActive())) {
+            if (this.canvas?.isTransformActive()) this.canvas.commitTransform();
+            this.canvas?.clearSelection();
+          }
         }
         this._state = { ...this._state, activeTool: tool };
         this._markDirty('setting');

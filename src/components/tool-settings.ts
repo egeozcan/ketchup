@@ -1,6 +1,5 @@
 import { LitElement, html, css, nothing, svg } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { live } from 'lit/directives/live.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import { storageBackendContext, projectServiceContext } from '../storage/storage-context.js';
@@ -1729,11 +1728,12 @@ export class ToolSettings extends LitElement {
     const blurOnEnter = (e: KeyboardEvent) => {
       if (e.key !== 'Enter') return;
       const input = e.target as HTMLInputElement;
-      ((this.getRootNode() as ShadowRoot).host as HTMLElement | undefined)?.focus();
+      ((this.getRootNode() as ShadowRoot).host as HTMLElement | undefined)?.focus({ preventScroll: true });
       if (this.shadowRoot?.activeElement === input) input.blur();
     };
     const onNumericInput = (key: string, suffix?: string) => (e: Event) => {
-      const raw = (e.target as HTMLInputElement).value;
+      const input = e.target as HTMLInputElement;
+      const raw = input.value;
       const num = suffix === '°' ? parseFloat(raw) : parseFloat(raw);
       if (!isNaN(num)) {
         if (key === 'width' && this._aspectLock && width !== 0) {
@@ -1748,6 +1748,11 @@ export class ToolSettings extends LitElement {
           set(key, num);
         }
       }
+      // Show what was applied (a skew clamps to ±89, a non-positive size is
+      // ignored); the binding alone wouldn't rewrite a value it already set,
+      // and forcing it on every render would wipe a value mid-typing.
+      const applied = this._ctx.value?.getTransformValues()?.[key as 'x'];
+      if (typeof applied === 'number') input.value = String(Math.round(applied * 10) / 10);
     };
 
     return html`
@@ -1756,11 +1761,11 @@ export class ToolSettings extends LitElement {
         <div class="transform-row">
           <span class="transform-suffix">X</span>
           <input class="transform-input" @keydown=${blurOnEnter} type="number" step="0.1"
-            .value=${live(String(Math.round(x * 10) / 10))}
+            .value=${String(Math.round(x * 10) / 10)}
             aria-label="X position" @change=${onNumericInput('x')} />
           <span class="transform-suffix">Y</span>
           <input class="transform-input" @keydown=${blurOnEnter} type="number" step="0.1"
-            .value=${live(String(Math.round(y * 10) / 10))}
+            .value=${String(Math.round(y * 10) / 10)}
             aria-label="Y position" @change=${onNumericInput('y')} />
         </div>
       </div>
@@ -1770,7 +1775,7 @@ export class ToolSettings extends LitElement {
         <div class="transform-row">
           <span class="transform-suffix">W</span>
           <input class="transform-input" @keydown=${blurOnEnter} type="number" step="0.1" min="1"
-            .value=${live(String(Math.round(width * 10) / 10))}
+            .value=${String(Math.round(width * 10) / 10)}
             aria-label="Width" @change=${onNumericInput('width')} />
           <button
             class="aspect-lock-btn ${this._aspectLock ? 'active' : ''}"
@@ -1785,7 +1790,7 @@ export class ToolSettings extends LitElement {
           </button>
           <span class="transform-suffix">H</span>
           <input class="transform-input" @keydown=${blurOnEnter} type="number" step="0.1" min="1"
-            .value=${live(String(Math.round(height * 10) / 10))}
+            .value=${String(Math.round(height * 10) / 10)}
             aria-label="Height" @change=${onNumericInput('height')} />
         </div>
       </div>
@@ -1794,7 +1799,7 @@ export class ToolSettings extends LitElement {
         <label>Rotation</label>
         <div class="transform-row">
           <input class="transform-input" @keydown=${blurOnEnter} type="number" step="0.1"
-            .value=${live(String(Math.round(rotation * 10) / 10))}
+            .value=${String(Math.round(rotation * 10) / 10)}
             aria-label="Rotation in degrees" @change=${onNumericInput('rotation', '°')} />
           <span class="transform-suffix">°</span>
         </div>
@@ -1805,12 +1810,12 @@ export class ToolSettings extends LitElement {
         <div class="transform-row">
           <span class="transform-suffix">X</span>
           <input class="transform-input" @keydown=${blurOnEnter} type="number" step="0.1"
-            .value=${live(String(Math.round(skewX * 10) / 10))}
+            .value=${String(Math.round(skewX * 10) / 10)}
             aria-label="Horizontal skew in degrees" @change=${onNumericInput('skewX', '°')} />
           <span class="transform-suffix">°</span>
           <span class="transform-suffix" style="margin-left:0.25rem;">Y</span>
           <input class="transform-input" @keydown=${blurOnEnter} type="number" step="0.1"
-            .value=${live(String(Math.round(skewY * 10) / 10))}
+            .value=${String(Math.round(skewY * 10) / 10)}
             aria-label="Vertical skew in degrees" @change=${onNumericInput('skewY', '°')} />
           <span class="transform-suffix">°</span>
         </div>

@@ -69,27 +69,28 @@ export function hitTestHandle(
   zoom: number,
 ): HandleType | null {
   const positions = getDocHandlePositions(corners);
-  let hitDist = config.hitRadius / zoom;
+  const full = config.hitRadius / zoom;
   // Inside a float small on screen, full-size handles would cover it and leave
-  // nothing to move it by: there they reach at most a quarter of its narrower side.
-  if (isInsideTransform(docPoint, corners)) {
-    let side = Infinity;
-    for (let i = 0; i < 4; i++) {
-      const p = corners[i], n = corners[(i + 1) % 4];
-      side = Math.min(side, Math.hypot(n.x - p.x, n.y - p.y) * zoom);
-    }
-    hitDist = Math.min(config.hitRadius, side / 4) / zoom;
-  }
+  // nothing to move it by: there each reaches at most a quarter of the float's
+  // extent in the direction it resizes (both, for a corner).
+  const inside = isInsideTransform(docPoint, corners);
+  const across = Math.hypot(positions.e.x - positions.w.x, positions.e.y - positions.w.y);
+  const down = Math.hypot(positions.s.x - positions.n.x, positions.s.y - positions.n.y);
 
   let nearest: HandleType | null = null;
-  let best = hitDist * hitDist;
-  for (const [key, hp] of Object.entries(positions)) {
+  let best = Infinity;
+  for (const [key, hp] of Object.entries(positions) as [HandleType, Point][]) {
+    let reach = full;
+    if (inside) {
+      const extent = key === 'e' || key === 'w' ? across : key === 'n' || key === 's' ? down : Math.min(across, down);
+      reach = Math.min(full, extent / 4);
+    }
     const dx = docPoint.x - hp.x;
     const dy = docPoint.y - hp.y;
     const d2 = dx * dx + dy * dy;
-    if (d2 <= best) {
+    if (d2 <= reach * reach && d2 <= best) {
       best = d2;
-      nearest = key as HandleType;
+      nearest = key;
     }
   }
   return nearest;
@@ -244,11 +245,10 @@ export function getCommitCancelPositions(
  */
 export function drawCommitCancelButtons(
   ctx: CanvasRenderingContext2D,
-  corners: Corners,
-  config: HandleConfig,
+  buttons: { commitCenter: Point; cancelCenter: Point; buttonRadius: number },
   zoom: number,
 ): void {
-  const { commitCenter, cancelCenter, buttonRadius } = getCommitCancelPositions(corners, config, zoom);
+  const { commitCenter, cancelCenter, buttonRadius } = buttons;
 
   ctx.save();
   ctx.lineCap = 'round';

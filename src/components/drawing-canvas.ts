@@ -228,6 +228,8 @@ export class DrawingCanvas extends LitElement {
   private _cropHandle: CropHandle | null = null;
   private _cropDragOrigin: Point | null = null;
   private _cropRectOrigin: CropRect | null = null;
+  /** The text caret before a press inside the text box, restored if it starts a pinch. */
+  private _textSelectionBeforePress: [number, number] | null = null;
   /** The rect a new crop drag replaced, restored if that drag turns out to start a pinch. */
   private _cropRectBeforeNew: CropRect | null = null;
   /** Drives the on-canvas Apply/Cancel buttons. */
@@ -796,6 +798,7 @@ export class DrawingCanvas extends LitElement {
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
     if (this._textEditing) this._renderTextPreview();
+    if (this._cropRect) this._drawCropPreview();
     this._dispatchViewportChange();
   }
 
@@ -828,6 +831,7 @@ export class DrawingCanvas extends LitElement {
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
     if (this._textEditing) this._renderTextPreview();
+    if (this._cropRect) this._drawCropPreview();
     this._dispatchViewportChange();
   }
 
@@ -1504,6 +1508,7 @@ export class DrawingCanvas extends LitElement {
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.scheduleComposite(false);
     if (this._textEditing) this._renderTextPreview();
+    if (this._cropRect) this._drawCropPreview();
   }
 
   private _endPan() {
@@ -1560,6 +1565,7 @@ export class DrawingCanvas extends LitElement {
       this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
       this.scheduleComposite(false);
       if (this._textEditing) this._renderTextPreview();
+      if (this._cropRect) this._drawCropPreview();
       this._dispatchZoomChange(true);
       return;
     }
@@ -1571,6 +1577,7 @@ export class DrawingCanvas extends LitElement {
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.scheduleComposite(false);
     if (this._textEditing) this._renderTextPreview();
+    if (this._cropRect) this._drawCropPreview();
     this._scheduleViewportChange();
   };
 
@@ -1639,6 +1646,7 @@ export class DrawingCanvas extends LitElement {
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
     if (this._textEditing) this._renderTextPreview();
+    if (this._cropRect) this._drawCropPreview();
     this._dispatchZoomChange();
   }
 
@@ -1706,6 +1714,7 @@ export class DrawingCanvas extends LitElement {
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.scheduleComposite(false);
     if (this._textEditing) this._renderTextPreview();
+    if (this._cropRect) this._drawCropPreview();
     this._dispatchViewportChange();
   }
 
@@ -1725,6 +1734,7 @@ export class DrawingCanvas extends LitElement {
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.composite();
     if (this._textEditing) this._renderTextPreview();
+    if (this._cropRect) this._drawCropPreview();
     this._dispatchZoomChange();
   }
 
@@ -1872,7 +1882,15 @@ export class DrawingCanvas extends LitElement {
     while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
     if (el !== this._textAreaEl && (el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement)) {
       el.blur();
+      // Typing goes on into the text being edited (a font size was set, say).
+      if (this._textEditing) this._textAreaEl?.focus();
     }
+  }
+
+  /** The transform's values and the ✓/✗ at a point, as currently drawn. */
+  private _transformLayoutAt(p: Point) {
+    const tm = this._transformManager!;
+    return { values: JSON.stringify(this.getTransformValues()), button: tm.buttonAt(p) };
   }
 
   private _isInTextBox(p: Point): boolean {
@@ -1998,16 +2016,42 @@ export class DrawingCanvas extends LitElement {
         this._palmPointers.add(e.pointerId);
         return;
       }
+      // A pen landing while touches are down: they are a resting palm. Undo
+      // what they started and ignore them until they lift.
+      if (e.pointerType === 'pen') {
+        for (const [id, p] of this._pointers) {
+          if (p.type !== 'touch') continue;
+          this._cancelCurrentTool(id, true);
+          this._pointers.delete(id);
+          this._palmPointers.add(id);
+        }
+        this._pendingTap = null;
+        this._pinching = false;
+      }
       // A primary pointer means no other of its kind is down: any still
       // listed lost its release (lifted off the canvas, say).
       if (e.isPrimary) {
         for (const [id, p] of this._pointers) {
           if (id !== e.pointerId && p.type === e.pointerType) this._pointers.delete(id);
         }
+        if (this._pointers.size < 2) this._pinching = false;
       }
       // A value typed in a panel field applies when the field blurs, which
-      // this press would only do after this handler; apply it first.
-      this._blurFocusedField();
+      // this press would only do after this handler; apply it first. It may
+      // move the float: the press means what was on screen.
+      if (e.button === 0) {
+        const tm = this._transformManager;
+        const drawn = tm && this._transformLayoutAt(this._getDocPoint(e));
+        this._blurFocusedField();
+        if (tm && drawn && tm === this._transformManager && drawn.values !== JSON.stringify(this.getTransformValues())) {
+          this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+          // A button as drawn still acts on release; anything else, the float
+          // has moved out from under, so this press only applied the value.
+          if (drawn.button) tm.pressButton(drawn.button);
+          this.mainCanvas.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
     }
     // Track all active pointers for multi-touch
     this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
@@ -2178,6 +2222,8 @@ export class DrawingCanvas extends LitElement {
         if (p.x >= box.x && p.x <= box.x + box.w && p.y >= box.y && p.y <= box.y + box.h) {
           const offset = this._pointToTextOffset(p);
           if (this._textAreaEl) {
+            // Put back if this finger turns out to start a pinch.
+            this._textSelectionBeforePress = [this._textAreaEl.selectionStart, this._textAreaEl.selectionEnd];
             this._textAreaEl.selectionStart = offset;
             this._textAreaEl.selectionEnd = offset;
           }
@@ -2414,7 +2460,9 @@ export class DrawingCanvas extends LitElement {
       // off into a drag.
       const tool = this.ctx.state.activeTool;
       const slid = Math.hypot(e.clientX - tap.down.clientX, e.clientY - tap.down.clientY) > 10;
-      const act = tool === 'eyedropper' || tool === 'stamp' ? e : slid ? null : tap.down;
+      const r = this._getCanvasRect();
+      const onCanvas = e.clientX >= r.left && e.clientX <= r.left + r.width && e.clientY >= r.top && e.clientY <= r.top + r.height;
+      const act = tool === 'eyedropper' || tool === 'stamp' ? (onCanvas ? e : null) : slid ? null : tap.down;
       if (act) {
         this._replayingTap = true;
         try {
@@ -2559,6 +2607,9 @@ export class DrawingCanvas extends LitElement {
     if (this._pinching) {
       return;
     }
+    // Only a pointer still down has a gesture to end (a lifted palm's leave
+    // follows its release).
+    if (!this._pointers.has(e.pointerId)) return;
     // If this pointer is captured, pointerleave is spurious — the real
     // end-of-interaction will arrive as pointerup or pointercancel.
     try {
@@ -2636,6 +2687,15 @@ export class DrawingCanvas extends LitElement {
       this._moveTempCanvas = null;
       this._moveStartPoint = null;
       this.composite();
+    }
+
+    // A caret placed (or text selected) by a pinch's first finger goes back.
+    if (this._textSelecting) {
+      this._textSelecting = false;
+      if (revert && this._textAreaEl && this._textSelectionBeforePress) {
+        [this._textAreaEl.selectionStart, this._textAreaEl.selectionEnd] = this._textSelectionBeforePress;
+        this._renderTextPreview();
+      }
     }
 
     // Cancel selection drawing (but keep existing float)
@@ -2747,6 +2807,7 @@ export class DrawingCanvas extends LitElement {
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.scheduleComposite(false);
     if (this._textEditing) this._renderTextPreview();
+    if (this._cropRect) this._drawCropPreview();
     this._dispatchZoomChange(true);
   }
 
@@ -2861,6 +2922,8 @@ export class DrawingCanvas extends LitElement {
           this._zoom,
           { x: this._panX, y: this._panY },
         );
+        // Drawn by a finger, it gets finger-sized handles from the start.
+        if (e.pointerType === 'touch') this._transformManager.setTouchMode(true);
         this.composite();
         this.requestUpdate();
         this._dispatchTransformChange();
@@ -3310,7 +3373,7 @@ export class DrawingCanvas extends LitElement {
     // was there before; if it never gets there, the internal clipboard is the
     // latest copy (until the window loses focus, when one may be made elsewhere).
     if (this._systemClipboardWrite && !(await this._systemClipboardWrite)) {
-      this.pasteSelection();
+      if (!this.isGestureActive()) this.pasteSelection();
       return;
     }
     try {
@@ -3342,12 +3405,13 @@ export class DrawingCanvas extends LitElement {
         if (this._clipboard &&
             img.naturalWidth === this._clipboard.width &&
             img.naturalHeight === this._clipboard.height) {
-          this.pasteSelection();
+          if (!this.isGestureActive()) this.pasteSelection();
           return;
         }
 
-        // External content — decode and handle
-        await this._handleExternalImage(img, 'Pasted Image');
+        // External content — decode and handle. A stroke or drag begun while
+        // the clipboard was read would be cut short; let the paste go instead.
+        if (!this.isGestureActive()) await this._handleExternalImage(img, 'Pasted Image');
         return;
       }
     } catch {
@@ -3355,7 +3419,7 @@ export class DrawingCanvas extends LitElement {
     }
 
     // No system clipboard image available — try internal clipboard
-    this.pasteSelection();
+    if (!this.isGestureActive()) this.pasteSelection();
   }
 
   public selectAll() {

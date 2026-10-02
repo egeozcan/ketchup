@@ -223,6 +223,89 @@ describe('touches, missed releases and context menus', () => {
     expect([tm.x, tm.y]).toEqual([30, 27]);
   });
 
+  it('takes a click on the ✗ as drawn as cancel, though a typed value it applies moves it', () => {
+    const { canvas } = setupTool('select');
+    const tm = new TransformManager(new ImageData(100, 80), { x: 0, y: 0, w: 100, h: 80 }, makeCanvas(100, 100), 1, { x: 100, y: 100 });
+    (canvas as any)._transformManager = tm;
+    (canvas as any)._panX = 100;
+    (canvas as any)._panY = 100;
+    const { cancelCenter } = tm.getButtons();
+    // A width typed in the panel, applied when the field blurs.
+    const field = document.createElement('input');
+    document.body.append(field);
+    field.focus();
+    field.addEventListener('blur', () => { tm.width = 260; });
+    const cancel = vi.spyOn(canvas, 'cancelTransform').mockImplementation(() => {});
+    const commit = vi.spyOn(canvas, 'commitTransform').mockImplementation(() => {});
+    const click = { button: 0, pointerId: 1, clientX: cancelCenter.x + 100, clientY: cancelCenter.y + 100, pointerType: 'mouse', isPrimary: true, preventDefault() {} } as unknown as PointerEvent;
+    (canvas as any)._onPointerDown(click);
+    (canvas as any)._onPointerUp(click);
+    expect(tm.width).toBe(260);
+    expect(cancel).toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+    field.remove();
+  });
+
+  it('lets a lifted palm\'s leave pass without ending the pen stroke', () => {
+    const { canvas } = setupTool('pencil');
+    const pen = { button: 0, pointerId: 5, clientX: 20, clientY: 20, pointerType: 'pen', isPrimary: true, pressure: 0.5, preventDefault() {} };
+    (canvas as any)._onPointerDown(pen);
+    (canvas as any)._onPointerDown({ ...touch(6, 60, 60), isPrimary: true });
+    (canvas as any)._onPointerUp(touch(6, 60, 60));
+    (canvas as any)._onPointerLeave(touch(6, 60, 60));
+    expect((canvas as any)._drawing).toBe(true);
+  });
+
+  it('treats touches already down when a pen lands as a palm, not a pinch', () => {
+    const { canvas } = setupTool('pencil');
+    (canvas as any)._onPointerDown({ ...touch(6, 60, 60), isPrimary: true });
+    const pen = { button: 0, pointerId: 5, clientX: 20, clientY: 20, pointerType: 'pen', isPrimary: true, pressure: 0.5, preventDefault() {} };
+    (canvas as any)._onPointerDown(pen);
+    expect((canvas as any)._pinching).toBe(false);
+    expect((canvas as any)._drawing).toBe(true);
+  });
+
+  it('puts the text caret back when a press in the text turns out to start a pinch', () => {
+    const { canvas } = setupTool('text');
+    (canvas as any)._textEditing = true;
+    (canvas as any)._textPosition = { x: 10, y: 10 };
+    const ta = (canvas as any)._textAreaEl ?? document.createElement('textarea');
+    (canvas as any)._textAreaEl = ta;
+    ta.value = 'Hello world';
+    ta.selectionStart = ta.selectionEnd = 11;
+    vi.spyOn(canvas as any, '_getTextBoundingBox').mockReturnValue({ x: 0, y: 0, w: 100, h: 40 });
+    vi.spyOn(canvas as any, '_pointToTextOffset').mockReturnValue(1);
+    (canvas as any)._onPointerDown(touch(1, 15, 15));
+    expect(ta.selectionStart).toBe(1);
+    (canvas as any)._onPointerDown(touch(2, 60, 60));
+    expect([ta.selectionStart, ta.selectionEnd]).toEqual([11, 11]);
+    expect((canvas as any)._textSelecting).toBe(false);
+  });
+
+  it('redraws the crop frame when the view moves', () => {
+    const { canvas } = setupTool('crop');
+    (canvas as any)._cropRectValue = { x: 10, y: 10, w: 30, h: 30 };
+    const draw = vi.spyOn(canvas as any, '_drawCropPreview');
+    canvas.setViewport(2, 40, 30);
+    expect(draw).toHaveBeenCalled();
+  });
+
+  it('places nothing when a touch stamp is lifted off the canvas', () => {
+    const { canvas, stamp } = setupTool('stamp');
+    (canvas as any)._onPointerDown(touch(1, 40, 40));
+    (canvas as any)._onPointerUp(touch(1, -30, 40));
+    expect(stamp).not.toHaveBeenCalled();
+  });
+
+  it('drops a paste that lands while a gesture has begun', async () => {
+    const { canvas } = setupTool('pencil');
+    (canvas as any)._systemClipboardWrite = Promise.resolve(false);
+    const pasteSelection = vi.spyOn(canvas, 'pasteSelection').mockImplementation(() => {});
+    (canvas as any)._pointers.set(1, { x: 0, y: 0, type: 'mouse' });
+    await canvas.paste();
+    expect(pasteSelection).not.toHaveBeenCalled();
+  });
+
   it('keeps the context menu away from a transform (Ctrl+click on macOS)', () => {
     const { canvas } = setupTool('select');
     const event = { preventDefault: vi.fn() };
@@ -292,6 +375,20 @@ describe('app shortcuts and layer changes with a float', () => {
     for (const op of ['paste', 'enterTransformMode', 'cutSelection', 'copySelection', 'duplicateInPlace', 'selectAll', 'deleteSelection']) {
       expect(canvas[op as keyof typeof canvas], op).not.toHaveBeenCalled();
     }
+  });
+
+  it('keeps an active float when switching to the select tool, and Ctrl+T switches to it', () => {
+    const { app, canvas } = makeApp({ isTransformActive: vi.fn(() => true) });
+    (app as any)._state = { ...(app as any)._state, activeTool: 'pencil' };
+    (app as any)._buildContextValue().setTool('select');
+    expect(canvas.commitTransform).not.toHaveBeenCalled();
+    expect(canvas.clearSelection).not.toHaveBeenCalled();
+
+    const other = makeApp();
+    (other.app as any)._state = { ...(other.app as any)._state, activeTool: 'pencil' };
+    (other.app as any)._onKeyDown(key('t'));
+    expect((other.app as any)._state.activeTool).toBe('select');
+    expect(other.canvas.enterTransformMode).toHaveBeenCalled();
   });
 
   it('deletes an active float under any tool', () => {
