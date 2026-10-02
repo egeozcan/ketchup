@@ -22,6 +22,8 @@ import {
  */
 const WARP_PREVIEW_PIXELS = 4096 * 4096;
 const WARP_DRAG_PIXELS = 1024 * 1024;
+/** Copies of the float are full resolution unless absurdly large (corners dragged far off). */
+const WARP_SNAPSHOT_PIXELS = 8192 * 8192;
 
 export class TransformManager {
   // --- Source data ---
@@ -370,8 +372,13 @@ export class TransformManager {
     ctx.restore();
   }
 
-  renderTransformed(ctx: CanvasRenderingContext2D): void {
-    this._render(ctx, null, this._warpPixelBudget());
+  /**
+   * Draws the transformed content for preview. Given `fullResolutionIn`, only
+   * the part inside it is drawn, exactly as `commit` would write it.
+   */
+  renderTransformed(ctx: CanvasRenderingContext2D, fullResolutionIn?: TransformRect): void {
+    if (fullResolutionIn) this._render(ctx, fullResolutionIn, Infinity);
+    else this._render(ctx, null, this._warpPixelBudget());
   }
 
   /** Draws the transformed content; a perspective warp limited as in `_getWarp`. */
@@ -452,8 +459,8 @@ export class TransformManager {
 
   /**
    * The transformed content on a canvas of its own bounds — only the part
-   * inside `clip` if given, null if none of it is (a perspective warp then at
-   * full resolution).
+   * inside `clip` if given, null if none of it is. A perspective warp is at
+   * full resolution (unclipped, unless larger than WARP_SNAPSHOT_PIXELS).
    */
   snapshot(): { canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number };
   snapshot(clip: TransformRect): { canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number } | null;
@@ -474,7 +481,7 @@ export class TransformManager {
     const ctx = canvas.getContext('2d')!;
     ctx.save();
     ctx.translate(-bounds.x, -bounds.y);
-    this._render(ctx, clip ?? null, clip ? Infinity : WARP_PREVIEW_PIXELS);
+    this._render(ctx, clip ?? null, clip ? Infinity : WARP_SNAPSHOT_PIXELS);
     ctx.restore();
     return { canvas, ...bounds };
   }

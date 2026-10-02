@@ -1362,7 +1362,7 @@ export class DrawingCanvas extends LitElement {
     merged.height = layer.canvas.height;
     const ctx = merged.getContext('2d')!;
     ctx.drawImage(layer.canvas, 0, 0);
-    this._transformManager.renderTransformed(ctx);
+    this._transformManager.renderTransformed(ctx, { x: 0, y: 0, w: merged.width, h: merged.height });
     return merged;
   }
 

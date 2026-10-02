@@ -80,6 +80,15 @@ describe('perspective preview and commit', () => {
     expect(tm.snapshot({ x: 500, y: -500, w: 10, h: 10 })).toBeNull();
   });
 
+  it('renders at commit quality when asked for a region, even while drafting', () => {
+    const tm = makePerspectiveManager();
+    (tm as any)._perspectiveCorners.se = { x: 20000, y: 20000 };
+    tm.renderTransformed(makeCanvas(100, 100).getContext('2d')!);
+    expect((tm as any)._warpCache.scale).toBeLessThan(1);
+    tm.renderTransformed(makeCanvas(100, 100).getContext('2d')!, { x: 0, y: 0, w: 100, h: 100 });
+    expect((tm as any)._warpCache.scale).toBe(1);
+  });
+
   it('frees the warp when disposed', () => {
     const tm = makePerspectiveManager();
     tm.renderTransformed(makeCanvas(100, 100).getContext('2d')!);
@@ -170,10 +179,11 @@ describe('transform preview under a layer blend mode', () => {
     expect(scratch.width).toBe(0);
   });
 
-  it('flattens the merged layer for export', () => {
-    const { canvas, merges } = setup();
+  it('flattens the merged layer for export, at commit quality', () => {
+    const { canvas, merges, renderTransformed } = setup();
     canvas.renderFlattened(null);
     expect(merges).toHaveLength(1);
+    expect(renderTransformed).toHaveBeenCalledWith(merges[0], { x: 0, y: 0, w: 100, h: 100 });
   });
 
   it('samples the merged layer under the layer\'s blend mode', () => {
