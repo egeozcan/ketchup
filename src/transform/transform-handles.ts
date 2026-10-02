@@ -187,7 +187,9 @@ export function drawRotationHandle(
 
 /**
  * Get positions for commit/cancel floating buttons: out from the top-right
- * corner as shown, so a dragged corner never ends up under them.
+ * corner as shown, diagonally between the float's own up and right, so
+ * neither the top-right corner nor the rotation handle above the top edge
+ * ends up under them, however narrow the float.
  */
 export function getCommitCancelPositions(
   corners: Corners,
@@ -196,16 +198,26 @@ export function getCommitCancelPositions(
 ): { commitCenter: Point; cancelCenter: Point; buttonRadius: number } {
   const tr = corners[1];
   const center = cornersCenter(corners);
-  const dx = tr.x - center.x;
-  const dy = tr.y - center.y;
-  const len = Math.sqrt(dx * dx + dy * dy);
+  const unit = (p: Point) => {
+    const l = Math.hypot(p.x - center.x, p.y - center.y);
+    return l > 0 ? { x: (p.x - center.x) / l, y: (p.y - center.y) / l } : { x: 0, y: 0 };
+  };
+  const up = unit(mid(corners[0], corners[1])), right = unit(mid(corners[1], corners[2]));
+  let dx = up.x + right.x;
+  let dy = up.y + right.y;
+  let len = Math.sqrt(dx * dx + dy * dy);
+  if (len < 1e-6) {
+    dx = tr.x - center.x;
+    dy = tr.y - center.y;
+    len = Math.sqrt(dx * dx + dy * dy);
+  }
   const touch = config.shape === 'circle';
   const offsetPx = (touch ? 38 : 30) / zoom;
   const buttonRadius = (touch ? 22 : 12) / zoom;
   const gap = (touch ? 48 : 28) / zoom;
 
-  const baseX = len > 1 ? tr.x + (dx / len) * offsetPx : tr.x + offsetPx;
-  const baseY = len > 1 ? tr.y + (dy / len) * offsetPx : tr.y - offsetPx;
+  const baseX = len > 1e-6 ? tr.x + (dx / len) * offsetPx : tr.x + offsetPx;
+  const baseY = len > 1e-6 ? tr.y + (dy / len) * offsetPx : tr.y - offsetPx;
 
   return {
     commitCenter: { x: baseX, y: baseY },
@@ -269,6 +281,27 @@ export function drawCommitCancelButtons(
   ctx.restore();
 }
 
+const RESIZE_CURSORS: Record<HandleType, string> = {
+  nw: 'nwse-resize', ne: 'nesw-resize', se: 'nwse-resize', sw: 'nesw-resize',
+  n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize',
+};
+
+/**
+ * The resize cursor for a handle, pointing the way it lies from the centre as
+ * shown, so a rotated, flipped, skewed or warped float gets the right one.
+ */
+export function getHandleCursor(handle: HandleType, corners: Corners): string {
+  const p = getDocHandlePositions(corners)[handle];
+  const c = cornersCenter(corners);
+  if (Math.abs(p.x - c.x) < 1e-9 && Math.abs(p.y - c.y) < 1e-9) return RESIZE_CURSORS[handle];
+  // 0° is right, 90° down; cursors repeat every 180°.
+  const deg = ((Math.atan2(p.y - c.y, p.x - c.x) * 180) / Math.PI + 360) % 180;
+  if (deg < 22.5 || deg >= 157.5) return 'ew-resize';
+  if (deg < 67.5) return 'nwse-resize';
+  if (deg < 112.5) return 'ns-resize';
+  return 'nesw-resize';
+}
+
 /**
  * Get the CSS cursor for a given document-space point.
  */
@@ -283,13 +316,7 @@ export function getCursorForPoint(
   }
 
   const handle = hitTestHandle(docPoint, corners, config, zoom);
-  if (handle) {
-    const cursors: Record<HandleType, string> = {
-      nw: 'nwse-resize', ne: 'nesw-resize', se: 'nwse-resize', sw: 'nesw-resize',
-      n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize',
-    };
-    return cursors[handle];
-  }
+  if (handle) return getHandleCursor(handle, corners);
 
   if (isInsideTransform(docPoint, corners)) {
     return 'move';

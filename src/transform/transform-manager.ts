@@ -13,6 +13,7 @@ import {
   hitTestHandle, hitTestRotationHandle, isInsideTransform,
   getCommitCancelPositions,
   drawHandles, drawRotationHandle as drawRotationHandleUI, drawCommitCancelButtons, getCursorForPoint,
+  getHandleCursor,
 } from './transform-handles.js';
 
 /**
@@ -160,6 +161,8 @@ export class TransformManager {
 
   get perspectiveActive(): boolean { return this._perspectiveActive; }
 
+  get touchMode(): boolean { return this._handleConfig === HANDLE_CONFIG_TOUCH; }
+
   setTouchMode(touch: boolean): void {
     this._handleConfig = touch ? HANDLE_CONFIG_TOUCH : HANDLE_CONFIG_DESKTOP;
     this.renderPreview();
@@ -168,7 +171,7 @@ export class TransformManager {
   // --- Pointer event handlers ---
 
   onPointerDown(docPoint: Point, modifiers: { shift: boolean; ctrl: boolean; alt: boolean }): boolean {
-    const button = this._hitTestButton(docPoint);
+    const button = this.hitTestButton(docPoint);
     if (button) {
       this._interaction = { type: 'button', button };
       return true;
@@ -250,12 +253,18 @@ export class TransformManager {
     // merely ends over one (they follow the corners) must not commit or
     // throw away the transform.
     if (inter.type === 'button') {
-      return this._hitTestButton(docPoint) === inter.button ? `${inter.button}-button` : null;
+      return this.hitTestButton(docPoint) === inter.button ? `${inter.button}-button` : null;
     }
-    return inter.type === 'outside-pending' ? 'commit' : null;
+    if (inter.type === 'outside-pending') {
+      // Pressed just beside a button and released on it: a click on it.
+      const button = this.hitTestButton(docPoint);
+      return button ? `${button}-button` : 'commit';
+    }
+    return null;
   }
 
-  private _hitTestButton(docPoint: Point): 'commit' | 'cancel' | null {
+  /** The commit or cancel button at a point, as drawn now. */
+  hitTestButton(docPoint: Point): 'commit' | 'cancel' | null {
     const buttons = getCommitCancelPositions(this._getCorners(), this._handleConfig, this._zoom);
     const commitDist = Math.hypot(docPoint.x - buttons.commitCenter.x, docPoint.y - buttons.commitCenter.y);
     if (commitDist <= buttons.buttonRadius) return 'commit';
@@ -588,7 +597,18 @@ export class TransformManager {
   }
 
   getCursor(docPoint: Point): string {
-    if (this._hitTestButton(docPoint)) return 'pointer';
+    const corners = this._getCorners();
+    // While dragging, what is being dragged decides, wherever the pointer is.
+    const inter = this._interaction;
+    switch (inter.type) {
+      case 'moving': return 'move';
+      case 'rotating': return 'grabbing';
+      case 'resizing': return getHandleCursor(inter.handle, corners);
+      case 'skewing': return getHandleCursor(inter.edge, corners);
+      case 'perspective': return getHandleCursor(inter.corner, corners);
+      case 'button': return 'pointer';
+    }
+    if (this.hitTestButton(docPoint)) return 'pointer';
     return getCursorForPoint(docPoint, this._getCorners(), this._handleConfig, this._zoom);
   }
 

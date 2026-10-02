@@ -113,19 +113,53 @@ describe('perspective corners', () => {
 
   it('acts on a button only when pressed and released on it', () => {
     const tm = makeManager();
-    const { commitCenter, cancelCenter } = getCommitCancelPositions((tm as any)._getCorners(), HANDLE_CONFIG_DESKTOP, 1);
+    const { cancelCenter } = getCommitCancelPositions((tm as any)._getCorners(), HANDLE_CONFIG_DESKTOP, 1);
     // A corner drag that ends over the cancel button keeps the transform.
     tm.onPointerDown({ x: 100, y: 80 }, ctrl);
     tm.onPointerMove(cancelCenter, ctrl);
     expect(tm.onPointerUp(cancelCenter)).toBeNull();
-    // Pressed on a button and released off it: nothing.
-    tm.onPointerDown(commitCenter, none);
+    // Pressed on a button and released off it: nothing. (The buttons follow
+    // the corners, so where they are now.)
+    const { commitCenter: commitNow } = getCommitCancelPositions((tm as any)._getCorners(), HANDLE_CONFIG_DESKTOP, 1);
+    tm.onPointerDown(commitNow, none);
     expect(tm.onPointerMove({ x: 0, y: 0 }, none)).toBe(false);
     expect(tm.onPointerUp({ x: 0, y: 0 })).toBeNull();
     // Pressed and released on it.
-    const { commitCenter: commitNow } = getCommitCancelPositions((tm as any)._getCorners(), HANDLE_CONFIG_DESKTOP, 1);
     tm.onPointerDown(commitNow, none);
     expect(tm.onPointerUp(commitNow)).toBe('commit-button');
+  });
+
+  it('takes a press just beside a button and a release on it as a click on it', () => {
+    const tm = makeManager();
+    const { cancelCenter, buttonRadius } = getCommitCancelPositions((tm as any)._getCorners(), HANDLE_CONFIG_DESKTOP, 1);
+    tm.onPointerDown({ x: cancelCenter.x + buttonRadius + 1, y: cancelCenter.y }, none);
+    expect(tm.onPointerUp({ x: cancelCenter.x + buttonRadius - 1, y: cancelCenter.y })).toBe('cancel-button');
+  });
+
+  it('keeps the commit button off the rotation handle of a narrow float', () => {
+    const tm = makeManager();
+    tm.width = 8;
+    tm.height = 200;
+    const corners = (tm as any)._getCorners();
+    const { commitCenter } = getCommitCancelPositions(corners, HANDLE_CONFIG_DESKTOP, 1);
+    tm.onPointerDown(getRotationHandlePos(corners, HANDLE_CONFIG_DESKTOP, 1), none);
+    expect((tm as any)._interaction.type).toBe('rotating');
+    tm.onPointerUp({ x: 0, y: 0 });
+    tm.onPointerDown(commitCenter, none);
+    expect((tm as any)._interaction.type).toBe('button');
+  });
+
+  it('shows the cursor of what is dragged, pointing the way the handle lies', () => {
+    const tm = makeManager();
+    // Turned a quarter: the top handle is on the left, so it resizes sideways.
+    tm.rotation = 90;
+    const n = getDocHandlePositions((tm as any)._getCorners()).n;
+    expect(tm.getCursor(n)).toBe('ew-resize');
+    tm.onPointerDown(n, none);
+    tm.onPointerMove({ x: n.x - 40, y: n.y + 300 }, none);
+    // Far from any handle, still the dragged handle's cursor.
+    expect(tm.getCursor({ x: n.x - 40, y: n.y + 300 })).toBe('ew-resize');
+    tm.onPointerUp({ x: 0, y: 0 });
   });
 
   it('grabs the nearest of handles that have come together', () => {
@@ -184,6 +218,36 @@ describe('pointer moves during a transform', () => {
     (canvas as any)._onPointerMove({ clientX: 50, clientY: 40, pointerId: 1 } as PointerEvent);
     (canvas as any)._onPointerMove({ clientX: 60, clientY: 45, pointerId: 1 } as PointerEvent);
     expect(schedule).not.toHaveBeenCalled();
+  });
+
+  it('keeps the transform cursor through updates of the context mid-drag', () => {
+    const { canvas } = setup();
+    (canvas as any)._onPointerDown({ button: 0, clientX: 100, clientY: 80, pointerId: 1 } as PointerEvent);
+    (canvas as any)._onPointerMove({ clientX: 120, clientY: 90, pointerId: 1 } as PointerEvent);
+    (canvas as any).willUpdate(new Map());
+    expect(canvas.mainCanvas.style.cursor).toBe('nwse-resize');
+  });
+
+  it('pans with the middle button during a transform, and stops on release', () => {
+    const { canvas } = setup();
+    (canvas as any)._onPointerDown({ button: 1, clientX: 50, clientY: 40, pointerId: 2, preventDefault() {} } as unknown as PointerEvent);
+    (canvas as any)._onPointerMove({ clientX: 80, clientY: 60, pointerId: 2 } as PointerEvent);
+    expect([(canvas as any)._panX, (canvas as any)._panY]).toEqual([30, 20]);
+    (canvas as any)._onPointerUp({ clientX: 80, clientY: 60, pointerId: 2 } as PointerEvent);
+    expect((canvas as any)._panning).toBe(false);
+    // The float didn't move.
+    expect((canvas as any)._transformManager.x).toBe(0);
+  });
+
+  it('takes a first touch on the ✗ drawn for the mouse as a tap on it', () => {
+    const { canvas } = setup();
+    const tm = (canvas as any)._transformManager as TransformManager;
+    const { cancelCenter } = getCommitCancelPositions((tm as any)._getCorners(), HANDLE_CONFIG_DESKTOP, 1);
+    const cancel = vi.spyOn(canvas, 'cancelTransform').mockImplementation(() => {});
+    const touch = { button: 0, clientX: cancelCenter.x, clientY: cancelCenter.y, pointerId: 3, pointerType: 'touch' };
+    (canvas as any)._onPointerDown(touch as PointerEvent);
+    (canvas as any)._onPointerUp(touch as PointerEvent);
+    expect(cancel).toHaveBeenCalled();
   });
 
   it('shows the transform cursor on the canvas, whose own cursor would hide the host\'s', () => {

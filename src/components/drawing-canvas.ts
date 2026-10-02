@@ -693,8 +693,9 @@ export class DrawingCanvas extends LitElement {
       }
     }
 
-    // Update cursor based on active tool
-    if (this.mainCanvas && this._ctx.value) {
+    // Update cursor based on active tool. A transform sets its own on pointer
+    // moves; ending it requests an update, which restores the tool's.
+    if (this.mainCanvas && this._ctx.value && !this._transformManager) {
       const tool = this._ctx.value.state.activeTool;
       if (tool === 'hand') {
         this.mainCanvas.style.cursor = this._panning ? 'grabbing' : 'grab';
@@ -1969,7 +1970,10 @@ export class DrawingCanvas extends LitElement {
     // TransformManager intercepts all pointer events when active
     if (this._transformManager) {
       const p = this._getDocPoint(e);
-      if (e.pointerType === 'touch') this._transformManager.setTouchMode(true);
+      // Touch gets bigger handles and buttons, laid out differently; a first
+      // tap on the ✓/✗ drawn for the mouse still means them.
+      const tm = this._transformManager;
+      if (e.pointerType === 'touch' && !tm.touchMode && !tm.hitTestButton(p)) tm.setTouchMode(true);
       const modifiers = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey };
       this._transformManager.onPointerDown(p, modifiers);
       this.mainCanvas.setPointerCapture(e.pointerId);
@@ -2153,6 +2157,12 @@ export class DrawingCanvas extends LitElement {
 
     if (!this._ctx.value) return;
 
+    // A middle-button pan, also during a transform.
+    if (this._panning) {
+      this._updatePan(e);
+      return;
+    }
+
     // TransformManager intercepts all pointer events when active
     if (this._transformManager) {
       const p = this._getDocPoint(e);
@@ -2193,12 +2203,6 @@ export class DrawingCanvas extends LitElement {
         this._renderEyedropperPreview(e);
         return;
       }
-    }
-
-    // Handle panning
-    if (this._panning) {
-      this._updatePan(e);
-      return;
     }
 
     if (this._textSelecting) {
@@ -2287,6 +2291,11 @@ export class DrawingCanvas extends LitElement {
     }
   }
 
+  /** What the pointer is over once a gesture ends, while a transform is still active. */
+  private _refreshTransformCursor(e: PointerEvent) {
+    if (this._transformManager) this.mainCanvas.style.cursor = this._transformManager.getCursor(this._getDocPoint(e));
+  }
+
   private _onPointerUp(e: PointerEvent) {
     // Remove pointer from tracking
     this._pointers.delete(e.pointerId);
@@ -2301,6 +2310,13 @@ export class DrawingCanvas extends LitElement {
 
     if (!this._ctx.value) return;
 
+    // A middle-button pan, also during a transform.
+    if (this._panning) {
+      this._endPan();
+      this._refreshTransformCursor(e);
+      return;
+    }
+
     // TransformManager intercepts all pointer events when active
     if (this._transformManager) {
       const p = this._getDocPoint(e);
@@ -2311,12 +2327,7 @@ export class DrawingCanvas extends LitElement {
         this.cancelTransform();
       }
       this.composite();
-      return;
-    }
-
-    // Handle panning end
-    if (this._panning) {
-      this._endPan();
+      this._refreshTransformCursor(e);
       return;
     }
 
