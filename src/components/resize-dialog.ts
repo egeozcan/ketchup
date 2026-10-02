@@ -82,6 +82,11 @@ export class ResizeDialog extends LitElement {
     this._resolve = null;
   }
 
+  /** Closes an open dialog unanswered (its document went away); `show` resolves false. */
+  dismiss() {
+    this._onKeep();
+  }
+
   override render() {
     // Pressing Escape on the native dialog fires a 'cancel' event;
     // we treat it as "Keep original size" (the non-destructive default).

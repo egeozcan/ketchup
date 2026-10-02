@@ -768,11 +768,7 @@ export class DrawingCanvas extends LitElement {
     this._panX = Math.round((vw - this._docWidth * this._zoom) / 2);
     this._panY = Math.round((vh - this._docHeight * this._zoom) / 2);
 
-    this._resizeObserver = new ResizeObserver(() => {
-      this._invalidateCanvasRect();
-      this._resizeToFit();
-    });
-    this._resizeObserver.observe(this);
+    this._observeSize();
 
     // White-fill the initial default layer. Safe even when a project will be loaded
     // because Lit guarantees child firstUpdated fires before parent firstUpdated, so
@@ -791,6 +787,14 @@ export class DrawingCanvas extends LitElement {
     if (this._textAreaEl) {
       this.shadowRoot!.appendChild(this._textAreaEl);
     }
+  }
+
+  private _observeSize() {
+    this._resizeObserver = new ResizeObserver(() => {
+      this._invalidateCanvasRect();
+      this._resizeToFit();
+    });
+    this._resizeObserver.observe(this);
   }
 
   /** Center the document in the viewport */
@@ -844,6 +848,8 @@ export class DrawingCanvas extends LitElement {
 
   // --- History ---
   private _history: HistoryEntry[] = [];
+  /** Bumped by `setHistory`, as each document is opened or started. */
+  private _documentGeneration = 0;
   private _historyIndex = -1;
   private _maxHistory = 50;
   /** Entries dropped off the bottom of the stack at the cap, ever; the states before them can no longer be undone to. */
@@ -857,6 +863,10 @@ export class DrawingCanvas extends LitElement {
   public getHistoryIndex(): number { return this._historyIndex; }
   public getHistoryTrimmedCount(): number { return this._historyTrimmed; }
   public setHistory(entries: HistoryEntry[], index: number) {
+    // A document was opened or started: a drop still asking how to fit the
+    // old one is dropped.
+    this._documentGeneration++;
+    this._resizeDialog?.dismiss();
     this._history = entries;
     this._historyIndex = Math.max(-1, Math.min(index, entries.length - 1));
     this._notifyHistory();
@@ -2316,6 +2326,10 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
+    // While another pointer is down, a pen or mouse merely hovering moves
+    // nothing (the gesture under way would follow it).
+    if (!tracked && this._pointers.size > 0) return;
+
     // Update pointer position
     if (tracked) {
       this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: tracked.type });
@@ -3286,7 +3300,9 @@ export class DrawingCanvas extends LitElement {
 
     // Show resize dialog if image exceeds canvas
     if (w > canvasW || h > canvasH) {
+      const generation = this._documentGeneration;
       const shouldScale = await this._resizeDialog.show(w, h, canvasW, canvasH);
+      if (generation !== this._documentGeneration) return;
       if (shouldScale) {
         const scale = Math.min(canvasW / w, canvasH / h);
         w = Math.round(w * scale);
@@ -3806,6 +3822,13 @@ export class DrawingCanvas extends LitElement {
     window.addEventListener('resize', this._invalidateCanvasRect);
     // Any scroll in an ancestor can move the canvas without resizing it.
     window.addEventListener('scroll', this._invalidateCanvasRect, true);
+
+    // Moved in the DOM (or back after being taken out): what leaving undid,
+    // and what first render did, is set up again.
+    if (this.hasUpdated) {
+      this.shadowRoot!.appendChild(ta);
+      this._observeSize();
+    }
   }
 
   override disconnectedCallback() {

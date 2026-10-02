@@ -363,6 +363,27 @@ describe('DrawingCanvas', () => {
     expect([tm.x, tm.y]).toEqual([160, 35]);
   });
 
+  it('drops an image still asking how to fit when another document is opened', async () => {
+    const { canvas } = setupCanvas();
+    const img = new Image();
+    Object.defineProperty(img, 'naturalWidth', { value: 300 });
+    Object.defineProperty(img, 'naturalHeight', { value: 300 });
+    Object.defineProperty(canvas, 'updateComplete', { value: Promise.resolve(true) });
+    const addLayer = vi.fn();
+    (canvas as any)._ctx.value.addLayer = addLayer;
+    let answer!: (scale: boolean) => void;
+    const dismiss = vi.fn(() => answer(false));
+    Object.defineProperty(canvas, '_resizeDialog', { value: { show: () => new Promise<boolean>(r => { answer = r; }), dismiss } });
+
+    const dropping = (canvas as any)._handleExternalImage(img, 'Dropped Image');
+    canvas.setHistory([], -1);
+    await dropping;
+
+    expect(dismiss).toHaveBeenCalled();
+    expect(addLayer).not.toHaveBeenCalled();
+    expect((canvas as any)._transformManager).toBeNull();
+  });
+
   it('reports canUndo when a transform is active with empty history', () => {
     const { canvas } = setupCanvas();
     (canvas as any)._history = [];

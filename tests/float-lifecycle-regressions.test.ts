@@ -366,6 +366,19 @@ describe('touches, missed releases and context menus', () => {
     expect(cancel).toHaveBeenCalled();
   });
 
+  it('lets a pen or mouse hovering during a finger drag move nothing', () => {
+    const { canvas } = setupTool('select');
+    const tm = new TransformManager(new ImageData(100, 80), { x: 0, y: 0, w: 100, h: 80 }, makeCanvas(400, 400), 1, { x: 100, y: 100 });
+    (canvas as any)._transformManager = tm;
+    (canvas as any)._panX = 100;
+    (canvas as any)._panY = 100;
+    (canvas as any)._onPointerDown({ ...touch(1, 150, 140), isPrimary: true });
+    (canvas as any)._onPointerMove({ ...touch(1, 160, 150), buttons: 1 });
+    (canvas as any)._onPointerMove({ button: -1, buttons: 0, pointerId: 7, clientX: 380, clientY: 20, pointerType: 'pen', isPrimary: true, preventDefault() {} });
+    (canvas as any)._onPointerUp({ ...touch(1, 160, 150), buttons: 0 });
+    expect([tm.x, tm.y]).toEqual([10, 10]);
+  });
+
   it('gives a float the touch layout when a finger lands under the hand tool, and still pans', () => {
     const { canvas } = setupTool('hand');
     const tm = new TransformManager(new ImageData(100, 80), { x: 0, y: 0, w: 100, h: 80 }, makeCanvas(400, 400), 1, { x: 100, y: 100 });
@@ -577,7 +590,10 @@ describe('app shortcuts and layer changes with a float', () => {
     let takesFocus = true;
     vi.spyOn(app, 'focus').mockImplementation(() => {});
     const active = vi.spyOn(document, 'activeElement', 'get').mockImplementation(() => (takesFocus ? app : document.body));
-    const stray = { ...key('z'), target: document.body, defaultPrevented: false } as unknown as KeyboardEvent;
+    // What holds the editor (the page's body, or a host's dialog), not connected here.
+    const holder = document.createElement('div');
+    holder.append(app);
+    const stray = { ...key('z'), target: holder, defaultPrevented: false } as unknown as KeyboardEvent;
     try {
       // Focus fell from something inside (a button disabled under it, say).
       (app as any)._onDocumentFocusIn({ composedPath: () => [app] });

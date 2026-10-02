@@ -84,6 +84,17 @@ export class DrawingApp extends LitElement {
       padding-bottom: env(safe-area-inset-bottom);
     }
 
+    /* The layout lives here too, so a host page's own display rule on the
+       element (display: block is common) can't undo it. */
+    .app {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+    }
+
     .main-area {
       display: flex;
       flex: 1;
@@ -595,6 +606,7 @@ export class DrawingApp extends LitElement {
 
     this._savePromise = (async () => {
       this._saveInProgress = true;
+      if (this._backendReopen) await this._backendReopen;
       let flushingThisRun = flushing;
       try {
         while (this._currentProject && this._dirty && this._projectLoads === 0) {
@@ -929,6 +941,9 @@ export class DrawingApp extends LitElement {
 
   private _isTextEntryTarget(e: KeyboardEvent): boolean {
     for (const node of e.composedPath()) {
+      // What the host page wraps the editor in (its own modal dialog, say)
+      // isn't where the key was typed.
+      if (node === this) break;
       if (!(node instanceof HTMLElement)) continue;
       if (node.isContentEditable) return true;
       if (node instanceof HTMLTextAreaElement) return true;
@@ -2083,6 +2098,14 @@ export class DrawingApp extends LitElement {
   override connectedCallback() {
     super.connectedCallback();
     this._initStorage();
+    // Back after a while away (a cached view, say): reopen what leaving closed.
+    if (this._backendClosed && this._backend) {
+      this._backendClosed = false;
+      const reopen = this._backend.init()
+        .catch(e => console.error('Could not reopen storage:', e))
+        .finally(() => { if (this._backendReopen === reopen) this._backendReopen = null; });
+      this._backendReopen = reopen;
+    }
     this._mobileObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
         this._updateMobileLayout(entry.contentRect.width);
@@ -2116,7 +2139,8 @@ export class DrawingApp extends LitElement {
   private _onStrayKeyDown = (e: KeyboardEvent) => {
     // Tab moves on from where focus was, as the browser does.
     if (!this._strayKeysOurs || e.defaultPrevented || e.key === 'Tab') return;
-    if (e.target !== document.body && e.target !== document.documentElement) return;
+    // Focus fell to the page, or to what holds the editor (a host's dialog).
+    if (!(e.target instanceof Node) || e.target === this || !e.target.contains(this)) return;
     // Take the keyboard back, so later keys come straight here; an editor
     // that can't take it (hidden, inert, no tabindex) leaves keys alone.
     this.focus({ preventScroll: true });
@@ -2180,6 +2204,10 @@ export class DrawingApp extends LitElement {
 
   override disconnectedCallback() {
     super.disconnectedCallback();
+    // Work in progress goes onto its layer while the canvas can still put it
+    // there (it lets go of a float, a text box and a stroke as it leaves), and
+    // in time for the save below.
+    this.canvas?.clearSelection();
     this._mobileObserver?.disconnect();
     this._mobileObserver = null;
     this.removeEventListener('keydown', this._onKeyDown);
@@ -2202,16 +2230,29 @@ export class DrawingApp extends LitElement {
       const savePromise = this._dirty
         ? this._flushPendingSaveAndWait()
         : this._savePromise!;
-      savePromise.finally(() => backendToDispose?.dispose());
+      savePromise.finally(() => this._closeBackend(backendToDispose));
     } else {
       if (this._saveTimer) {
         clearTimeout(this._saveTimer);
         this._saveTimer = null;
       }
       if (this._ownsBackend) {
-        this._backend?.dispose();
+        const backend = this._backend;
+        // A move in the DOM reconnects at once; only an editor still out of
+        // the document closes its storage.
+        setTimeout(() => this._closeBackend(backend), 0);
       }
     }
+  }
+
+  /** Whether leaving the document closed our backend, which a return reopens. */
+  private _backendClosed = false;
+  private _backendReopen: Promise<void> | null = null;
+
+  private _closeBackend(backend: StorageBackend | undefined) {
+    if (!backend || this.isConnected) return;
+    if (backend === this._backend) this._backendClosed = true;
+    void backend.dispose();
   }
 
   override render() {
@@ -2224,7 +2265,7 @@ export class DrawingApp extends LitElement {
         <p style="font-size:0.85em;color:#999;">${this._storageError}</p>
       </div>`;
     }
-    return html`
+    return html`<div class="app">
       ${!this._isMobile ? html`<tool-settings></tool-settings>` : ''}
       <div class="main-area">
         <app-toolbar></app-toolbar>
@@ -2247,7 +2288,7 @@ export class DrawingApp extends LitElement {
         ` : ''}
       </div>
       ${this._isMobile && !this._state.childMode ? html`<layers-panel @commit-opacity=${this._onCommitOpacity}></layers-panel>` : ''}
-    `;
+    </div>`;
   }
 }
 
