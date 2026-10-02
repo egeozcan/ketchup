@@ -1,47 +1,50 @@
 import type { Point } from '../types.js';
-import type { HandleType, HandleConfig, TransformState } from './transform-types.js';
-import { localToDoc, docToLocal, getTransformCenter } from './transform-math.js';
+import type { HandleType, HandleConfig } from './transform-types.js';
 
-/** Positions of 8 resize handles in local (untransformed) space. */
-function getLocalHandlePositions(w: number, h: number): Record<HandleType, Point> {
+/** The transform's corners as shown: top-left, top-right, bottom-right, bottom-left. */
+type Corners = [Point, Point, Point, Point];
+
+const mid = (a: Point, b: Point): Point => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+
+/**
+ * Get handle positions in document space: on the corners as shown (so on a
+ * perspective warp's corners) and halfway along its edges.
+ */
+export function getDocHandlePositions(corners: Corners): Record<HandleType, Point> {
+  const [nw, ne, se, sw] = corners;
+  return { nw, n: mid(nw, ne), ne, e: mid(ne, se), se, s: mid(se, sw), sw, w: mid(sw, nw) };
+}
+
+/** The middle of the corners: the transform's centre, or a perspective warp's. */
+function cornersCenter(corners: Corners): Point {
   return {
-    nw: { x: 0, y: 0 },
-    n:  { x: w / 2, y: 0 },
-    ne: { x: w, y: 0 },
-    e:  { x: w, y: h / 2 },
-    se: { x: w, y: h },
-    s:  { x: w / 2, y: h },
-    sw: { x: 0, y: h },
-    w:  { x: 0, y: h / 2 },
+    x: (corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4,
+    y: (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4,
   };
 }
 
 /**
- * Get handle positions in document space (after transform).
- */
-export function getDocHandlePositions(state: TransformState): Record<HandleType, Point> {
-  const local = getLocalHandlePositions(state.width, state.height);
-  const result = {} as Record<HandleType, Point>;
-  for (const [key, lp] of Object.entries(local)) {
-    result[key as HandleType] = localToDoc(lp, state);
-  }
-  return result;
-}
-
-/**
- * Get the rotation handle position in document space.
+ * Get the rotation handle position in document space: out from the middle of
+ * the top edge as shown, so a warped edge never runs under it.
  */
 export function getRotationHandlePos(
-  state: TransformState,
+  corners: Corners,
   config: HandleConfig,
   zoom: number,
 ): Point {
-  const topCenter = localToDoc({ x: state.width / 2, y: 0 }, state);
-  const center = getTransformCenter(state);
-  const dx = topCenter.x - center.x;
-  const dy = topCenter.y - center.y;
-  const len = Math.sqrt(dx * dx + dy * dy);
-  if (len < 1) return topCenter;
+  const topCenter = mid(corners[0], corners[1]);
+  const center = cornersCenter(corners);
+  let dx = topCenter.x - center.x;
+  let dy = topCenter.y - center.y;
+  let len = Math.sqrt(dx * dx + dy * dy);
+  if (len < 1) {
+    // The top edge's middle is the centre (a symmetric bow-tie): go out
+    // square to the top edge instead, clear of the handles there.
+    dx = corners[1].y - corners[0].y;
+    dy = corners[0].x - corners[1].x;
+    len = Math.sqrt(dx * dx + dy * dy);
+    if (len < 1) return topCenter;
+  }
   const offsetPx = config.rotationStemLength / zoom;
   return {
     x: topCenter.x + (dx / len) * offsetPx,
@@ -50,25 +53,30 @@ export function getRotationHandlePos(
 }
 
 /**
- * Hit-test the 8 resize handles. Returns the handle type or null.
+ * Hit-test the 8 resize handles. Returns the nearest one in reach (warped
+ * corners and midpoints can meet), or null.
  */
 export function hitTestHandle(
   docPoint: Point,
-  state: TransformState,
+  corners: Corners,
   config: HandleConfig,
   zoom: number,
 ): HandleType | null {
-  const positions = getDocHandlePositions(state);
+  const positions = getDocHandlePositions(corners);
   const hitDist = config.hitRadius / zoom;
 
+  let nearest: HandleType | null = null;
+  let best = hitDist * hitDist;
   for (const [key, hp] of Object.entries(positions)) {
     const dx = docPoint.x - hp.x;
     const dy = docPoint.y - hp.y;
-    if (dx * dx + dy * dy <= hitDist * hitDist) {
-      return key as HandleType;
+    const d2 = dx * dx + dy * dy;
+    if (d2 <= best) {
+      best = d2;
+      nearest = key as HandleType;
     }
   }
-  return null;
+  return nearest;
 }
 
 /**
@@ -76,11 +84,11 @@ export function hitTestHandle(
  */
 export function hitTestRotationHandle(
   docPoint: Point,
-  state: TransformState,
+  corners: Corners,
   config: HandleConfig,
   zoom: number,
 ): boolean {
-  const hp = getRotationHandlePos(state, config, zoom);
+  const hp = getRotationHandlePos(corners, config, zoom);
   const hitDist = config.hitRadius / zoom;
   const dx = docPoint.x - hp.x;
   const dy = docPoint.y - hp.y;
@@ -88,11 +96,25 @@ export function hitTestRotationHandle(
 }
 
 /**
- * Test if a document-space point is inside the transformed bounding box.
+ * Test if a document-space point is inside the outline the corners make (by
+ * nonzero winding, as a self-intersecting perspective warp is filled), or on it.
  */
-export function isInsideTransform(docPoint: Point, state: TransformState): boolean {
-  const local = docToLocal(docPoint, state);
-  return local.x >= 0 && local.x <= state.width && local.y >= 0 && local.y <= state.height;
+export function isInsideTransform(docPoint: Point, corners: Corners): boolean {
+  const { x, y } = docPoint;
+  let winding = 0;
+  for (let i = 0; i < 4; i++) {
+    const p = corners[i], n = corners[(i + 1) % 4];
+    const cross = (n.x - p.x) * (y - p.y) - (x - p.x) * (n.y - p.y);
+    // On the edge itself.
+    if (cross === 0 && Math.min(p.x, n.x) <= x && x <= Math.max(p.x, n.x)
+      && Math.min(p.y, n.y) <= y && y <= Math.max(p.y, n.y)) return true;
+    if (p.y <= y) {
+      if (n.y > y && cross > 0) winding++;
+    } else if (n.y <= y && cross < 0) {
+      winding--;
+    }
+  }
+  return winding !== 0;
 }
 
 /**
@@ -100,11 +122,11 @@ export function isInsideTransform(docPoint: Point, state: TransformState): boole
  */
 export function drawHandles(
   ctx: CanvasRenderingContext2D,
-  state: TransformState,
+  corners: Corners,
   config: HandleConfig,
   zoom: number,
 ): void {
-  const positions = getDocHandlePositions(state);
+  const positions = getDocHandlePositions(corners);
   const halfSize = config.size / 2 / zoom;
 
   ctx.save();
@@ -131,12 +153,12 @@ export function drawHandles(
  */
 export function drawRotationHandle(
   ctx: CanvasRenderingContext2D,
-  state: TransformState,
+  corners: Corners,
   config: HandleConfig,
   zoom: number,
 ): void {
-  const topCenter = localToDoc({ x: state.width / 2, y: 0 }, state);
-  const handlePos = getRotationHandlePos(state, config, zoom);
+  const topCenter = mid(corners[0], corners[1]);
+  const handlePos = getRotationHandlePos(corners, config, zoom);
   const radius = (config.shape === 'circle' ? 8 : 6) / zoom;
 
   ctx.save();
@@ -158,15 +180,16 @@ export function drawRotationHandle(
 }
 
 /**
- * Get positions for commit/cancel floating buttons.
+ * Get positions for commit/cancel floating buttons: out from the top-right
+ * corner as shown, so a dragged corner never ends up under them.
  */
 export function getCommitCancelPositions(
-  state: TransformState,
+  corners: Corners,
   config: HandleConfig,
   zoom: number,
 ): { commitCenter: Point; cancelCenter: Point; buttonRadius: number } {
-  const tr = localToDoc({ x: state.width, y: 0 }, state);
-  const center = getTransformCenter(state);
+  const tr = corners[1];
+  const center = cornersCenter(corners);
   const dx = tr.x - center.x;
   const dy = tr.y - center.y;
   const len = Math.sqrt(dx * dx + dy * dy);
@@ -190,11 +213,11 @@ export function getCommitCancelPositions(
  */
 export function drawCommitCancelButtons(
   ctx: CanvasRenderingContext2D,
-  state: TransformState,
+  corners: Corners,
   config: HandleConfig,
   zoom: number,
 ): void {
-  const { commitCenter, cancelCenter, buttonRadius } = getCommitCancelPositions(state, config, zoom);
+  const { commitCenter, cancelCenter, buttonRadius } = getCommitCancelPositions(corners, config, zoom);
 
   ctx.save();
   ctx.lineCap = 'round';
@@ -245,15 +268,15 @@ export function drawCommitCancelButtons(
  */
 export function getCursorForPoint(
   docPoint: Point,
-  state: TransformState,
+  corners: Corners,
   config: HandleConfig,
   zoom: number,
 ): string {
-  if (hitTestRotationHandle(docPoint, state, config, zoom)) {
+  if (hitTestRotationHandle(docPoint, corners, config, zoom)) {
     return 'grab';
   }
 
-  const handle = hitTestHandle(docPoint, state, config, zoom);
+  const handle = hitTestHandle(docPoint, corners, config, zoom);
   if (handle) {
     const cursors: Record<HandleType, string> = {
       nw: 'nwse-resize', ne: 'nesw-resize', se: 'nwse-resize', sw: 'nesw-resize',
@@ -262,7 +285,7 @@ export function getCursorForPoint(
     return cursors[handle];
   }
 
-  if (isInsideTransform(docPoint, state)) {
+  if (isInsideTransform(docPoint, corners)) {
     return 'move';
   }
 

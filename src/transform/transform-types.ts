@@ -10,7 +10,7 @@ export type TransformInteraction =
   | { type: 'resizing'; handle: HandleType; origin: { rect: TransformRect; point: Point } }
   | { type: 'rotating'; startAngle: number; startRotation: number }
   | { type: 'skewing'; edge: 'n' | 'e' | 's' | 'w'; startPoint: Point; startSkewX: number; startSkewY: number }
-  | { type: 'perspective'; corner: 'nw' | 'ne' | 'se' | 'sw'; startPoint: Point }
+  | { type: 'perspective'; corner: 'nw' | 'ne' | 'se' | 'sw'; startPoint: Point; startOffset: Point }
   | { type: 'outside-pending'; startPoint: Point };
 
 /** Bounding rect in document space */
