@@ -46,6 +46,8 @@ Uses a discriminated union `HistoryEntry` type (max 50 entries) supporting: `pat
 
 ### Persistence
 
+The standalone app edits a project in one tab at a time: `_enterProject` takes a Web Lock named `ketchup-project:<id>` (`_lockProject`); a tab that can't is read-only (`_readOnly`: an overlay over the main area with "Use here", no saves, no key shortcuts). "Use here" (`_editHere(true)`) asks the holder over the `ketchup-projects` BroadcastChannel to save and let go (`_handOver`), steals the lock if it doesn't answer, then reloads the project from storage; a read-only tab coming back into view tries for a lock that has become free. Embedded editors and browsers without Web Locks don't lock. IndexedDB writes resolve when their transaction completes and reject when it aborts (a quota abort fires no error event), and a project that fails to load is never saved over (work carries on in a new project).
+
 `stamp-store.ts` stores recent stamp images as Blobs (max 20 per project, auto-pruned) in the `project-stamps` object store within the `ketchup-projects` database, scoped by project ID.
 
 ### Embedding
