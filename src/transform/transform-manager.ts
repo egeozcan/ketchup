@@ -305,8 +305,9 @@ export class TransformManager {
   /**
    * Where ✓ and ✗ are: out from the top-right corner as shown, or, where that
    * is off screen (a phone has no Escape key) or over a handle, out from
-   * another corner; inside the float only when it is big enough on screen to
-   * leave its handles and middle clear; failing all that, pulled onscreen.
+   * another corner; inside the float at a corner when it is big enough on
+   * screen to leave its handles and middle clear; else pulled onscreen from
+   * any of those to where they are clear; failing all, where they cover least.
    */
   getButtons(): { commitCenter: Point; cancelCenter: Point; buttonRadius: number } {
     const b = this._placeButtons();
@@ -317,14 +318,19 @@ export class TransformManager {
   }
 
   private _placeButtons(): { commitCenter: Point; cancelCenter: Point; buttonRadius: number } {
+    type Buttons = { commitCenter: Point; cancelCenter: Point; buttonRadius: number };
     const corners = this._getCorners();
     const config = this._handleConfig, zoom = this._zoom;
-    const out = getCommitCancelPositions(corners, config, zoom);
-    const r = out.buttonRadius;
-    const x0 = -this._pan.x / zoom, y0 = -this._pan.y / zoom;
-    const x1 = (this._previewCanvas.width - this._pan.x) / zoom;
-    const y1 = (this._previewCanvas.height - this._pan.y) / zoom;
-    const fits = (p: Point) => p.x - r >= x0 && p.x + r <= x1 && p.y - r >= y0 && p.y + r <= y1;
+    const order = [1, 0, 2, 3] as const;
+    const outside = order.map(corner => getCommitCancelPositions(corners, config, zoom, corner));
+    const r = outside[0].buttonRadius;
+    // On touch, kept back from the screen's edges too: a finger there is
+    // taken by the toolbar beside the canvas.
+    const m = r + (this.touchMode ? 12 / zoom : 0);
+    const x0 = -this._pan.x / zoom + m, y0 = -this._pan.y / zoom + m;
+    const x1 = Math.max(x0, (this._previewCanvas.width - this._pan.x) / zoom - m);
+    const y1 = Math.max(y0, (this._previewCanvas.height - this._pan.y) / zoom - m);
+    const fits = (p: Point) => p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1;
     // Buttons are hit first, so none may cover a drawn handle, the rotation
     // handle or the float's middle (to move it by).
     const center = {
@@ -335,29 +341,36 @@ export class TransformManager {
       ...Object.values(getDocHandlePositions(corners)), getRotationHandlePos(corners, config, zoom), center,
     ];
     const reach = r + config.size / 2 / zoom;
-    const usable = (b: typeof out) => [b.commitCenter, b.cancelCenter].every(c => fits(c)
-      && keepClear.every(t => Math.hypot(t.x - c.x, t.y - c.y) >= reach));
-    for (const corner of [1, 0, 2, 3] as const) {
-      const b = corner === 1 ? out : getCommitCancelPositions(corners, config, zoom, corner);
-      if (usable(b)) return b;
-    }
-    const tr = corners[1];
-    const mirror = (p: Point) => ({ x: 2 * tr.x - p.x, y: 2 * tr.y - p.y });
-    const inside = { commitCenter: mirror(out.commitCenter), cancelCenter: mirror(out.cancelCenter), buttonRadius: r };
-    if (usable(inside)) return inside;
-    const clamp = (p: Point) => ({
-      x: Math.min(Math.max(p.x, x0 + r), Math.max(x0 + r, x1 - r)),
-      y: Math.min(Math.max(p.y, y0 + r), Math.max(y0 + r, y1 - r)),
+    const clearance = (b: Buttons) => Math.min(...[b.commitCenter, b.cancelCenter]
+      .flatMap(c => keepClear.map(t => Math.hypot(t.x - c.x, t.y - c.y))));
+    const usable = (b: Buttons) => fits(b.commitCenter) && fits(b.cancelCenter) && clearance(b) >= reach;
+    // Mirrored into the float through their corner, for a float too big on
+    // screen to leave room outside it.
+    const inside = outside.map((b, i): Buttons => {
+      const c = corners[order[i]];
+      const mirror = (p: Point) => ({ x: 2 * c.x - p.x, y: 2 * c.y - p.y });
+      return { commitCenter: mirror(b.commitCenter), cancelCenter: mirror(b.cancelCenter), buttonRadius: r };
     });
-    const dx = clamp(out.commitCenter).x - out.commitCenter.x, dy = clamp(out.commitCenter).y - out.commitCenter.y;
-    const ex = clamp(out.cancelCenter).x - out.cancelCenter.x, ey = clamp(out.cancelCenter).y - out.cancelCenter.y;
-    // The same shift for both (the larger), so they stay side by side.
-    const sx = Math.abs(dx) > Math.abs(ex) ? dx : ex, sy = Math.abs(dy) > Math.abs(ey) ? dy : ey;
-    return {
-      commitCenter: { x: out.commitCenter.x + sx, y: out.commitCenter.y + sy },
-      cancelCenter: { x: out.cancelCenter.x + sx, y: out.cancelCenter.y + sy },
-      buttonRadius: r,
+    // Pulled onto the screen, both by the same shift so they stay side by side.
+    const pull = (b: Buttons): Buttons => {
+      const shift = (v: number, w: number, lo: number, hi: number) => {
+        const dv = Math.min(Math.max(v, lo), hi) - v, dw = Math.min(Math.max(w, lo), hi) - w;
+        return Math.abs(dv) > Math.abs(dw) ? dv : dw;
+      };
+      const sx = shift(b.commitCenter.x, b.cancelCenter.x, x0, x1);
+      const sy = shift(b.commitCenter.y, b.cancelCenter.y, y0, y1);
+      return {
+        commitCenter: { x: b.commitCenter.x + sx, y: b.commitCenter.y + sy },
+        cancelCenter: { x: b.cancelCenter.x + sx, y: b.cancelCenter.y + sy },
+        buttonRadius: r,
+      };
     };
+    const pulled = [...outside, ...inside].map(pull);
+    const found = [...outside, ...inside, ...pulled].find(usable);
+    if (found) return found;
+    // Nowhere clear (a tiny float wedged into a corner of the screen): on
+    // screen wherever covers least.
+    return pulled.reduce((best, b) => (clearance(b) > clearance(best) ? b : best));
   }
 
   /**

@@ -498,3 +498,38 @@ describe('✓/✗ order', () => {
     }
   });
 });
+
+describe('✓/✗ with little room', () => {
+  // A 60px float turned 45°, 6px in from the top-right corner of a phone screen.
+  function wedged() {
+    const tm = new TransformManager(
+      new ImageData(60, 60), { x: 0, y: 0, w: 60, h: 60 }, makeCanvas(390, 844), 1, { x: 311.6, y: 18.4 },
+    );
+    tm.rotation = 45;
+    tm.setTouchMode(true);
+    return tm;
+  }
+
+  it('finds a spot clear of the middle and every handle when the usual ones are off screen', () => {
+    const tm = wedged();
+    const corners = (tm as any)._getCorners();
+    const targets = { middle: { x: 30, y: 30 }, ...getDocHandlePositions(corners) };
+    for (const [name, p] of Object.entries(targets)) {
+      expect(['commit', 'cancel'], name).not.toContain(tm.hitKind(p));
+    }
+  });
+
+  it('keeps them back from the screen edges on touch, where the toolbar takes a finger', () => {
+    // Where ✗ would usually go, its edge is 3px from the screen's.
+    const pan = { x: 190, y: 400 };
+    const tm = new TransformManager(
+      new ImageData(100, 80), { x: 0, y: 0, w: 100, h: 80 }, makeCanvas(390, 844), 1, pan,
+    );
+    tm.setTouchMode(true);
+    const { commitCenter, cancelCenter, buttonRadius: r } = tm.getButtons();
+    for (const c of [commitCenter, cancelCenter]) {
+      const x = c.x + pan.x, y = c.y + pan.y;
+      expect(Math.min(x - r, 390 - x - r, y - r, 844 - y - r)).toBeGreaterThanOrEqual(12);
+    }
+  });
+});
