@@ -4,7 +4,7 @@ import { TransformManager } from '../src/transform/transform-manager.ts';
 import {
   getCommitCancelPositions, getDocHandlePositions, getRotationHandlePos, isInsideTransform,
 } from '../src/transform/transform-handles.ts';
-import { HANDLE_CONFIG_DESKTOP } from '../src/transform/transform-types.ts';
+import { HANDLE_CONFIG_DESKTOP, HANDLE_CONFIG_TOUCH } from '../src/transform/transform-types.ts';
 import { attachCanvasElements, makeCanvas, makeLayer, makeState } from './helpers.ts';
 
 const none = { shift: false, ctrl: false, alt: false };
@@ -52,15 +52,62 @@ describe('perspective corners', () => {
     expect(round((tm as any)._getCorners())).toEqual([[80, 80], [20, 80], [0, 0], [100, 0]]);
     tm.rotation = 0;
 
-    // Twice as wide: the taper doubles with it, typed in or dragged.
+    // Typed in twice as wide: the taper doubles with it.
     tm.width = 200;
     expect(round((tm as any)._getCorners())).toEqual([[-10, 0], [110, 0], [150, 80], [-50, 80]]);
+
+    // Dragged: the grabbed edge follows the pointer and the other side stays.
     const dragged = makeManager();
     drag(dragged, { x: 0, y: 0 }, { x: 20, y: 0 });
     drag(dragged, { x: 100, y: 0 }, { x: 80, y: 0 });
     // The right edge's handle, halfway down the warped right edge, out by 100.
     drag(dragged, { x: 90, y: 40 }, { x: 190, y: 40 }, none);
-    expect(round((dragged as any)._getCorners())).toEqual([[40, 0], [160, 0], [200, 80], [0, 80]]);
+    expect(round((dragged as any)._getCorners())).toEqual([[20, 0], [180, 0], [200, 80], [0, 80]]);
+  });
+
+  it('keeps the opposite edge still when resizing a turned, flipped, skewed or scaled float', () => {
+    const states: [string, (tm: TransformManager) => void][] = [
+      ['rotated 90°', tm => { tm.rotation = 90; }],
+      ['rotated 180°', tm => { tm.rotation = 180; }],
+      ['flipped', tm => { tm.flipH = true; }],
+      ['scaled', tm => { tm.width = 200; }],
+      ['skewed', tm => { tm.skewX = 30; }],
+    ];
+    for (const [label, setup] of states) {
+      for (const handle of ['se', 'e', 'n'] as const) {
+        const tm = makeManager();
+        setup(tm);
+        const corners = () => (tm as any)._getCorners() as { x: number; y: number }[];
+        const at = getDocHandlePositions(corners() as any)[handle];
+        const opposite = { se: 0, e: 0, n: 2 }[handle];
+        const fixed = corners()[opposite];
+        const to = { x: at.x + 23, y: at.y + 17 };
+        tm.onPointerDown(at, none);
+        // Several steps, as a real drag makes.
+        for (let i = 1; i <= 5; i++) tm.onPointerMove({ x: at.x + 23 * i / 5, y: at.y + 17 * i / 5 }, none);
+        tm.onPointerUp(to);
+        const after = corners();
+        expect(after[opposite].x, `${label} ${handle}`).toBeCloseTo(fixed.x, 6);
+        expect(after[opposite].y, `${label} ${handle}`).toBeCloseTo(fixed.y, 6);
+        if (handle === 'se') {
+          // A corner handle lands on the pointer.
+          expect(after[2].x, `${label} ${handle}`).toBeCloseTo(to.x, 6);
+          expect(after[2].y, `${label} ${handle}`).toBeCloseTo(to.y, 6);
+        }
+      }
+    }
+  });
+
+  it('flips a float dragged past its opposite edge, in place', () => {
+    const tm = makeManager();
+    // The right edge (x = 100) dragged to x = -60: 60 wide, mirrored, left of 0.
+    tm.onPointerDown({ x: 100, y: 40 }, none);
+    tm.onPointerMove({ x: 40, y: 40 }, none);
+    tm.onPointerMove({ x: -60, y: 40 }, none);
+    tm.onPointerUp({ x: -60, y: 40 });
+    expect(tm.flipH).toBe(true);
+    expect(tm.width).toBeCloseTo(60, 6);
+    expect(tm.getBounds()).toEqual({ x: -60, y: 0, w: 60, h: 80 });
   });
 
   it('puts the handles on the warped corners and halfway along the warped edges', () => {
@@ -166,6 +213,50 @@ describe('perspective corners', () => {
     // Far from any handle, still the dragged handle's cursor.
     expect(tm.getCursor({ x: n.x - 40, y: n.y + 300 })).toBe('ew-resize');
     tm.onPointerUp({ x: 0, y: 0 });
+  });
+
+  it('never puts ✓ or ✗ over a handle or the rotation handle, however the float is turned', () => {
+    for (const config of [HANDLE_CONFIG_DESKTOP, HANDLE_CONFIG_TOUCH]) {
+      for (const [w, h] of [[300, 250], [60, 300], [300, 60]]) {
+        for (const flips of [[false, false], [true, false], [false, true], [true, true]]) {
+          for (let deg = 0; deg < 360; deg += 5) {
+            const tm = makeManager();
+            tm.width = w;
+            tm.height = h;
+            [tm.flipH, tm.flipV] = flips;
+            tm.rotation = deg;
+            const corners = (tm as any)._getCorners();
+            const { commitCenter, cancelCenter, buttonRadius } = getCommitCancelPositions(corners, config, 1);
+            const targets = [...Object.values(getDocHandlePositions(corners)), getRotationHandlePos(corners, config, 1)];
+            for (const t of targets) {
+              for (const b of [commitCenter, cancelCenter]) {
+                expect(Math.hypot(t.x - b.x, t.y - b.y), `${w}×${h} ${flips} ${deg}°`).toBeGreaterThan(buttonRadius);
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('points corner cursors diagonally whatever the float\'s proportions', () => {
+    for (const [w, h] of [[300, 30], [40, 200]]) {
+      const tm = makeManager();
+      tm.width = w;
+      tm.height = h;
+      const corners = (tm as any)._getCorners();
+      const pos = getDocHandlePositions(corners);
+      expect(tm.getCursor(pos.nw), `${w}×${h}`).toBe('nwse-resize');
+      expect(tm.getCursor(pos.ne), `${w}×${h}`).toBe('nesw-resize');
+    }
+  });
+
+  it('acts on a button that moved between press and release (a typed value applied on blur)', () => {
+    const tm = makeManager();
+    const { commitCenter } = getCommitCancelPositions((tm as any)._getCorners(), HANDLE_CONFIG_DESKTOP, 1);
+    tm.onPointerDown(commitCenter, none);
+    tm.width = 200;
+    expect(tm.onPointerUp(commitCenter)).toBe('commit-button');
   });
 
   it('grabs the nearest of handles that have come together', () => {

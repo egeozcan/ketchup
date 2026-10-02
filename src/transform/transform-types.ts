@@ -7,13 +7,17 @@ export type HandleType = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 export type TransformInteraction =
   | { type: 'idle' }
   | { type: 'moving'; startPoint: Point; startX: number; startY: number }
-  | { type: 'resizing'; handle: HandleType; origin: { rect: TransformRect; point: Point; perspective: PerspectiveCorners } }
+  /** Measured against the state when grabbed, so the opposite edge stays put. */
+  | { type: 'resizing'; handle: HandleType; origin: { point: Point; state: TransformState } }
   | { type: 'rotating'; startAngle: number; startRotation: number }
   | { type: 'skewing'; edge: 'n' | 'e' | 's' | 'w'; startPoint: Point; startSkewX: number; startSkewY: number }
   | { type: 'perspective'; corner: 'nw' | 'ne' | 'se' | 'sw'; startPoint: Point; startOffset: Point }
   | { type: 'outside-pending'; startPoint: Point }
-  /** Pressed on the commit or cancel button, which acts only if released on it too. */
-  | { type: 'button'; button: 'commit' | 'cancel' };
+  /**
+   * Pressed on the commit or cancel button, which acts only if released on it
+   * too (where it was when pressed: a typed value applied on blur may move it).
+   */
+  | { type: 'button'; button: 'commit' | 'cancel'; center: Point; radius: number };
 
 /** Bounding rect in document space */
 export interface TransformRect {

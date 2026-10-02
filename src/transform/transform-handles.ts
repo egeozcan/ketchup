@@ -216,12 +216,13 @@ export function getCommitCancelPositions(
   const buttonRadius = (touch ? 22 : 12) / zoom;
   const gap = (touch ? 48 : 28) / zoom;
 
-  const baseX = len > 1e-6 ? tr.x + (dx / len) * offsetPx : tr.x + offsetPx;
-  const baseY = len > 1e-6 ? tr.y + (dy / len) * offsetPx : tr.y - offsetPx;
+  // Both buttons on the diagonal, the cancel button further out, so neither
+  // comes nearer a handle than the commit button does, however it is turned.
+  const ux = len > 1e-6 ? dx / len : Math.SQRT1_2, uy = len > 1e-6 ? dy / len : -Math.SQRT1_2;
 
   return {
-    commitCenter: { x: baseX, y: baseY },
-    cancelCenter: { x: baseX + gap, y: baseY },
+    commitCenter: { x: tr.x + ux * offsetPx, y: tr.y + uy * offsetPx },
+    cancelCenter: { x: tr.x + ux * (offsetPx + gap), y: tr.y + uy * (offsetPx + gap) },
     buttonRadius,
   };
 }
@@ -291,11 +292,18 @@ const RESIZE_CURSORS: Record<HandleType, string> = {
  * shown, so a rotated, flipped, skewed or warped float gets the right one.
  */
 export function getHandleCursor(handle: HandleType, corners: Corners): string {
-  const p = getDocHandlePositions(corners)[handle];
+  const positions = getDocHandlePositions(corners);
   const c = cornersCenter(corners);
-  if (Math.abs(p.x - c.x) < 1e-9 && Math.abs(p.y - c.y) < 1e-9) return RESIZE_CURSORS[handle];
+  const out = (h: HandleType) => {
+    const p = positions[h], l = Math.hypot(p.x - c.x, p.y - c.y);
+    return l > 1e-9 ? { x: (p.x - c.x) / l, y: (p.y - c.y) / l } : { x: 0, y: 0 };
+  };
+  // A corner points out between its two edges, whatever the float's proportions.
+  const [a, b] = handle.length === 2 ? [out(handle[0] as HandleType), out(handle[1] as HandleType)] : [out(handle), { x: 0, y: 0 }];
+  const dx = a.x + b.x, dy = a.y + b.y;
+  if (Math.hypot(dx, dy) < 1e-9) return RESIZE_CURSORS[handle];
   // 0° is right, 90° down; cursors repeat every 180°.
-  const deg = ((Math.atan2(p.y - c.y, p.x - c.x) * 180) / Math.PI + 360) % 180;
+  const deg = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 180;
   if (deg < 22.5 || deg >= 157.5) return 'ew-resize';
   if (deg < 67.5) return 'nwse-resize';
   if (deg < 112.5) return 'ns-resize';

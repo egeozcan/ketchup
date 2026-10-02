@@ -979,6 +979,13 @@ export class DrawingApp extends LitElement {
     }
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
+    // Mid-gesture (a stroke, a drag, a float being moved) these would start or
+    // end a float under it and leave the gesture's pixels outside history.
+    if (this.canvas?.isGestureActive?.()
+      && ((ctrl && ['t', 'c', 'x', 'v', 'd', 'a'].includes(key)) || e.key === 'Delete' || e.key === 'Backspace')) {
+      e.preventDefault();
+      return;
+    }
     if (ctrl && key === 't') {
       e.preventDefault();
       this.canvas?.enterTransformMode();
@@ -1011,7 +1018,7 @@ export class DrawingApp extends LitElement {
       this.canvas?.duplicateInPlace();
     } else if (
       (e.key === 'Delete' || e.key === 'Backspace') &&
-      (this._state.activeTool === 'select' || this._state.activeTool === 'stamp')
+      (this._state.activeTool === 'select' || this._state.activeTool === 'stamp' || this.canvas?.isTransformActive())
     ) {
       e.preventDefault();
       this.canvas?.deleteSelection();
@@ -1650,7 +1657,8 @@ export class DrawingApp extends LitElement {
   private _onHistoryChange(e: CustomEvent) {
     this._canUndo = e.detail.canUndo;
     this._canRedo = e.detail.canRedo;
-    this._markDirty();
+    // A float starting only makes Undo apply; nothing to save.
+    if (e.detail.stackChanged !== false) this._markDirty();
     this._reportModified();
   }
 

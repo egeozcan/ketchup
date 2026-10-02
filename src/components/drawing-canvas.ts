@@ -191,6 +191,15 @@ export class DrawingCanvas extends LitElement {
   private _lastPointerScreenY = 0;
   private _pointerOnCanvas = false;
 
+  /**
+   * A touch on a tool that acts on a tap (stamp, fill, eyedropper, a new text
+   * box), held until the finger lifts: a second finger first makes it a
+   * pinch, which must leave nothing behind.
+   */
+  private _pendingTap: { pointerId: number; down: PointerEvent } | null = null;
+  /** The held tap is being carried out now, after its finger lifted. */
+  private _replayingTap = false;
+
   /** True when the current float was created via paste/drop — Escape discards + deletes layer */
   private _floatIsExternalImage = false;
 
@@ -286,6 +295,8 @@ export class DrawingCanvas extends LitElement {
 
   enterTransformMode(): void {
     if (this._transformManager) return;
+    // The float would hide the crop rectangle, which would stay armed.
+    if (this._cropRect) this.cancelCrop();
     const state = this._ctx.value?.state;
     if (!state) return;
     const layer = state.layers.find(l => l.id === state.activeLayerId);
@@ -974,7 +985,8 @@ export class DrawingCanvas extends LitElement {
     }
   }
 
-  private _notifyHistory() {
+  /** `stackChanged = false`: only whether Undo applies changed (a float started). */
+  private _notifyHistory(stackChanged = true) {
     this.dispatchEvent(
       new CustomEvent('history-change', {
         bubbles: true,
@@ -982,6 +994,7 @@ export class DrawingCanvas extends LitElement {
         detail: {
           canUndo: this._historyIndex >= 0 || this._transformManager !== null,
           canRedo: this._historyIndex < this._history.length - 1,
+          stackChanged,
         },
       }),
     );
@@ -1835,6 +1848,11 @@ export class DrawingCanvas extends LitElement {
     if (previewCtx) previewCtx.clearRect(0, 0, this._vw, this._vh);
   }
 
+  /** On macOS Ctrl+click opens it, and a transform uses Ctrl+drag. */
+  private _onContextMenu = (e: Event) => {
+    if (this._transformManager) e.preventDefault();
+  };
+
   private _onWindowBlur = () => {
     this._altSampling = false;
     this._clearEyedropperPreview();
@@ -1985,6 +2003,15 @@ export class DrawingCanvas extends LitElement {
 
     const { activeTool } = this.ctx.state;
 
+    if (e.pointerType === 'touch' && !this._replayingTap && (
+      activeTool === 'stamp' || activeTool === 'fill' || activeTool === 'eyedropper'
+      || (activeTool === 'text' && !this._textEditing))) {
+      // Keeps the text box's textarea focusable, as below.
+      if (activeTool === 'text') e.preventDefault();
+      this._pendingTap = { pointerId: e.pointerId, down: e };
+      return;
+    }
+
     // Alt-hold eyedropper modifier for drawing tools
     if (e.altKey && (activeTool === 'pencil' || activeTool === 'eraser')) {
       this._altSampling = true;
@@ -2037,7 +2064,8 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
-    this.mainCanvas.setPointerCapture(e.pointerId);
+    // A held tap's pointer is gone by the time it is carried out.
+    if (!this._replayingTap) this.mainCanvas.setPointerCapture(e.pointerId);
     const p = this._getDocPoint(e);
 
     if (activeTool === 'select') {
@@ -2143,6 +2171,13 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _onPointerMove(e: PointerEvent) {
+    // A mouse release never seen (a context menu took it, say) leaves a
+    // gesture running with no button held: end it now.
+    if (e.pointerType === 'mouse' && e.buttons === 0 && this._pointers.has(e.pointerId)) {
+      this._onPointerUp(e);
+      return;
+    }
+
     // Update pointer position
     if (this._pointers.has(e.pointerId)) {
       this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -2313,6 +2348,25 @@ export class DrawingCanvas extends LitElement {
 
     if (!this._ctx.value) return;
 
+    const tap = this._pendingTap;
+    if (tap && tap.pointerId === e.pointerId) {
+      this._pendingTap = null;
+      // The eyedropper samples where the finger lifts; the rest act where it
+      // landed, unless it slid off into a drag.
+      const slid = Math.hypot(e.clientX - tap.down.clientX, e.clientY - tap.down.clientY) > 10;
+      const act = this.ctx.state.activeTool === 'eyedropper' ? e : slid ? null : tap.down;
+      if (act) {
+        this._replayingTap = true;
+        try {
+          this._onPointerDown(act);
+        } finally {
+          this._replayingTap = false;
+          this._pointers.delete(e.pointerId);
+        }
+      }
+      return;
+    }
+
     // A middle-button pan, also during a transform.
     if (this._panning) {
       this._endPan();
@@ -2459,6 +2513,7 @@ export class DrawingCanvas extends LitElement {
 
   private _onPointerCancel(e: PointerEvent) {
     this._pointers.delete(e.pointerId);
+    if (this._pendingTap?.pointerId === e.pointerId) this._pendingTap = null;
     if (this._pinching) {
       if (this._pointers.size < 2) {
         this._pinching = false;
@@ -2548,6 +2603,8 @@ export class DrawingCanvas extends LitElement {
 
   /** Enter pinch/pan mode: cancel current tool, initialize pinch tracking */
   private _enterPinchMode(e: PointerEvent) {
+    // A held tap becomes the pinch's first finger: nothing to carry out.
+    this._pendingTap = null;
     // Cancel whatever the first finger was doing
     for (const [id] of this._pointers) {
       if (id !== e.pointerId) {
@@ -2724,8 +2781,8 @@ export class DrawingCanvas extends LitElement {
         this.composite();
         this.requestUpdate();
         this._dispatchTransformChange();
-        // Undo can now cancel the float.
-        this._notifyHistory();
+        // Undo can now cancel the float (nothing to save yet).
+        this._notifyHistory(false);
       }
     }
   }
@@ -3124,12 +3181,13 @@ export class DrawingCanvas extends LitElement {
     // covers after a commit would also clear everything else in its bounds
     // (it may be rotated or warped) and whatever it was moved over.
     this._copyFloatToClipboard();
-    if (this._floatIsExternalImage) this.cancelExternalFloat();
-    else this.deleteSelection();
+    this.deleteSelection();
   }
 
   public pasteSelection() {
     if (!this._clipboard || !this._clipboardOrigin) return;
+    // The float would hide the crop rectangle, which would stay armed.
+    if (this._cropRect) this.cancelCrop();
     if (this._transformManager) this.commitTransform();
     // Keep the pre-paste snapshot until the float is either committed or
     // deleted. Deleting a pasted float is a deliberate, undoable action.
@@ -3246,8 +3304,8 @@ export class DrawingCanvas extends LitElement {
     this.composite();
     this.requestUpdate();
     this._dispatchTransformChange();
-    // Undo can now cancel the float.
-    this._notifyHistory();
+    // Undo can now cancel the float (nothing to save yet).
+    this._notifyHistory(false);
   }
 
   public selectAllCanvas() {
@@ -3275,8 +3333,8 @@ export class DrawingCanvas extends LitElement {
     this.composite();
     this.requestUpdate();
     this._dispatchTransformChange();
-    // Undo can now cancel the float.
-    this._notifyHistory();
+    // Undo can now cancel the float (nothing to save yet).
+    this._notifyHistory(false);
   }
 
   public duplicateInPlace() {
@@ -3317,6 +3375,11 @@ export class DrawingCanvas extends LitElement {
 
   public deleteSelection() {
     if (!this._transformManager) return;
+    // A pasted or dropped image goes with the layer it came on, as with Escape.
+    if (this._floatIsExternalImage) {
+      this.cancelExternalFloat();
+      return;
+    }
     // A newly inserted stamp has no pre-existing layer mutation, so Delete is
     // equivalent to cancelling it. Pasted floats retain a before snapshot so
     // their deletion stays as an explicit undo step.
@@ -3333,9 +3396,6 @@ export class DrawingCanvas extends LitElement {
     this._transformManager.dispose();
     this._transformManager = null;
     this._transformContentMode = 'lifted';
-    // Otherwise the next float would be taken for this one, and cancelling it
-    // would drop its pixels as if they had been pasted.
-    this._floatIsExternalImage = false;
     // Push history so the deletion is undoable.
     this._pushDrawHistory(true);
     this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
@@ -3851,6 +3911,7 @@ export class DrawingCanvas extends LitElement {
         @pointerup=${this._onPointerUp}
         @pointerleave=${this._onPointerLeave}
         @pointercancel=${this._onPointerCancel}
+        @contextmenu=${this._onContextMenu}
       ></canvas>
       <canvas
         id="preview"

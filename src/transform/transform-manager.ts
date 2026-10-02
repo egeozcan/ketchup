@@ -5,7 +5,7 @@ import {
   HANDLE_CONFIG_DESKTOP, HANDLE_CONFIG_TOUCH, MIN_TRANSFORM_SIZE, OUTSIDE_DRAG_THRESHOLD,
 } from './transform-types.js';
 import {
-  composeMatrix, docToLocal, getTransformCenter, getTransformedCorners,
+  composeMatrix, docToLocal, localToDoc, getTransformCenter, getTransformedCorners,
   snapAngle, getPerspectiveDestCorners, warpPerspective,
 } from './transform-math.js';
 import { canWarpOnGpu, releaseGpuSource, warpPerspectiveGpu } from './perspective-gl.js';
@@ -173,7 +173,9 @@ export class TransformManager {
   onPointerDown(docPoint: Point, modifiers: { shift: boolean; ctrl: boolean; alt: boolean }): boolean {
     const button = this.hitTestButton(docPoint);
     if (button) {
-      this._interaction = { type: 'button', button };
+      const { commitCenter, cancelCenter, buttonRadius } = getCommitCancelPositions(this._getCorners(), this._handleConfig, this._zoom);
+      const center = button === 'commit' ? commitCenter : cancelCenter;
+      this._interaction = { type: 'button', button, center, radius: buttonRadius };
       return true;
     }
 
@@ -200,11 +202,7 @@ export class TransformManager {
       } else {
         this._interaction = {
           type: 'resizing', handle,
-          origin: {
-            rect: { x: this._state.x, y: this._state.y, w: this._state.width, h: this._state.height },
-            point: docPoint,
-            perspective: structuredClone(this._perspectiveCorners),
-          },
+          origin: { point: docPoint, state: { ...this._state } },
         };
       }
       return true;
@@ -254,7 +252,8 @@ export class TransformManager {
     // merely ends over one (they follow the corners) must not commit or
     // throw away the transform.
     if (inter.type === 'button') {
-      return this.hitTestButton(docPoint) === inter.button ? `${inter.button}-button` : null;
+      const onIt = Math.hypot(docPoint.x - inter.center.x, docPoint.y - inter.center.y) <= inter.radius;
+      return onIt ? `${inter.button}-button` : null;
     }
     if (inter.type === 'outside-pending') {
       // Pressed just beside a button and released on it: a click on it.
@@ -303,36 +302,37 @@ export class TransformManager {
     const inter = this._interaction;
     if (inter.type !== 'resizing') return;
     const { handle, origin } = inter;
-    const { rect, point: startPoint } = origin;
-    const localCurrent = docToLocal(docPoint, this._state);
-    const localStart = docToLocal(startPoint, this._state);
-    const dx = localCurrent.x - localStart.x;
-    const dy = localCurrent.y - localStart.y;
-    let newX = rect.x, newY = rect.y, newW = rect.w, newH = rect.h;
-    if (handle.includes('e')) { newW = rect.w + dx; }
-    if (handle.includes('w')) { newX = rect.x + dx; newW = rect.w - dx; }
-    if (handle.includes('s')) { newH = rect.h + dy; }
-    if (handle.includes('n')) { newY = rect.y + dy; newH = rect.h - dy; }
+    const start = origin.state;
+    // In the float's own space as grabbed, where the opposite edge stays put.
+    const from = docToLocal(origin.point, start), to = docToLocal(docPoint, start);
+    const dx = to.x - from.x, dy = to.y - from.y;
+    // The new extent, negative once dragged past the opposite edge (a flip).
+    let newW = start.width, newH = start.height;
+    if (handle.includes('e')) newW = start.width + dx;
+    if (handle.includes('w')) newW = start.width - dx;
+    if (handle.includes('s')) newH = start.height + dy;
+    if (handle.includes('n')) newH = start.height - dy;
     if (modifiers.shift && (handle === 'nw' || handle === 'ne' || handle === 'se' || handle === 'sw')) {
-      const aspect = rect.w / rect.h;
-      if (Math.abs(newW / newH) > aspect) { newH = newW / aspect; }
-      else { newW = newH * aspect; }
+      const aspect = start.width / start.height;
+      if (Math.abs(newW / newH) > aspect) newH = (newH < 0 ? -1 : 1) * Math.abs(newW) / aspect;
+      else newW = (newW < 0 ? -1 : 1) * Math.abs(newH) * aspect;
     }
     const minSize = MIN_TRANSFORM_SIZE / this._zoom;
     if (Math.abs(newW) < minSize) newW = newW < 0 ? -minSize : minSize;
     if (Math.abs(newH) < minSize) newH = newH < 0 ? -minSize : minSize;
-    this._state.x = newX;
-    this._state.y = newY;
+    // The new box's middle in that space: half the new extent from the
+    // anchored edge (or the old middle along an axis not being resized).
+    const mid = localToDoc({
+      x: handle.includes('w') ? start.width - newW / 2 : handle.includes('e') ? newW / 2 : start.width / 2,
+      y: handle.includes('n') ? start.height - newH / 2 : handle.includes('s') ? newH / 2 : start.height / 2,
+    }, start);
+    // composeMatrix pivots on the middle, so placing that keeps everything else.
     this._state.width = Math.abs(newW);
     this._state.height = Math.abs(newH);
-    // A warp stretches with the float, as it does under a numeric resize.
-    const sx = Math.abs(newW) / rect.w, sy = Math.abs(newH) / rect.h;
-    for (const corner of ['nw', 'ne', 'se', 'sw'] as const) {
-      const start = origin.perspective[corner];
-      this._perspectiveCorners[corner] = { x: start.x * sx, y: start.y * sy };
-    }
-    if (newW < 0) this._state.scaleX = -Math.abs(this._state.scaleX);
-    if (newH < 0) this._state.scaleY = -Math.abs(this._state.scaleY);
+    this._state.scaleX = newW < 0 ? -start.scaleX : start.scaleX;
+    this._state.scaleY = newH < 0 ? -start.scaleY : start.scaleY;
+    this._state.x = mid.x - this._state.width / 2;
+    this._state.y = mid.y - this._state.height / 2;
     this._onChange();
   }
 
