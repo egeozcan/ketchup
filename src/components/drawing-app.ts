@@ -943,6 +943,24 @@ export class DrawingApp extends LitElement {
     }
   }
 
+  /**
+   * Whether this tab holds project `id`'s lock as the browser sees it, which
+   * may be ahead of `_projectLock`. Called holding the project's save lock.
+   */
+  private async _holdsProjectLock(id: string): Promise<boolean> {
+    const locks = this._locks;
+    if (!locks) return true;
+    if (this._projectLock?.id !== id) return false;
+    if (!locks.query) return true;
+    try {
+      const { held = [] } = await locks.query();
+      const me = held.find(lock => lock.name === `ketchup-save:${id}`)?.clientId;
+      return !!me && held.some(lock => lock.name === `ketchup-project:${id}` && lock.clientId === me);
+    } catch {
+      return true;
+    }
+  }
+
   /** Runs a save of project `id` holding its save lock (when there are locks). */
   private _holdingSaveLock(id: string, save: () => Promise<void>): Promise<void> {
     const locks = this._locks;
@@ -971,6 +989,12 @@ export class DrawingApp extends LitElement {
 
     // A tab taking the project over waits for this before it loads.
     this._savePromise = this._holdingSaveLock(savingId, async () => {
+      // The project may have been taken while this tab couldn't hear of it
+      // (a dialog was open), and the tab that took it may have loaded
+      // already: ask the browser. A run that starts holding it may finish,
+      // since a tab taking it then waits for this run before loading.
+      // (Without locks, nothing to ask, and the snapshot is taken at once.)
+      if (this._locks && !(await this._holdsProjectLock(savingId))) return;
       this._saveInProgress = true;
       this._saveFailed = false;
       if (this._backendReopen) await this._backendReopen;

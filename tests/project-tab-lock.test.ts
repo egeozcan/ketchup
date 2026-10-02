@@ -49,8 +49,10 @@ function fakeLocks() {
     void request(name, {}, () => new Promise<void>(r => { release = r; })).catch(() => {});
     return () => release();
   };
-  vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { locks: { request } }));
-  return { held, request, holdElsewhere };
+  // Every lock here is this tab's, as the browser reports them.
+  const query = vi.fn(async () => ({ held: [...held.keys()].map(name => ({ name, clientId: 'tab', mode: 'exclusive' })), pending: [] }));
+  vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { locks: { request, query } }));
+  return { held, request, query, holdElsewhere };
 }
 
 /** BroadcastChannel between the apps in the test, delivering in a later task. */
@@ -454,6 +456,26 @@ describe('one tab edits a project at a time', () => {
     (app as any)._dirty = true;
     await (app as any)._save(true);
     expect(write).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes nothing when the browser says another tab took the project before the save began', async () => {
+    const locks = fakeLocks();
+    const { app, backend, project } = await makeSavingApp();
+    // Taken while this tab couldn't hear of it yet: it still thinks it holds it.
+    locks.query.mockImplementation(async () => ({
+      held: [
+        { name: `ketchup-project:${project.id}`, clientId: 'other', mode: 'exclusive' },
+        ...[...locks.held.keys()].filter(n => n.startsWith('ketchup-save:')).map(name => ({ name, clientId: 'tab', mode: 'exclusive' })),
+      ],
+      pending: [],
+    }));
+    const write = vi.spyOn(backend.state, 'save');
+    (app as any)._contentVersion++;
+    (app as any)._dirty = true;
+    await (app as any)._save(true);
+    expect((app as any)._projectLock?.id).toBe(project.id);
+    expect(write).not.toHaveBeenCalled();
+    expect((app as any)._dirty).toBe(true);
   });
 
   it('opens a project only once storage has reopened', async () => {
