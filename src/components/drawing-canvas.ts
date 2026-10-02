@@ -145,6 +145,8 @@ export class DrawingCanvas extends LitElement {
   private _panStartOffsetX = 0;
   private _panStartOffsetY = 0;
   private _panPointerId = -1;
+  /** The pan `_resizeToFit` last set, and what rounding took off it. */
+  private _resizePan = { x: NaN, y: NaN, dx: 0, dy: 0 };
 
   // --- Move tool state ---
   private _moveTempCanvas: HTMLCanvasElement | null = null;
@@ -820,11 +822,14 @@ export class DrawingCanvas extends LitElement {
     this.previewCanvas.height = newHeight;
 
     // Adjust pan to keep the center stable, on whole pixels (a half-pixel pan
-    // would blur the document at 100%).
-    const oldCenterDocX = (oldWidth / 2 - this._panX) / this._zoom;
-    const oldCenterDocY = (oldHeight / 2 - this._panY) / this._zoom;
-    this._panX = Math.round(newWidth / 2 - oldCenterDocX * this._zoom);
-    this._panY = Math.round(newHeight / 2 - oldCenterDocY * this._zoom);
+    // would blur the document at 100%). What rounding took off is carried to
+    // the next resize, so resizing back returns to the same pan instead of
+    // drifting a pixel each time; any other pan change drops it.
+    const exactX = this._panX + (this._panX === this._resizePan.x ? this._resizePan.dx : 0) + (newWidth - oldWidth) / 2;
+    const exactY = this._panY + (this._panY === this._resizePan.y ? this._resizePan.dy : 0) + (newHeight - oldHeight) / 2;
+    this._panX = Math.round(exactX);
+    this._panY = Math.round(exactY);
+    this._resizePan = { x: this._panX, y: this._panY, dx: exactX - this._panX, dy: exactY - this._panY };
 
     // Pattern is tied to canvas context, must recreate
     this._checkerboardPattern = null;
@@ -1681,9 +1686,10 @@ export class DrawingCanvas extends LitElement {
         this.resetView();
         return;
       }
-      // Keep the same document point at the centre, as a window resize does.
-      panX += (this._vw - savedSize.width) / 2;
-      panY += (this._vh - savedSize.height) / 2;
+      // Keep the same document point at the centre, as a window resize does,
+      // on whole pixels.
+      panX = Math.round(panX + (this._vw - savedSize.width) / 2);
+      panY = Math.round(panY + (this._vh - savedSize.height) / 2);
     }
     this.setViewport(zoom, panX, panY);
     if (this._visibleDocumentFraction() < 0.5) this.resetView();
@@ -1888,8 +1894,6 @@ export class DrawingCanvas extends LitElement {
     }
   }
 
-
-
   private _isInTextBox(p: Point): boolean {
     const box = this._getTextBoundingBox();
     return p.x >= box.x && p.x <= box.x + box.w && p.y >= box.y && p.y <= box.y + box.h;
@@ -2039,9 +2043,12 @@ export class DrawingCanvas extends LitElement {
       if (e.button === 0) {
         const tm = this._transformManager;
         const p = this._getDocPoint(e);
-        const drawn = tm && { kind: tm.hitKind(p), button: tm.buttonAt(p) };
+        const drawn = tm && { kind: tm.hitKind(p), button: tm.buttonAt(p), values: this.getTransformValues() };
         this._blurFocusedField();
-        if (tm && drawn && tm === this._transformManager && drawn.kind !== tm.hitKind(p)) {
+        // Off the float, a press that applied a value shows it rather than
+        // committing it unseen.
+        if (tm && drawn && tm === this._transformManager && (drawn.kind !== tm.hitKind(p)
+          || (drawn.kind === 'outside' && !this._transformValuesEqual(drawn.values, this.getTransformValues())))) {
           this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
           // A button as drawn still acts on release; anything else, the float
           // has moved out from under, so this press only applied the value.
@@ -2079,8 +2086,9 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
-    // The hand tool pans, a float or not.
-    if (this._transformManager && this.ctx.state.activeTool === 'hand') {
+    // The hand tool pans, a float or not; only the float's ✓/✗ still take a
+    // press (a pasted or dropped float can be active under it).
+    if (this._transformManager && this.ctx.state.activeTool === 'hand' && !this._transformManager.hitTestButton(this._getDocPoint(e))) {
       this._startPan(e);
       return;
     }
@@ -2318,7 +2326,7 @@ export class DrawingCanvas extends LitElement {
       const changed = this._transformManager.onPointerMove(p, modifiers);
       // On the canvas itself, whose own cursor would hide the host's. The
       // next update resets it once the transform ends.
-      this.mainCanvas.style.cursor = this._transformManager.getCursor(p);
+      this.mainCanvas.style.cursor = this._transformCursor(p);
       if (changed) {
         // The float isn't on its layer until commit, so layer pixels (and the
         // thumbnails drawn from them) stay as they are; only the sampling
@@ -2440,7 +2448,13 @@ export class DrawingCanvas extends LitElement {
 
   /** What the pointer is over once a gesture ends, while a transform is still active. */
   private _refreshTransformCursor(e: PointerEvent) {
-    if (this._transformManager) this.mainCanvas.style.cursor = this._transformManager.getCursor(this._getDocPoint(e));
+    if (this._transformManager) this.mainCanvas.style.cursor = this._transformCursor(this._getDocPoint(e));
+  }
+
+  /** The cursor over `p` during a transform; under the hand tool, which only pans, the float's own except on ✓/✗. */
+  private _transformCursor(p: Point): string {
+    const cursor = this._transformManager!.getCursor(p);
+    return this.ctx.state.activeTool === 'hand' && cursor !== 'pointer' ? 'grab' : cursor;
   }
 
   private _onPointerUp(e: PointerEvent) {

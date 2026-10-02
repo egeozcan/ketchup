@@ -271,6 +271,52 @@ describe('touches, missed releases and context menus', () => {
     expect((canvas as any)._transformManager._interaction.type).toBe('idle');
   });
 
+  it('takes a click on the ✓/✗ under the hand tool, and shows it pans everywhere else', () => {
+    const { canvas } = setupTool('hand');
+    const tm = new TransformManager(new ImageData(100, 80), { x: 0, y: 0, w: 100, h: 80 }, makeCanvas(100, 100), 1, { x: 100, y: 100 });
+    (canvas as any)._transformManager = tm;
+    (canvas as any)._panX = 100;
+    (canvas as any)._panY = 100;
+    const { cancelCenter } = tm.getButtons();
+    const cancel = vi.spyOn(canvas, 'cancelTransform').mockImplementation(() => {});
+    const mouse = (buttons: number, clientX: number, clientY: number) =>
+      ({ button: 0, buttons, pointerId: 1, clientX, clientY, pointerType: 'mouse', isPrimary: true, preventDefault() {} }) as unknown as PointerEvent;
+    const style = (canvas as any).mainCanvas.style;
+
+    (canvas as any)._onPointerMove(mouse(0, 150, 140));
+    expect(style.cursor).toBe('grab');
+    (canvas as any)._onPointerMove(mouse(0, cancelCenter.x + 100, cancelCenter.y + 100));
+    expect(style.cursor).toBe('pointer');
+    (canvas as any)._onPointerDown(mouse(1, cancelCenter.x + 100, cancelCenter.y + 100));
+    expect((canvas as any)._panning).toBe(false);
+    (canvas as any)._onPointerUp(mouse(0, cancelCenter.x + 100, cancelCenter.y + 100));
+    expect(cancel).toHaveBeenCalled();
+  });
+
+  it('only applies a value typed in the panel on a press off the float, so it shows before a commit', () => {
+    const { canvas } = setupTool('select');
+    const tm = new TransformManager(new ImageData(100, 80), { x: 0, y: 0, w: 100, h: 80 }, makeCanvas(100, 100), 1, { x: 100, y: 100 });
+    (canvas as any)._transformManager = tm;
+    (canvas as any)._panX = 100;
+    (canvas as any)._panY = 100;
+    const field = document.createElement('input');
+    document.body.append(field);
+    field.focus();
+    field.addEventListener('blur', () => { tm.rotation = 30; });
+    const commit = vi.spyOn(canvas, 'commitTransform').mockImplementation(() => {});
+    const click = { button: 0, pointerId: 1, clientX: 380, clientY: 380, pointerType: 'mouse', isPrimary: true, preventDefault() {} } as unknown as PointerEvent;
+
+    (canvas as any)._onPointerDown(click);
+    (canvas as any)._onPointerUp(click);
+    expect(tm.rotation).toBeCloseTo(30);
+    expect(commit).not.toHaveBeenCalled();
+
+    (canvas as any)._onPointerDown(click);
+    (canvas as any)._onPointerUp(click);
+    expect(commit).toHaveBeenCalled();
+    field.remove();
+  });
+
   it('lets a lifted palm\'s leave pass without ending the pen stroke', () => {
     const { canvas } = setupTool('pencil');
     const pen = { button: 0, pointerId: 5, clientX: 20, clientY: 20, pointerType: 'pen', isPrimary: true, pressure: 0.5, preventDefault() {} };
