@@ -77,6 +77,32 @@ function makeApp() {
 }
 
 const meta = (id: string) => ({ id, name: id, createdAt: 0, updatedAt: 0, thumbnailRef: null });
+
+/** An app editing a stored project, whose saves really write (to a MockBackend). */
+async function makeSavingApp(name = 'P') {
+  const backend = new MockBackend();
+  await backend.init();
+  const project = await backend.projects.create({ name, thumbnailRef: null });
+  const { app } = makeApp();
+  const layer = makeLayer(20, 20, { id: 'l1' });
+  (app as any)._state = makeState({ layers: [layer], activeLayerId: 'l1', documentWidth: 20, documentHeight: 20 });
+  const canvas = makeAppCanvasStub({ mainCanvas: makeCanvas(40, 30) });
+  Object.defineProperty(app, 'canvas', { configurable: true, value: canvas });
+  (app as any)._backend = backend;
+  await (app as any)._enterProject(project, async () => { (app as any)._trackLoadedProject(project.id, [], []); });
+  vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb) {
+    cb(new Blob(['png'], { type: 'image/png' }));
+  });
+  return { app, canvas, backend, project };
+}
+
+/** Another tab taking `id` by "Use here anyway"; resolves a function that lets it go. */
+async function stealElsewhere(locks: ReturnType<typeof fakeLocks>, id: string) {
+  let release!: () => void;
+  void locks.request(`ketchup-project:${id}`, { steal: true }, () => new Promise<void>(r => { release = r; }));
+  await settle();
+  return () => release();
+}
 const flush = () => new Promise(r => setTimeout(r, 0));
 const settle = async (n = 10) => { for (let i = 0; i < n; i++) await flush(); };
 
@@ -261,6 +287,86 @@ describe('one tab edits a project at a time', () => {
     expect(locks.held.has(`ketchup-project:${copy.id}`)).toBe(true);
   });
 
+  it('keeps work from a take-over through coming back into view, and through a return to the page', async () => {
+    const locks = fakeLocks();
+    const { app, project } = await makeSavingApp();
+    const load = vi.spyOn(app as any, '_loadProject');
+    (app as any)._contentVersion++;
+    (app as any)._dirty = true;
+    const letGo = await stealElsewhere(locks, project.id);
+    expect((app as any)._stranded).toBe(true);
+    letGo();
+    await settle();
+
+    await (app as any)._editHere(false);
+    expect(load).not.toHaveBeenCalled();
+    expect((app as any)._stranded).toBe(true);
+  });
+
+  it('counts text still being typed as work not stored', async () => {
+    const locks = fakeLocks();
+    const { app, canvas, project } = await makeSavingApp();
+    canvas.hasPendingText.mockReturnValue(true);
+    await stealElsewhere(locks, project.id);
+    expect((app as any)._stranded).toBe(true);
+  });
+
+  it('keeps the work as a new project once its own save under way has finished', async () => {
+    const locks = fakeLocks();
+    const { app, backend, project } = await makeSavingApp();
+    // Its save stalls at the write; it is taken meanwhile, with work drawn
+    // after the save's snapshot.
+    let write!: () => void;
+    const save = backend.state.save.bind(backend.state);
+    vi.spyOn(backend.state, 'save').mockImplementationOnce(async record => {
+      await new Promise<void>(r => { write = r; });
+      return save(record);
+    });
+    (app as any)._contentVersion++;
+    (app as any)._dirty = true;
+    void (app as any)._save(true);
+    await settle();
+    (app as any)._contentVersion++;
+    (app as any)._dirtyVersion++;
+    await stealElsewhere(locks, project.id);
+    expect((app as any)._stranded).toBe(true);
+
+    const keeping = (app as any)._keepAsNewProject();
+    await settle();
+    expect((app as any)._keeping).toBe(true);
+    write();
+    await keeping;
+    const copy = (app as any)._currentProject;
+    expect(copy.name).toBe('P (copy)');
+    expect(await backend.state.get(copy.id)).toBeTruthy();
+    expect((app as any)._dirty).toBe(false);
+  });
+
+  it('makes no copy when its own save under way stores the work after all', async () => {
+    const locks = fakeLocks();
+    const { app, backend, project } = await makeSavingApp();
+    let write!: () => void;
+    const save = backend.state.save.bind(backend.state);
+    vi.spyOn(backend.state, 'save').mockImplementationOnce(async record => {
+      await new Promise<void>(r => { write = r; });
+      return save(record);
+    });
+    (app as any)._contentVersion++;
+    (app as any)._dirty = true;
+    void (app as any)._save(true);
+    await settle();
+    await stealElsewhere(locks, project.id);
+    expect((app as any)._stranded).toBe(true);
+
+    const keeping = (app as any)._keepAsNewProject();
+    await settle();
+    write();
+    await keeping;
+    expect((app as any)._currentProject.id).toBe(project.id);
+    expect((app as any)._stranded).toBe(false);
+    expect(await backend.projects.list()).toHaveLength(1);
+  });
+
   it('reopens the project a tab had open before a reload', async () => {
     fakeLocks();
     const backend = new MockBackend();
@@ -418,14 +524,14 @@ describe('one tab edits a project at a time', () => {
     const load = vi.spyOn(app as any, '_loadProject');
     expect(load).not.toHaveBeenCalled();
     app.remove();
-    await settle();
-    expect(locks.held.has(`ketchup-project:${id}`)).toBe(false);
+    await vi.waitFor(() => expect(locks.held.has(`ketchup-project:${id}`)).toBe(false));
     // Back: another tab may have changed it meanwhile, so it's loaded again.
     document.body.append(app);
-    await settle();
-    expect(load).toHaveBeenCalledWith(id);
-    expect((app as any)._projectLock?.id).toBe(id);
-    expect((app as any)._readOnly).toBe(false);
+    await vi.waitFor(() => {
+      expect(load).toHaveBeenCalledWith(id);
+      expect((app as any)._projectLock?.id).toBe(id);
+      expect((app as any)._readOnly).toBe(false);
+    });
   });
 
   it('keeps the project while out of the page if its work could not be stored', async () => {
@@ -465,6 +571,15 @@ describe('one tab edits a project at a time', () => {
     (app as any)._readOnly = false;
     await app.updateComplete;
     expect(root.querySelector('[inert]')).toBeNull();
+
+    // Work kept from a take-over: the top bar can't drop it either, and a
+    // "Use here" waiting on a silent tab can still be forced.
+    Object.assign(app as any, { _readOnly: true, _stranded: true });
+    await app.updateComplete;
+    expect(root.querySelector('tool-settings')!.hasAttribute('inert')).toBe(true);
+    Object.assign(app as any, { _claiming: true, _waitingForTab: true, _otherTabSilent: true });
+    await app.updateComplete;
+    expect([...root.querySelectorAll('.read-only button')].map(b => b.textContent!.trim())).toEqual(['Use here anyway']);
   });
 
 });

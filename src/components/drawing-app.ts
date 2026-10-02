@@ -690,6 +690,8 @@ export class DrawingApp extends LitElement {
   private _forceTakeOver: (() => void) | null = null;
   /** Another tab took the project before this one stored its latest work, which is still here. */
   @state() private _stranded = false;
+  /** Saving that work as a new project. */
+  @state() private _keeping = false;
   /** Taking the project up here: getting its lock, then loading it. */
   @state() private _claiming = false;
   /** The last save failed, so its work is only here. */
@@ -703,7 +705,8 @@ export class DrawingApp extends LitElement {
 
   /** Edits on the canvas that storage doesn't have yet. */
   private _hasUnsavedWork() {
-    return this._dirty && this._contentVersion !== this._storedContentVersion;
+    return (this._dirty && this._contentVersion !== this._storedContentVersion)
+      || !!this.canvas?.hasPendingText?.();
   }
 
   /** Whether this tab may write project `id`: it holds its lock, or nothing is locked. */
@@ -824,6 +827,8 @@ export class DrawingApp extends LitElement {
   private async _editHere(takeOver: boolean) {
     const meta = this._currentProject;
     if (!meta || !this._readOnly || this._projectLock || this._claiming) return;
+    // Work kept from a take-over goes only by the user's choice.
+    if (this._stranded && !takeOver) return;
     this._claiming = true;
     if (takeOver) this._keptElsewhere = false;
     try {
@@ -905,12 +910,17 @@ export class DrawingApp extends LitElement {
     const from = this._currentProject;
     if (!from || !this._backend || this._claiming) return;
     this._claiming = true;
+    this._keeping = true;
     try {
+      // This tab's save under way when the project was taken finishes, and
+      // may store the work after all.
+      if (this._savePromise) await this._savePromise;
+      if (!this._stranded) return;
       const meta = await this._backend.projects.create({ name: `${from.name} (copy)`, thumbnailRef: null });
       if (!(await this._lockProject(meta.id))) return;
       await this._carryStamps(from.id, meta.id);
       this._currentProject = meta;
-      this._projectList = await this._backend.projects.list();
+      this._projectList = await this._backend.projects.list().catch(() => [meta, ...this._projectList]);
       // All of it goes to the new project: the whole history, and every
       // layer encoded afresh.
       this._trackedProjectId = null;
@@ -929,6 +939,7 @@ export class DrawingApp extends LitElement {
       console.error('Could not keep the work as a new project:', err);
     } finally {
       this._claiming = false;
+      this._keeping = false;
     }
   }
 
@@ -2684,6 +2695,11 @@ export class DrawingApp extends LitElement {
    */
   private _leaveProject() {
     if (this.isConnected || !this._projectLock || this._hasUnsavedWork()) return;
+    // A project loading (back briefly, gone again) is let go once it's in.
+    if (this._projectLoads > 0) {
+      setTimeout(() => this._leaveProject(), 100);
+      return;
+    }
     this._releaseProjectLock();
     this._tabs?.close();
     this._tabs = null;
@@ -2696,6 +2712,16 @@ export class DrawingApp extends LitElement {
 
   private _closeBackend(backend: StorageBackend | undefined) {
     if (!backend || this.isConnected) return;
+    if (backend === this._backend) {
+      // Work that couldn't be stored keeps storage open for another try
+      // (and the project, `_leaveProject`).
+      if (this._hasUnsavedWork()) return;
+      // A project loading (back briefly, gone again) closes once it's in.
+      if (this._projectLoads > 0) {
+        setTimeout(() => this._closeBackend(backend), 100);
+        return;
+      }
+    }
     // Reopening (back briefly, gone again): close once it's open.
     if (this._backendReopen) {
       void this._backendReopen.then(() => this._closeBackend(backend));
@@ -2703,6 +2729,18 @@ export class DrawingApp extends LitElement {
     }
     if (backend === this._backend) this._backendClosed = true;
     void backend.dispose();
+  }
+
+  /** The read-only overlay's "Use here" (as `label`), and what follows a press. */
+  private _renderClaim(label: string) {
+    if (this._waitingForTab) {
+      return this._otherTabSilent ? html`
+        <p>The other tab isn't answering. It may be busy (a dialog, a long save) or frozen in the background. Taking over keeps any changes it hasn't saved there, to keep as a new project.</p>
+        <button @click=${() => this._forceTakeOver?.()}>Use here anyway</button>
+      ` : html`<p>Waiting for the other tab to save…</p>`;
+    }
+    if (this._claiming) return html`<p>${this._keeping ? 'Saving them as a new project…' : 'Opening the project…'}</p>`;
+    return html`<button @click=${() => this._editHere(true)}>${label}</button>`;
   }
 
   override render() {
@@ -2716,28 +2754,23 @@ export class DrawingApp extends LitElement {
       </div>`;
     }
     return html`<div class="app">
-      ${!this._isMobile ? html`<tool-settings></tool-settings>` : ''}
+      ${!this._isMobile ? html`<tool-settings ?inert=${this._stranded}></tool-settings>` : ''}
       <div class="main-area">
         ${this._readOnly ? html`
           <div class="read-only" role="alert">
             ${this._handingOver ? html`<p>Saving, for the tab that asked to edit this project…</p>` : this._stranded ? html`
               <p>Another tab took this project over before this tab saved its latest changes. They are still here.</p>
-              <div class="read-only-actions">
-                <button @click=${() => this._keepAsNewProject()}>Keep them as a new project</button>
-                <button @click=${() => this._editHere(true)}>Use here without them</button>
-              </div>
+              ${this._waitingForTab || this._claiming ? this._renderClaim('') : html`
+                <div class="read-only-actions">
+                  <button @click=${() => this._keepAsNewProject()}>Keep them as a new project</button>
+                  ${this._renderClaim('Use here without them')}
+                </div>
+              `}
             ` : html`
               <p>This project is open in another tab. Changes made there are saved; this tab only shows it.</p>
               ${this._keptElsewhere
                 ? html`<p>That tab couldn't save its changes, so it keeps the project for now.</p>` : ''}
-              ${!this._waitingForTab
-                ? this._claiming
-                  ? html`<p>Opening the project…</p>`
-                  : html`<button @click=${() => this._editHere(true)}>Use here</button>`
-                : this._otherTabSilent ? html`
-                  <p>The other tab isn't answering. It may be busy (a dialog, a long save) or frozen in the background. Taking over keeps any changes it hasn't saved there, to keep as a new project.</p>
-                  <button @click=${() => this._forceTakeOver?.()}>Use here anyway</button>
-                ` : html`<p>Waiting for the other tab to save…</p>`}
+              ${this._renderClaim('Use here')}
             `}
           </div>
         ` : ''}
