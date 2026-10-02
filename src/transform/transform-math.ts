@@ -160,17 +160,129 @@ export function getPerspectiveDestCorners(
 }
 
 /**
+ * A destination quad as `warpPerspective` (and its GPU twin in
+ * `perspective-gl.ts`) uses it. Everything is relative to the first corner,
+ * which keeps the numbers small for the GPU's single precision.
+ */
+export interface WarpGeometry {
+  /** The first corner, in document space. */
+  ax: number;
+  ay: number;
+  /** The corners, relative to the first. */
+  quad: [Point, Point, Point, Point];
+  /** P(u, v) = e·u + f·v + g·u·v maps the source's unit square onto the quad. */
+  ex: number; ey: number; fx: number; fy: number; gx: number; gy: number;
+  /** Solving P(u, v) = p for v gives k2·v² + k1·v + k0 = 0, with k1 = ef + p × g. */
+  k2: number;
+  ef: number;
+  /** k2 is negligible: the quad is a parallelogram and v solves a linear equation. */
+  linear: boolean;
+  /**
+   * A convex quad is exactly the image of the source rectangle. Past a concave
+   * corner the map folds outside the outline, so there the outline itself
+   * decides what is inside (the source rectangle still covers all of it).
+   */
+  convex: boolean;
+  /** Encloses nothing (a convex quad of zero area). */
+  empty: boolean;
+  /**
+   * Convex only: per edge, [nx, ny, c, r], where nx·x + ny·y + c is a point's
+   * distance inside the edge's line and r is half a pixel's extent across it,
+   * so a pixel is wholly inside the line when its centre is r inside it and
+   * wholly outside when r outside. A zero-length edge never excludes anything.
+   */
+  lines: Float64Array;
+  /**
+   * Two closed lobes of four edges each, [px, py, qx, qy] per edge; unused
+   * edges are zero. The quad itself, or a self-intersecting quad's two
+   * triangles, whose winding numbers have opposite signs: what a pixel's
+   * square has of each lobe adds up to its nonzero-winding coverage.
+   */
+  lobes: Float64Array;
+}
+
+/** Large enough to never exclude a pixel, small enough for single precision. */
+const NEVER = 1e30;
+
+export function warpGeometry(dst: [Point, Point, Point, Point]): WarpGeometry {
+  const [a, b, c, d] = dst;
+  const quad = dst.map(p => ({ x: p.x - a.x, y: p.y - a.y })) as [Point, Point, Point, Point];
+  const ex = b.x - a.x, ey = b.y - a.y;
+  const fx = d.x - a.x, fy = d.y - a.y;
+  const gx = a.x - b.x + c.x - d.x, gy = a.y - b.y + c.y - d.y;
+  const k2 = gx * fy - gy * fx;
+  const ef = ex * fy - ey * fx;
+  const convex = isConvex(dst);
+
+  let area = 0;
+  for (let i = 0; i < 4; i++) {
+    const p = quad[i], n = quad[(i + 1) % 4];
+    area += p.x * n.y - n.x * p.y;
+  }
+  const lines = new Float64Array(16);
+  for (let i = 0; i < 4; i++) {
+    const p = quad[i], n = quad[(i + 1) % 4];
+    const len = Math.hypot(n.x - p.x, n.y - p.y);
+    if (len === 0 || area === 0) {
+      lines.set([0, 0, NEVER, 0], i * 4);
+      continue;
+    }
+    const sign = area > 0 ? 1 : -1;
+    const nx = -sign * (n.y - p.y) / len, ny = sign * (n.x - p.x) / len;
+    lines.set([nx, ny, -(nx * p.x + ny * p.y), (Math.abs(nx) + Math.abs(ny)) / 2], i * 4);
+  }
+
+  const lobes = new Float64Array(32);
+  const edges = (offset: number, pts: Point[]) => {
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i], n = pts[(i + 1) % pts.length];
+      lobes.set([p.x, p.y, n.x, n.y], offset + i * 4);
+    }
+  };
+  const [qa, qb, qc, qd] = quad;
+  const x = segmentCrossing(qa, qb, qc, qd), y = x ? null : segmentCrossing(qb, qc, qd, qa);
+  if (x) {
+    edges(0, [x, qb, qc]);
+    edges(16, [x, qd, qa]);
+  } else if (y) {
+    edges(0, [y, qc, qd]);
+    edges(16, [y, qa, qb]);
+  } else {
+    edges(0, quad);
+  }
+
+  return {
+    ax: a.x, ay: a.y, quad, ex, ey, fx, fy, gx, gy, k2, ef,
+    // Also where k2 would be 0 in the GPU's single precision.
+    linear: Math.abs(k2) <= 1e-9 * Math.abs(ef) || Math.fround(k2) === 0,
+    convex, empty: convex && area === 0, lines, lobes,
+  };
+}
+
+/** Where segments p1–p2 and p3–p4 cross, strictly inside both; null if they don't. */
+function segmentCrossing(p1: Point, p2: Point, p3: Point, p4: Point): Point | null {
+  const d1x = p2.x - p1.x, d1y = p2.y - p1.y, d2x = p4.x - p3.x, d2y = p4.y - p3.y;
+  const den = d1x * d2y - d1y * d2x;
+  if (den === 0) return null;
+  const wx = p3.x - p1.x, wy = p3.y - p1.y;
+  const t = (wx * d2y - wy * d2x) / den, s = (wx * d1y - wy * d1x) / den;
+  if (!(t > 0 && t < 1 && s > 0 && s < 1)) return null;
+  return { x: p1.x + t * d1x, y: p1.y + t * d1y };
+}
+
+/**
  * Warp `src` onto the quad `dst` (top-left, top-right, bottom-right,
  * bottom-left), returning the pixels of `region` in document space.
  *
  * Every pixel is mapped back through the inverse of the bilinear map from the
  * source rectangle onto the quad and sampled bilinearly with premultiplied
- * alpha, so there is no triangle mesh to leave seams at its edges. The quad's
- * outline is anti-aliased from each pixel's distance to it, and the source is
- * clamped at its border, so an enlarged edge stays crisp. A concave or
- * self-intersecting quad is filled up to its outline (nonzero winding), where
- * the map folds past it. Each pixel depends only on its own position, so a
- * region is exactly that crop of the whole warp.
+ * alpha, so there is no triangle mesh to leave seams at its edges. Pixels the
+ * outline crosses are covered by the exact area of their square inside it, so
+ * sharp corners taper as they should, and the source is clamped at its
+ * border, so an enlarged edge stays crisp. A concave or self-intersecting quad
+ * is filled up to its outline (nonzero winding), where the map folds past it.
+ * Each pixel depends only on its own position, so a region is exactly that
+ * crop of the whole warp.
  */
 export function warpPerspective(
   src: ImageData,
@@ -179,103 +291,69 @@ export function warpPerspective(
 ): ImageData {
   const { x: rx, y: ry, w: rw, h: rh } = region;
   const out = new ImageData(rw, rh);
+  const g = warpGeometry(dst);
+  if (g.empty) return out;
   const o = out.data, s = src.data, W = src.width, H = src.height;
-  const [a, b, c, d] = dst;
-  // P(u, v) = a + e·u + f·v + g·u·v
-  const ex = b.x - a.x, ey = b.y - a.y;
-  const fx = d.x - a.x, fy = d.y - a.y;
-  const gx = a.x - b.x + c.x - d.x, gy = a.y - b.y + c.y - d.y;
-  // Solving P(u, v) = p for v gives k2·v² + k1·v + k0 = 0.
-  const k2 = gx * fy - gy * fx;
-  const ef = ex * fy - ey * fx;
-  const linear = Math.abs(k2) <= 1e-9 * Math.abs(ef);
-  const ik2 = 0.5 / k2;
-  const uAt = (hx: number, hy: number, v: number) => {
-    const dx = ex + gx * v, dy = ey + gy * v;
-    return Math.abs(dx) > Math.abs(dy) ? (hx - fx * v) / dx : (hy - fy * v) / dy;
-  };
-  // A convex quad is exactly the image of the source rectangle. Past a concave
-  // corner the map folds outside the outline, so there the outline itself
-  // decides what is inside (the source rectangle still covers all of it).
-  const convex = isConvex(dst);
-
+  const { quad, lines, lobes, convex } = g;
   const nearest = { x: 0, y: 0, ex: 0, ey: 0 };
+  const uv = { u: 0, v: 0 };
 
   for (let py = 0; py < rh; py++) {
     const [spanStart, spanEnd] = quadRowSpan(dst, ry + py, rx, rw);
-    const cy = ry + py + 0.5;
+    // Pixel centres, relative to the first corner.
+    const cy = ry + py + 0.5 - g.ay;
     for (let px = spanStart; px < spanEnd; px++) {
-      const cx = rx + px + 0.5;
-      let hx = cx - a.x, hy = cy - a.y;
-      // A quad that isn't convex is covered by its outline alone, anti-aliased
-      // from the distance to it. On and just outside the outline, the map shows
-      // folded-away parts of the source if anything, so a pixel there takes its
-      // colour from a quarter pixel inside the nearest outline point.
-      let coverage = 1;
-      if (!convex) {
-        const dist = Math.sqrt(nearestOnQuad(dst, cx, cy, nearest));
-        const inside = quadWinding(dst, cx, cy) !== 0;
-        coverage = inside ? 0.5 + dist : 0.5 - dist;
-        if (coverage <= 0) continue;
-        if (coverage > 1) coverage = 1;
+      const cx = rx + px + 0.5 - g.ax;
+      let coverage: number, inside: boolean, dist = Infinity;
+      if (convex) {
+        // A pixel wholly outside any edge's line is outside the quad; one
+        // wholly inside all of them is inside it.
+        let full = true;
+        inside = true;
+        let i = 0;
+        for (; i < 16; i += 4) {
+          const d = lines[i] * cx + lines[i + 1] * cy + lines[i + 2];
+          if (d <= -lines[i + 3]) break;
+          if (d < lines[i + 3]) full = false;
+          if (d < 0) inside = false;
+        }
+        if (i < 16) continue;
+        coverage = full ? 1 : pixelCoverage(lobes, cx - 0.5, cy - 0.5);
+      } else {
+        // Only a pixel within √½ of the outline can straddle it.
+        const d2 = nearestOnQuad(quad, cx, cy, nearest);
+        inside = quadWinding(quad, cx, cy) !== 0;
+        coverage = d2 < 0.5 ? pixelCoverage(lobes, cx - 0.5, cy - 0.5) : inside ? 1 : 0;
+        dist = Math.sqrt(d2);
+      }
+      if (coverage <= 0) continue;
+
+      // A pixel whose centre is outside the outline takes its colour from a
+      // quarter pixel inside the nearest outline point. So does one just
+      // inside a quad that isn't convex: the map there may show parts of the
+      // source folded away past the outline.
+      let hx = cx, hy = cy;
+      if (!inside || dist < 0.25) {
+        if (convex) nearestOnQuad(quad, cx, cy, nearest);
         const len = Math.hypot(nearest.ex, nearest.ey);
-        if ((!inside || dist < 0.25) && len > 0) {
+        if (len > 0) {
           const nx = -0.25 * nearest.ey / len, ny = 0.25 * nearest.ex / len;
-          // Neither side is inside where a sliver is under a quarter pixel thick.
-          const side = quadWinding(dst, nearest.x + nx, nearest.y + ny) !== 0 ? 1
-            : quadWinding(dst, nearest.x - nx, nearest.y - ny) !== 0 ? -1 : 0;
-          if (side !== 0) {
-            hx = nearest.x + side * nx - a.x;
-            hy = nearest.y + side * ny - a.y;
+          if (quadWinding(quad, nearest.x + nx, nearest.y + ny) !== 0) {
+            hx = nearest.x + nx;
+            hy = nearest.y + ny;
+          } else if (quadWinding(quad, nearest.x - nx, nearest.y - ny) !== 0) {
+            hx = nearest.x - nx;
+            hy = nearest.y - ny;
+          } else if (!inside) {
+            // Neither side is inside where a sliver is under a quarter pixel
+            // thick; the outline itself still maps onto the source's edge.
+            hx = nearest.x;
+            hy = nearest.y;
           }
         }
       }
-
-      const k1 = ef + hx * gy - hy * gx;
-      const k0 = hx * ey - hy * ex;
-      let u: number, v: number;
-      if (linear) {
-        v = -k0 / k1;
-        u = uAt(hx, hy, v);
-      } else {
-        let disc = k1 * k1 - 4 * k0 * k2;
-        if (disc < 0) {
-          // Unmapped. Within a non-convex quad's anti-aliased fringe, take
-          // the nearest real solution.
-          if (convex) continue;
-          disc = 0;
-        }
-        const w = Math.sqrt(disc);
-        v = (-k1 - w) * ik2;
-        u = uAt(hx, hy, v);
-        // Of the two roots, keep the one inside (or nearest) the source.
-        if (!(u >= 0 && u <= 1 && v >= 0 && v <= 1)) {
-          const v2 = (-k1 + w) * ik2;
-          const u2 = uAt(hx, hy, v2);
-          if (outside(u2, v2) < outside(u, v)) { u = u2; v = v2; }
-        }
-      }
-      if (!(u > -1 && u < 2 && v > -1 && v < 2)) continue;
-
-      if (convex) {
-        // Only pixels within half a pixel of the outline are partially covered.
-        // Inside, (distance in u or v) × |Jacobian| / |other partial derivative|
-        // estimates the distance to the nearest edge cheaply (squared, sparing
-        // the square roots); near or outside the outline, where that estimate
-        // breaks down, the distance to the edges is measured directly.
-        const inside = u >= 0 && u <= 1 && v >= 0 && v <= 1;
-        const mu = u < 1 - u ? u : 1 - u, mv = v < 1 - v ? v : 1 - v;
-        const pux = ex + gx * v, puy = ey + gy * v;
-        const pvx = fx + gx * u, pvy = fy + gy * u;
-        const jac = pux * pvy - puy * pvx;
-        const du = mu * jac, dv = mv * jac;
-        if (!inside || du * du < 0.25 * (pvx * pvx + pvy * pvy) || dv * dv < 0.25 * (pux * pux + puy * puy)) {
-          const dist = Math.sqrt(nearestOnQuad(dst, cx, cy, nearest));
-          coverage = inside ? 0.5 + dist : 0.5 - dist;
-          if (coverage <= 0) continue;
-          if (coverage > 1) coverage = 1;
-        }
-      }
+      if (!unmapBilinear(g, hx, hy, uv)) continue;
+      const u = uv.u, v = uv.v;
 
       let sx = u * W - 0.5, sy = v * H - 0.5;
       if (sx < 0) sx = 0; else if (sx > W - 1) sx = W - 1;
@@ -301,6 +379,93 @@ export function warpPerspective(
     }
   }
   return out;
+}
+
+/**
+ * The source position (u, v) that the bilinear map takes to (hx, hy),
+ * relative to the quad's first corner, written to `out`. Where two do, the one
+ * inside (or nearest) the source; where none does, the nearest real solution.
+ * Returns false if that is too far outside the source to mean anything.
+ */
+function unmapBilinear(g: WarpGeometry, hx: number, hy: number, out: { u: number; v: number }): boolean {
+  const k1 = g.ef + hx * g.gy - hy * g.gx;
+  const k0 = hx * g.ey - hy * g.ex;
+  let u: number, v: number;
+  if (g.linear) {
+    if (k1 === 0) return false;
+    v = -k0 / k1;
+    u = uAt(g, hx, hy, v);
+  } else {
+    let disc = k1 * k1 - 4 * k0 * g.k2;
+    if (disc < 0) disc = 0;
+    const w = Math.sqrt(disc);
+    // The roots q/k2 and k0/q, without cancellation; `v` is (-k1 - w) / 2k2.
+    const q = -0.5 * (k1 >= 0 ? k1 + w : k1 - w);
+    v = k1 >= 0 ? q / g.k2 : k0 / q;
+    u = uAt(g, hx, hy, v);
+    // With q = 0 both roots are 0.
+    if (!(u >= 0 && u <= 1 && v >= 0 && v <= 1) && q !== 0) {
+      const v2 = k1 >= 0 ? k0 / q : q / g.k2;
+      const u2 = uAt(g, hx, hy, v2);
+      if (outside(u2, v2) < outside(u, v)) { u = u2; v = v2; }
+    }
+  }
+  if (!(u > -1 && u < 2 && v > -1 && v < 2)) return false;
+  out.u = u;
+  out.v = v;
+  return true;
+}
+
+/**
+ * u, given v, from whichever coordinate of P(u, v) depends on u more; far
+ * outside the source where neither does (as on the GPU, which can't divide by 0).
+ */
+function uAt(g: WarpGeometry, hx: number, hy: number, v: number): number {
+  const dx = g.ex + g.gx * v, dy = g.ey + g.gy * v;
+  if (Math.abs(dx) > Math.abs(dy)) return (hx - g.fx * v) / dx;
+  return dy !== 0 ? (hy - g.fy * v) / dy : 1e30;
+}
+
+/**
+ * How much of the pixel square with top-left corner (x0, y0) the quad covers
+ * (nonzero winding), from the lobes of `WarpGeometry.lobes`.
+ */
+function pixelCoverage(lobes: Float64Array, x0: number, y0: number): number {
+  let first = 0, second = 0;
+  for (let i = 0; i < 16; i += 4) first += edgeArea(lobes[i], lobes[i + 1], lobes[i + 2], lobes[i + 3], x0, y0);
+  for (let i = 16; i < 32; i += 4) second += edgeArea(lobes[i], lobes[i + 1], lobes[i + 2], lobes[i + 3], x0, y0);
+  const coverage = Math.abs(first) + Math.abs(second);
+  return coverage < 1 ? coverage : 1;
+}
+
+/**
+ * The edge (px, py)–(qx, qy)'s share of a closed outline's winding number,
+ * integrated over the pixel square with top-left corner (x0, y0): the part of
+ * the square left of the edge, signed by whether the edge goes up or down.
+ * Summed over a closed outline, the edges give the area of the square it
+ * winds around (negative where it winds the other way).
+ */
+function edgeArea(px: number, py: number, qx: number, qy: number, x0: number, y0: number): number {
+  if (py === qy) return 0;
+  const top = py < qy ? py : qy, bottom = py < qy ? qy : py;
+  const ya = top > y0 ? top : y0, yb = bottom < y0 + 1 ? bottom : y0 + 1;
+  if (ya >= yb) return 0;
+  const slope = (qx - px) / (qy - py);
+  // Where the edge is across the square at its top and bottom, 0 to 1.
+  const la = px + (ya - py) * slope - x0, lb = px + (yb - py) * slope - x0;
+  const area = (yb - ya) * meanClamped(la, lb);
+  return qy > py ? area : -area;
+}
+
+/** The mean of clamp(t, 0, 1) as t runs evenly from `la` to `lb`. */
+function meanClamped(la: number, lb: number): number {
+  const lo = la < lb ? la : lb, hi = la < lb ? lb : la;
+  if (hi <= 0) return 0;
+  if (lo >= 1) return 1;
+  if (hi === lo) return lo;
+  // Past 1 the clamp is 1; between 0 and 1 it is t itself.
+  const a = lo > 0 ? lo : 0, b = hi < 1 ? hi : 1;
+  return ((hi > 1 ? hi - 1 : 0) + (b - a) * (a + b) / 2) / (hi - lo);
 }
 
 /**

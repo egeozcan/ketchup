@@ -2158,12 +2158,18 @@ export class DrawingCanvas extends LitElement {
       const p = this._getDocPoint(e);
       const modifiers = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey };
       const before = this.getTransformValues();
-      this._transformManager.onPointerMove(p, modifiers);
+      const changed = this._transformManager.onPointerMove(p, modifiers);
       this.style.cursor = this._transformManager.getCursor(p);
-      this.scheduleComposite();
-      const after = this.getTransformValues();
-      if (!this._transformValuesEqual(before, after)) {
-        this._dispatchTransformChange();
+      if (changed) {
+        // The float isn't on its layer until commit, so layer pixels (and the
+        // thumbnails drawn from them) stay as they are; only the sampling
+        // buffer, which merges the float in, goes stale.
+        this.invalidateSamplingBuffer();
+        this.scheduleComposite(false);
+        const after = this.getTransformValues();
+        if (!this._transformValuesEqual(before, after)) {
+          this._dispatchTransformChange();
+        }
       }
       return;
     }
@@ -3256,8 +3262,10 @@ export class DrawingCanvas extends LitElement {
       const snapshot = this._transformManager.snapshot();
       const imageData = snapshot.canvas.getContext('2d')!.getImageData(0, 0, snapshot.w, snapshot.h);
 
-      // Store the transformed result in the clipboard
-      this._clipboard = new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+      // Store the transformed result in the clipboard. Neither the clipboard
+      // nor a TransformManager writes to its ImageData, so the duplicate below
+      // shares this one rather than each copying a possibly huge buffer.
+      this._clipboard = imageData;
       this._clipboardOrigin = { x: snapshot.x, y: snapshot.y };
       this._clipboardRotation = 0;
       this._writeToSystemClipboard(snapshot.canvas);
@@ -3267,10 +3275,9 @@ export class DrawingCanvas extends LitElement {
       this.commitTransform();
       // Deleting the duplicate is an explicit undo step, matching paste.
       this._captureBeforeDraw();
-      const dupData = new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
       this._transformContentMode = 'inserted';
       this._transformManager = new TransformManager(
-        dupData,
+        imageData,
         { x: snapshot.x, y: snapshot.y, w: snapshot.w, h: snapshot.h },
         this.previewCanvas,
         this._zoom,

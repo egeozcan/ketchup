@@ -1,13 +1,14 @@
 import type { Point } from '../types.js';
 import {
-  type HandleType, type HandleConfig, type TransformState, type TransformInteraction,
+  type HandleConfig, type TransformState, type TransformInteraction,
   type PerspectiveCorners, type TransformRect,
   HANDLE_CONFIG_DESKTOP, HANDLE_CONFIG_TOUCH, MIN_TRANSFORM_SIZE, OUTSIDE_DRAG_THRESHOLD,
 } from './transform-types.js';
 import {
-  composeMatrix, docToLocal, localToDoc, getTransformCenter,
+  composeMatrix, docToLocal, getTransformCenter, getTransformedCorners,
   snapAngle, getPerspectiveDestCorners, warpPerspective,
 } from './transform-math.js';
+import { canWarpOnGpu, releaseGpuSource, warpPerspectiveGpu } from './perspective-gl.js';
 import {
   hitTestHandle, hitTestRotationHandle, isInsideTransform,
   getCommitCancelPositions,
@@ -16,12 +17,14 @@ import {
 
 /**
  * The most pixels a preview warp computes, at rest and while a handle is being
- * dragged. Larger warps are previewed at reduced resolution: while dragging,
- * to keep frames fast; at rest, only past 4096² (about the most iOS Safari
- * allows a canvas). Commit always warps at full resolution.
+ * dragged (on the GPU or the CPU). Larger warps are previewed at reduced
+ * resolution: at rest, only past 4096² (about the most iOS Safari allows a
+ * canvas); while dragging, sooner, to keep frames fast. Commit always warps at
+ * full resolution.
  */
 const WARP_PREVIEW_PIXELS = 4096 * 4096;
 const WARP_DRAG_PIXELS = 1024 * 1024;
+const WARP_GPU_DRAG_PIXELS = 2048 * 2048;
 /** Copies of the float are full resolution unless absurdly large (corners dragged far off). */
 const WARP_SNAPSHOT_PIXELS = 8192 * 8192;
 
@@ -165,24 +168,27 @@ export class TransformManager {
   // --- Pointer event handlers ---
 
   onPointerDown(docPoint: Point, modifiers: { shift: boolean; ctrl: boolean; alt: boolean }): boolean {
-    const buttons = getCommitCancelPositions(this._state, this._handleConfig, this._zoom);
+    const buttons = getCommitCancelPositions(this._getCorners(), this._handleConfig, this._zoom);
     const commitDist = Math.hypot(docPoint.x - buttons.commitCenter.x, docPoint.y - buttons.commitCenter.y);
     if (commitDist <= buttons.buttonRadius) return true;
     const cancelDist = Math.hypot(docPoint.x - buttons.cancelCenter.x, docPoint.y - buttons.cancelCenter.y);
     if (cancelDist <= buttons.buttonRadius) return true;
 
-    if (hitTestRotationHandle(docPoint, this._state, this._handleConfig, this._zoom)) {
+    if (hitTestRotationHandle(docPoint, this._getCorners(), this._handleConfig, this._zoom)) {
       const center = getTransformCenter(this._state);
       const startAngle = Math.atan2(docPoint.y - center.y, docPoint.x - center.x);
       this._interaction = { type: 'rotating', startAngle, startRotation: this._state.rotation };
       return true;
     }
 
-    const handle = hitTestHandle(docPoint, this._state, this._handleConfig, this._zoom);
+    const handle = hitTestHandle(docPoint, this._getCorners(), this._handleConfig, this._zoom);
     if (handle) {
       if (modifiers.ctrl && (handle === 'nw' || handle === 'ne' || handle === 'se' || handle === 'sw')) {
         this._perspectiveActive = true;
-        this._interaction = { type: 'perspective', corner: handle, startPoint: docPoint };
+        this._interaction = {
+          type: 'perspective', corner: handle, startPoint: docPoint,
+          startOffset: { ...this._perspectiveCorners[handle] },
+        };
       } else if (modifiers.ctrl && (handle === 'n' || handle === 'e' || handle === 's' || handle === 'w')) {
         this._interaction = {
           type: 'skewing', edge: handle, startPoint: docPoint,
@@ -200,7 +206,7 @@ export class TransformManager {
       return true;
     }
 
-    if (isInsideTransform(docPoint, this._state)) {
+    if (isInsideTransform(docPoint, this._getCorners())) {
       this._interaction = { type: 'moving', startPoint: docPoint, startX: this._state.x, startY: this._state.y };
       return true;
     }
@@ -209,13 +215,14 @@ export class TransformManager {
     return true;
   }
 
-  onPointerMove(docPoint: Point, modifiers: { shift: boolean; ctrl: boolean; alt: boolean }): void {
+  /** Returns whether the transform changed (it doesn't while merely hovering). */
+  onPointerMove(docPoint: Point, modifiers: { shift: boolean; ctrl: boolean; alt: boolean }): boolean {
     switch (this._interaction.type) {
-      case 'moving': this._handleMove(docPoint, modifiers); break;
-      case 'resizing': this._handleResize(docPoint, modifiers); break;
-      case 'rotating': this._handleRotate(docPoint, modifiers); break;
-      case 'skewing': this._handleSkew(docPoint); break;
-      case 'perspective': this._handlePerspective(docPoint); break;
+      case 'moving': this._handleMove(docPoint, modifiers); return true;
+      case 'resizing': this._handleResize(docPoint, modifiers); return true;
+      case 'rotating': this._handleRotate(docPoint, modifiers); return true;
+      case 'skewing': this._handleSkew(docPoint); return true;
+      case 'perspective': this._handlePerspective(docPoint); return true;
       case 'outside-pending': {
         const dx = docPoint.x - this._interaction.startPoint.x;
         const dy = docPoint.y - this._interaction.startPoint.y;
@@ -228,14 +235,16 @@ export class TransformManager {
           );
           this._interaction = { type: 'rotating', startAngle, startRotation: this._state.rotation };
           this._handleRotate(docPoint, modifiers);
+          return true;
         }
-        break;
+        return false;
       }
     }
+    return false;
   }
 
   onPointerUp(docPoint: Point): 'commit' | 'cancel-button' | 'commit-button' | null {
-    const buttons = getCommitCancelPositions(this._state, this._handleConfig, this._zoom);
+    const buttons = getCommitCancelPositions(this._getCorners(), this._handleConfig, this._zoom);
     const commitDist = Math.hypot(docPoint.x - buttons.commitCenter.x, docPoint.y - buttons.commitCenter.y);
     if (commitDist <= buttons.buttonRadius) {
       this._interaction = { type: 'idle' };
@@ -336,9 +345,11 @@ export class TransformManager {
   private _handlePerspective(docPoint: Point): void {
     const inter = this._interaction;
     if (inter.type !== 'perspective') return;
-    const dx = docPoint.x - inter.startPoint.x;
-    const dy = docPoint.y - inter.startPoint.y;
-    this._perspectiveCorners[inter.corner] = { x: dx, y: dy };
+    // From where the corner was when grabbed, not where it started out.
+    this._perspectiveCorners[inter.corner] = {
+      x: inter.startOffset.x + docPoint.x - inter.startPoint.x,
+      y: inter.startOffset.y + docPoint.y - inter.startPoint.y,
+    };
     this._onChange();
   }
 
@@ -353,14 +364,7 @@ export class TransformManager {
     ctx.translate(this._pan.x, this._pan.y);
     ctx.scale(this._zoom, this._zoom);
 
-    const corners = this._perspectiveActive
-      ? getPerspectiveDestCorners(this._state, this._perspectiveCorners)
-      : [
-          localToDoc({ x: 0, y: 0 }, this._state),
-          localToDoc({ x: this._state.width, y: 0 }, this._state),
-          localToDoc({ x: this._state.width, y: this._state.height }, this._state),
-          localToDoc({ x: 0, y: this._state.height }, this._state),
-        ];
+    const corners = this._getCorners();
 
     ctx.save();
     ctx.lineWidth = 1 / this._zoom;
@@ -381,9 +385,9 @@ export class TransformManager {
     ctx.stroke();
     ctx.restore();
 
-    drawHandles(ctx, this._state, this._handleConfig, this._zoom);
-    drawRotationHandleUI(ctx, this._state, this._handleConfig, this._zoom);
-    drawCommitCancelButtons(ctx, this._state, this._handleConfig, this._zoom);
+    drawHandles(ctx, corners, this._handleConfig, this._zoom);
+    drawRotationHandleUI(ctx, corners, this._handleConfig, this._zoom);
+    drawCommitCancelButtons(ctx, corners, this._handleConfig, this._zoom);
 
     ctx.restore();
   }
@@ -395,7 +399,8 @@ export class TransformManager {
    */
   renderTransformed(ctx: CanvasRenderingContext2D, fullResolutionIn?: TransformRect): void {
     if (fullResolutionIn) this._render(ctx, fullResolutionIn, Infinity);
-    else this._render(ctx, null, this._warpPixelBudget());
+    // Only a perspective warp has a budget (checking it may set up the GPU).
+    else this._render(ctx, null, this._perspectiveActive ? this._warpPixelBudget() : Infinity);
   }
 
   /** Draws the transformed content; a perspective warp limited as in `_getWarp`. */
@@ -403,7 +408,7 @@ export class TransformManager {
     if (this._perspectiveActive) {
       const warp = this._getWarp(clip, maxWarpPixels);
       if (!warp) return;
-      if (warp.canvas.width === warp.w) {
+      if (warp.scale === 1) {
         ctx.drawImage(warp.canvas, warp.x, warp.y);
       } else {
         // Scaled back up, a reduced-resolution warp's edge pixels reach past the quad's bounds.
@@ -426,7 +431,8 @@ export class TransformManager {
 
   /** Most pixels the preview warp may compute right now (see WARP_PREVIEW_PIXELS). */
   private _warpPixelBudget(): number {
-    return this._interaction.type === 'idle' ? WARP_PREVIEW_PIXELS : WARP_DRAG_PIXELS;
+    if (this._interaction.type === 'idle') return WARP_PREVIEW_PIXELS;
+    return canWarpOnGpu(this._sourceImageData) ? WARP_GPU_DRAG_PIXELS : WARP_DRAG_PIXELS;
   }
 
   /**
@@ -434,9 +440,7 @@ export class TransformManager {
    * covers: at least the part of the warp inside `clip` (all of it if null),
    * at full resolution unless that would take more than `maxPixels`.
    */
-  private _getWarp(
-    clip: TransformRect | null, maxPixels: number,
-  ): { canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number } | null {
+  private _getWarp(clip: TransformRect | null, maxPixels: number): WarpCache | null {
     const dstCorners = getPerspectiveDestCorners(this._state, this._perspectiveCorners);
     let { x, y, w, h } = this._getSnapshotBounds();
     if (clip) {
@@ -477,9 +481,11 @@ export class TransformManager {
       canvas.width = sw;
       canvas.height = sh;
     }
-    canvas.getContext('2d')!.putImageData(
-      warpPerspective(this._sourceImageData, scaled, { x: sx, y: sy, w: sw, h: sh }), 0, 0,
-    );
+    const ctx = canvas.getContext('2d')!;
+    const region = { x: sx, y: sy, w: sw, h: sh };
+    if (!warpPerspectiveGpu(this._sourceImageData, scaled, region, ctx)) {
+      ctx.putImageData(warpPerspective(this._sourceImageData, scaled, region), 0, 0);
+    }
     const warp = { key, canvas, x: sx / scale, y: sy / scale, w: sw / scale, h: sh / scale, scale };
     if (scale === 1) this._warpCache = warp;
     else this._draftWarpCache = warp;
@@ -563,12 +569,12 @@ export class TransformManager {
   }
 
   getCursor(docPoint: Point): string {
-    const buttons = getCommitCancelPositions(this._state, this._handleConfig, this._zoom);
+    const buttons = getCommitCancelPositions(this._getCorners(), this._handleConfig, this._zoom);
     const commitDist = Math.hypot(docPoint.x - buttons.commitCenter.x, docPoint.y - buttons.commitCenter.y);
     if (commitDist <= buttons.buttonRadius) return 'pointer';
     const cancelDist = Math.hypot(docPoint.x - buttons.cancelCenter.x, docPoint.y - buttons.cancelCenter.y);
     if (cancelDist <= buttons.buttonRadius) return 'pointer';
-    return getCursorForPoint(docPoint, this._state, this._handleConfig, this._zoom);
+    return getCursorForPoint(docPoint, this._getCorners(), this._handleConfig, this._zoom);
   }
 
   // --- Private helpers ---
@@ -577,15 +583,15 @@ export class TransformManager {
     this.renderPreview();
   }
 
-  private _getSnapshotBounds(): { x: number; y: number; w: number; h: number } {
-    const corners = this._perspectiveActive
+  /** The corners as shown (top-left, top-right, bottom-right, bottom-left), perspective included. */
+  private _getCorners(): [Point, Point, Point, Point] {
+    return this._perspectiveActive
       ? getPerspectiveDestCorners(this._state, this._perspectiveCorners)
-      : [
-          localToDoc({ x: 0, y: 0 }, this._state),
-          localToDoc({ x: this._state.width, y: 0 }, this._state),
-          localToDoc({ x: this._state.width, y: this._state.height }, this._state),
-          localToDoc({ x: 0, y: this._state.height }, this._state),
-        ];
+      : getTransformedCorners(this._state);
+  }
+
+  private _getSnapshotBounds(): { x: number; y: number; w: number; h: number } {
+    const corners = this._getCorners();
     const xs = corners.map(c => c.x);
     const ys = corners.map(c => c.y);
     const x = Math.floor(Math.min(...xs));
@@ -601,5 +607,6 @@ export class TransformManager {
       if (cache) cache.canvas.width = cache.canvas.height = 0;
     }
     this._warpCache = this._draftWarpCache = null;
+    releaseGpuSource(this._sourceImageData);
   }
 }
