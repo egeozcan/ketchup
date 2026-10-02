@@ -42,6 +42,11 @@ function checkDocumentSize(width: number, height: number) {
   }
 }
 
+/** Tools that leave an active float as it is when chosen. */
+function keepsFloat(tool: ToolType): boolean {
+  return tool === 'select' || tool === 'hand';
+}
+
 /**
  * The compact layout is chosen by width alone, with hysteresis around the
  * breakpoint. Wide touch devices such as iPads get the desktop layout.
@@ -1100,8 +1105,8 @@ export class DrawingApp extends LitElement {
       if (tool && tool !== this._state.activeTool) {
         e.preventDefault();
         this.canvas?.cancelCrop();
-        // As the toolbar does: the select tool keeps an active float.
-        if (!(tool === 'select' && this.canvas?.isTransformActive())) this.canvas?.clearSelection();
+        // As the toolbar does: the select and hand tools keep an active float.
+        if (!(keepsFloat(tool) && this.canvas?.isTransformActive())) this.canvas?.clearSelection();
         this._state = { ...this._state, activeTool: tool };
         this._markDirty('setting');
       }
@@ -1285,8 +1290,8 @@ export class DrawingApp extends LitElement {
         if (this._state.activeTool !== tool) {
           this.canvas?.cancelCrop();
           // The select tool is where a float is worked on (its numeric panel),
-          // so switching to it keeps an active float.
-          if (!(tool === 'select' && this.canvas?.isTransformActive())) {
+          // and the hand tool pans around it, so both keep an active float.
+          if (!(keepsFloat(tool) && this.canvas?.isTransformActive())) {
             if (this.canvas?.isTransformActive()) this.canvas.commitTransform();
             this.canvas?.clearSelection();
           }

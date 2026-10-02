@@ -482,3 +482,19 @@ describe('pointer moves during a transform', () => {
     expect((canvas as any)._samplingDirty).toBe(true);
   });
 });
+
+describe('✓/✗ order', () => {
+  it('reads ✓ then ✗ left to right, from a left-hand corner or on a float turned around', () => {
+    // Turned half way round: the top-right corner is at the bottom left.
+    const turned = makeManager();
+    turned.rotation = 180;
+    // Against the screen's right edge: they sit out from a left-hand corner.
+    const edge = new TransformManager(
+      new ImageData(100, 80), { x: 0, y: 0, w: 100, h: 80 }, makeCanvas(400, 400), 1, { x: 290, y: 150 },
+    );
+    for (const tm of [turned, edge, makeManager()]) {
+      const { commitCenter, cancelCenter } = tm.getButtons();
+      expect(cancelCenter.x).toBeGreaterThan(commitCenter.x);
+    }
+  });
+});

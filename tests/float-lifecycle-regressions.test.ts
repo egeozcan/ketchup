@@ -82,6 +82,49 @@ describe('a float meeting other operations', () => {
     expect(read).toHaveBeenCalled();
   });
 
+  it('pastes nothing once something without an image was copied elsewhere', async () => {
+    const { canvas } = setupCanvas();
+    (canvas as any)._systemClipboardWrite = Promise.resolve(true);
+    (canvas as any)._onWindowBlur();
+    vi.stubGlobal('navigator', { clipboard: { read: vi.fn(async () => [{ types: ['text/plain'] }]) } });
+    const pasteSelection = vi.spyOn(canvas, 'pasteSelection').mockImplementation(() => {});
+
+    await canvas.paste();
+
+    expect(pasteSelection).not.toHaveBeenCalled();
+  });
+
+  it('pastes the internal copy when the system clipboard can\'t be read', async () => {
+    const { canvas } = setupCanvas();
+    vi.stubGlobal('navigator', { clipboard: { read: vi.fn(async () => { throw new DOMException('denied', 'NotAllowedError'); }) } });
+    const pasteSelection = vi.spyOn(canvas, 'pasteSelection').mockImplementation(() => {});
+
+    await canvas.paste();
+
+    expect(pasteSelection).toHaveBeenCalled();
+  });
+
+  it('hands the keyboard back to the app when text is committed, so its shortcuts work', () => {
+    const { canvas } = setupCanvas();
+    const host = document.createElement('div');
+    host.tabIndex = 0;
+    document.body.append(host);
+    const root = host.attachShadow({ mode: 'open' });
+    const ta = document.createElement('textarea');
+    root.append(ta);
+    ta.focus();
+    (canvas as any)._textAreaEl = ta;
+    (canvas as any)._textEditing = true;
+    Object.defineProperty(canvas, 'shadowRoot', { value: root });
+    vi.spyOn(canvas, 'getRootNode').mockReturnValue(root);
+
+    (canvas as any)._cancelText();
+
+    expect(document.activeElement).toBe(host);
+    expect(root.activeElement).toBeNull();
+    host.remove();
+  });
+
   it('lets Undo cancel a selection as soon as it is lifted', () => {
     const { canvas } = setupCanvas();
     const notify = vi.spyOn(canvas as any, '_notifyHistory');
@@ -473,6 +516,17 @@ describe('app shortcuts and layer changes with a float', () => {
     (app as any)._buildContextValue().setChildMode(true);
     expect(canvas.commitTransform).toHaveBeenCalled();
     expect((app as any)._state.activeTool).toBe('pencil');
+  });
+
+  it('keeps a float when the hand tool is chosen, by toolbar or H, so it can be panned around', () => {
+    const { app, canvas } = makeApp({ isTransformActive: vi.fn(() => true) });
+    (app as any)._state = { ...(app as any)._state, activeTool: 'select' };
+    (app as any)._buildContextValue().setTool('hand');
+    (app as any)._state = { ...(app as any)._state, activeTool: 'select' };
+    (app as any)._onKeyDown({ ...key('h'), ctrlKey: false });
+    expect((app as any)._state.activeTool).toBe('hand');
+    expect(canvas.commitTransform).not.toHaveBeenCalled();
+    expect(canvas.clearSelection).not.toHaveBeenCalled();
   });
 
   it('deletes an active float under any tool', () => {

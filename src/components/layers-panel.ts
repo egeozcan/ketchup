@@ -614,9 +614,16 @@ export class LayersPanel extends LitElement {
     e.stopPropagation();
     if (e.key === 'Enter') {
       this._commitRename(layerId, e.target as HTMLInputElement);
+      this._focusApp();
     } else if (e.key === 'Escape') {
       this._editingLayerId = null;
+      this._focusApp();
     }
+  }
+
+  /** Hands the keyboard back to the app as the input goes, or it falls to the page and shortcuts stop working. */
+  private _focusApp() {
+    ((this.getRootNode() as ShadowRoot).host as HTMLElement | undefined)?.focus({ preventScroll: true });
   }
 
   private _onRenameBlur(layerId: string, e: FocusEvent) {

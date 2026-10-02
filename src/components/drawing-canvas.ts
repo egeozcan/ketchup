@@ -3392,12 +3392,15 @@ export class DrawingCanvas extends LitElement {
     // Until our own copy reaches the system clipboard, that still holds what
     // was there before; if it never gets there, the internal clipboard is the
     // latest copy (until the window loses focus, when one may be made elsewhere).
-    if (this._systemClipboardWrite && !(await this._systemClipboardWrite)) {
+    const ours = this._systemClipboardWrite;
+    if (ours && !(await ours)) {
       if (!this.isGestureActive()) this.pasteSelection();
       return;
     }
+    let read = false;
     try {
       const items = await navigator.clipboard.read();
+      read = true;
       for (const item of items) {
         const imageType = item.types.find(t => t.startsWith('image/'));
         if (!imageType) continue;
@@ -3438,8 +3441,11 @@ export class DrawingCanvas extends LitElement {
       // Clipboard API denied — fall back to internal
     }
 
-    // No system clipboard image available — try internal clipboard
-    if (!this.isGestureActive()) this.pasteSelection();
+    // No image on the system clipboard. The internal clipboard's is the latest
+    // copy if that couldn't be read, or if nothing can have been copied
+    // elsewhere since ours; otherwise (text copied in another window, say)
+    // pasting it would bring back something older.
+    if ((!read || ours) && !this.isGestureActive()) this.pasteSelection();
   }
 
   public selectAll() {
@@ -4060,6 +4066,11 @@ export class DrawingCanvas extends LitElement {
     this._stopTextCursorBlink();
     if (this._textAreaEl) {
       this._textAreaEl.value = '';
+      // Give the keyboard back to the app (its shortcuts listen there), not
+      // the page; unless the user already moved focus somewhere else.
+      if (this.shadowRoot?.activeElement === this._textAreaEl) {
+        ((this.getRootNode() as ShadowRoot).host as HTMLElement | undefined)?.focus({ preventScroll: true });
+      }
       this._textAreaEl.blur();
     }
     this._dispatchPendingTextChange();

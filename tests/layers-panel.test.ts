@@ -199,3 +199,32 @@ describe('LayersPanel opacity', () => {
     expect(committed[0].detail.after).toBe(0.5);
   });
 });
+
+describe('LayersPanel rename', () => {
+  it('hands the keyboard back to the app when Enter or Escape ends a rename', () => {
+    for (const k of ['Enter', 'Escape']) {
+      const host = document.createElement('div');
+      host.tabIndex = 0;
+      document.body.append(host);
+      const root = host.attachShadow({ mode: 'open' });
+      const panel = new LayersPanel();
+      const input = document.createElement('input');
+      root.append(input);
+      input.value = 'Renamed';
+      input.focus();
+      const renameLayer = vi.fn();
+      Object.defineProperty(panel, 'ctx', { value: { state: makeState({}), renameLayer } });
+      vi.spyOn(panel, 'getRootNode').mockReturnValue(root);
+      input.addEventListener('blur', e => (panel as any)._onRenameBlur('l1', e));
+      (panel as any)._editingLayerId = 'l1';
+
+      (panel as any)._onRenameKeyDown('l1', { key: k, target: input, stopPropagation() {} });
+
+      // On the host itself, not still in the input (which would report it as active too).
+      expect(document.activeElement, k).toBe(host);
+      expect(root.activeElement, k).toBeNull();
+      expect(renameLayer, k).toHaveBeenCalledTimes(k === 'Enter' ? 1 : 0);
+      host.remove();
+    }
+  });
+});

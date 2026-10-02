@@ -309,6 +309,14 @@ export class TransformManager {
    * leave its handles and middle clear; failing all that, pulled onscreen.
    */
   getButtons(): { commitCenter: Point; cancelCenter: Point; buttonRadius: number } {
+    const b = this._placeButtons();
+    // ✓ then ✗ reading left to right, as they usually sit (from a left-hand
+    // corner, or on a float turned around, they'd come out the other way).
+    const { commitCenter: c, cancelCenter: x } = b;
+    return x.x < c.x - Math.abs(x.y - c.y) ? { ...b, commitCenter: x, cancelCenter: c } : b;
+  }
+
+  private _placeButtons(): { commitCenter: Point; cancelCenter: Point; buttonRadius: number } {
     const corners = this._getCorners();
     const config = this._handleConfig, zoom = this._zoom;
     const out = getCommitCancelPositions(corners, config, zoom);
