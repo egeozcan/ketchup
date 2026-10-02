@@ -429,6 +429,21 @@ describe('DrawingCanvas', () => {
     expect(setStrokeColor).toHaveBeenLastCalledWith('#00ff00');
   });
 
+  it('places nothing when the editor is taken away while it asks how to fit an image', async () => {
+    const { canvas } = setupCanvas();
+    const img = new Image();
+    Object.defineProperty(img, 'naturalWidth', { value: 300 });
+    Object.defineProperty(img, 'naturalHeight', { value: 300 });
+    const addLayer = vi.fn();
+    (canvas as any)._ctx.value.addLayer = addLayer;
+    // Not connected, as after the host removed it; the question was answered as it went.
+    Object.defineProperty(canvas, '_resizeDialog', { value: { show: async () => false, dismiss: vi.fn() } });
+
+    await (canvas as any)._handleExternalImage(img, 'Dropped Image');
+
+    expect(addLayer).not.toHaveBeenCalled();
+  });
+
   it('reports canUndo when a transform is active with empty history', () => {
     const { canvas } = setupCanvas();
     (canvas as any)._history = [];

@@ -987,9 +987,14 @@ export class DrawingApp extends LitElement {
     }
     // Typing meant for text being edited, after a click on Bold or a colour
     // took the keyboard: back into the text, where the key lands (a focus
-    // moved during keydown takes the typed character), not a shortcut. Keys
-    // that work the focused control (arrows, Enter, Escape) stay there.
-    if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete')
+    // moved during keydown takes the typed character), not a shortcut. Enter
+    // and arrows move on in the text too, unless the focused control uses
+    // them (a slider, the font list); Escape stays with what has focus.
+    const origin = e.composedPath()[0];
+    const usesKeys = origin instanceof HTMLInputElement || origin instanceof HTMLSelectElement;
+    const typing = e.key.length === 1 || ['Backspace', 'Delete', 'Dead', 'Process'].includes(e.key);
+    const moving = ['Enter', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key);
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && (typing || (moving && !usesKeys))
       && this.canvas?.focusText?.()) {
       return;
     }
@@ -1174,6 +1179,8 @@ export class DrawingApp extends LitElement {
       eyedropperSampleAll: true,
       childMode: false,
     };
+    // Child mode, which kept the compact layout at any width, is off now.
+    if (this._layoutWidth > 0) this._updateMobileLayout(this._layoutWidth);
     await this.updateComplete;
     this.canvas?.setHistory([], -1);
     if (background) {
@@ -1900,7 +1907,7 @@ export class DrawingApp extends LitElement {
       return;
     }
     // Commit a floating selection so the host exports what the reader sees.
-    this.canvas?.clearSelection();
+    this.canvas?.clearSelection({ keepCrop: true });
     this.dispatchEvent(new CustomEvent('save-request', { bubbles: true, composed: true }));
   }
 
@@ -2166,9 +2173,12 @@ export class DrawingApp extends LitElement {
   private _onStrayKeyDown = (e: KeyboardEvent) => {
     // Tab moves on from where focus was, as the browser does.
     if (!this._strayKeysOurs || e.defaultPrevented || e.key === 'Tab') return;
+    // Typed inside the editor: its own handler has it. (In a host component's
+    // shadow tree, the target seen here is that component.)
+    if ((this.getRootNode() as Document | ShadowRoot).activeElement === this || e.composedPath().includes(this)) return;
     // Focus fell to the page, or to what holds the editor (a host's dialog,
     // or a host component whose shadow tree it is in).
-    if (!(e.target instanceof Node) || e.target === this || !containsAcrossShadows(e.target, this)) return;
+    if (!(e.target instanceof Node) || !containsAcrossShadows(e.target, this)) return;
     // Take the keyboard back, so later keys come straight here; an editor
     // that can't take it (hidden, inert, no tabindex) leaves keys alone.
     this.focus({ preventScroll: true });

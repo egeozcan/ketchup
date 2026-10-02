@@ -2418,7 +2418,8 @@ export class DrawingCanvas extends LitElement {
       // what it's let go on is the colour, as with a finger (which picks as
       // it lifts).
       const pickHere = () => {
-        if (!tracked || e.pointerType === 'touch' || !(e.buttons & 1)) return;
+        // Not when Alt comes down in the middle of a stroke.
+        if (!tracked || e.pointerType === 'touch' || !(e.buttons & 1) || this._drawing) return;
         const p = this._getDocPoint(e);
         const color = this._sampleColor(p.x, p.y);
         if (color) this.ctx.setStrokeColor(color);
@@ -3355,7 +3356,8 @@ export class DrawingCanvas extends LitElement {
     if (w > canvasW || h > canvasH) {
       const generation = this._documentGeneration;
       const shouldScale = await this._resizeDialog.show(w, h, canvasW, canvasH);
-      if (generation !== this._documentGeneration) return;
+      // Another document, or an editor taken away while it asked.
+      if (generation !== this._documentGeneration || !this.isConnected) return;
       if (shouldScale) {
         const scale = Math.min(canvasW / w, canvasH / h);
         w = Math.round(w * scale);

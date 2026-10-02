@@ -1181,7 +1181,8 @@ export class ToolSettings extends LitElement {
     // Thumbnails load again if it comes back (moved in the DOM).
     this._lastProjectId = null;
     // A modal open as it leaves would come back neither modal nor in view.
-    this.shadowRoot?.querySelector<HTMLDialogElement>('.new-project-dialog')?.close();
+    const dialog = this.shadowRoot?.querySelector<HTMLDialogElement>('.new-project-dialog');
+    if (dialog?.open) dialog.close();
   }
 
   private async _loadStamps(projectId: string) {

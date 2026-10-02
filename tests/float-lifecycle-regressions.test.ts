@@ -607,37 +607,45 @@ describe('app shortcuts and layer changes with a float', () => {
     const handled = vi.fn();
     (app as any)._onKeyDown = handled;
     let takesFocus = true;
-    vi.spyOn(app, 'focus').mockImplementation(() => {});
-    const active = vi.spyOn(document, 'activeElement', 'get').mockImplementation(() => (takesFocus ? app : document.body));
+    let focused = false;
+    vi.spyOn(app, 'focus').mockImplementation(() => { focused = takesFocus; });
+    const active = vi.spyOn(document, 'activeElement', 'get').mockImplementation(() => (focused ? app : document.body));
     vi.spyOn(app, 'getRootNode').mockReturnValue(document);
     // What holds the editor (the page's body, or a host's dialog), not connected here.
     const holder = document.createElement('div');
     holder.append(app);
-    const stray = { ...key('z'), target: holder, defaultPrevented: false } as unknown as KeyboardEvent;
+    // A key with focus on the page, nothing in the editor having it.
+    const press = (over: Record<string, unknown> = {}) => {
+      focused = false;
+      (app as any)._onStrayKeyDown({ ...key('z'), target: holder, defaultPrevented: false, composedPath: () => [holder], ...over });
+    };
     try {
       // Focus fell from something inside (a button disabled under it, say).
       (app as any)._onDocumentFocusIn({ composedPath: () => [app] });
-      (app as any)._onStrayKeyDown(stray);
+      press();
       expect(handled).toHaveBeenCalledTimes(1);
       // Tab goes on from where focus was.
-      (app as any)._onStrayKeyDown({ ...stray, key: 'Tab' });
+      press({ key: 'Tab' });
       expect(handled).toHaveBeenCalledTimes(1);
       // Hidden or inert: the page's keys aren't its.
       takesFocus = false;
-      (app as any)._onStrayKeyDown(stray);
+      press();
       expect(handled).toHaveBeenCalledTimes(1);
       takesFocus = true;
+      // Typed inside it: its own handler has it already.
+      press({ composedPath: () => [app, holder] });
+      expect(handled).toHaveBeenCalledTimes(1);
 
       (app as any)._onDocumentPointerDown({ composedPath: () => [document.body] });
-      (app as any)._onStrayKeyDown(stray);
+      press();
       expect(handled).toHaveBeenCalledTimes(1);
 
       (app as any)._onDocumentPointerDown({ composedPath: () => [app] });
-      (app as any)._onStrayKeyDown({ ...stray, target: document.createElement('input') });
+      press({ target: document.createElement('input') });
       expect(handled).toHaveBeenCalledTimes(1);
       // Focus moved into another editor by keyboard: not this one's either.
       (app as any)._onDocumentFocusIn({ composedPath: () => [document.createElement('drawing-app')] });
-      (app as any)._onStrayKeyDown(stray);
+      press();
       expect(handled).toHaveBeenCalledTimes(1);
     } finally {
       active.mockRestore();
@@ -699,13 +707,17 @@ describe('app shortcuts and layer changes with a float', () => {
     (app as any)._onKeyDown({ ...key('b'), ctrlKey: false });
     expect(focusText).toHaveBeenCalled();
     expect((app as any)._state.activeTool).toBe('text');
-    // Keys that work the control (arrows on a slider, Escape) stay with it.
+    // Enter and arrows go on in the text from a button (Bold), not from a
+    // control that uses them (a slider); Escape stays with what has focus.
     focusText.mockClear();
+    const bold = document.createElement('button');
+    (app as any)._onKeyDown({ ...key('Enter'), ctrlKey: false, composedPath: () => [bold] });
+    expect(focusText).toHaveBeenCalledTimes(1);
     const slider = document.createElement('input');
     slider.type = 'range';
     (app as any)._onKeyDown({ ...key('ArrowLeft'), ctrlKey: false, composedPath: () => [slider] });
-    (app as any)._onKeyDown({ ...key('Escape'), ctrlKey: false });
-    expect(focusText).not.toHaveBeenCalled();
+    (app as any)._onKeyDown({ ...key('Escape'), ctrlKey: false, composedPath: () => [bold] });
+    expect(focusText).toHaveBeenCalledTimes(1);
     // Shortcuts with a modifier still are.
     focusText.mockClear();
     (app as any)._onKeyDown(key('z'));
