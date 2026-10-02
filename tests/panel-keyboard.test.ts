@@ -47,3 +47,37 @@ describe('keyboard in panels', () => {
     expect(closed.stopPropagation).not.toHaveBeenCalled();
   });
 });
+
+describe('keyboard leaving panel fields', () => {
+  function inEditor() {
+    const app = document.createElement('div');
+    app.tabIndex = 0;
+    document.body.append(app);
+    const root = app.attachShadow({ mode: 'open' });
+    return { app, root };
+  }
+
+  it('hands focus to the editor when a project rename ends by key, and lets its Escape through the dropdown', () => {
+    for (const key of ['Enter', 'Escape']) {
+      const { app, root } = inEditor();
+      const settings = new ToolSettings();
+      root.append(settings);
+      const input = document.createElement('input');
+      settings.shadowRoot!.append(input);
+      input.value = 'Renamed';
+      input.focus();
+      Object.defineProperty(settings, 'ctx', { value: { renameProject: vi.fn() } });
+      (settings as any)._projectDropdownOpen = true;
+      (settings as any)._renamingProjectId = 'p1';
+
+      const esc = { key: 'Escape', stopPropagation: vi.fn() };
+      (settings as any)._onDropdownEscape(esc);
+      expect(esc.stopPropagation, key).not.toHaveBeenCalled();
+
+      (settings as any)._onRenameKeydown({ key, target: input, stopPropagation() {} }, 'p1');
+      expect(document.activeElement, key).toBe(app);
+      expect(root.activeElement, key).toBeNull();
+      app.remove();
+    }
+  });
+});

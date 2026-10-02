@@ -137,6 +137,24 @@ describe('a float meeting other operations', () => {
     host.remove();
   });
 
+  it('hands focus to the app when a press on the canvas leaves a panel field (a touch drag focuses nothing)', () => {
+    const { canvas } = setupCanvas();
+    const host = document.createElement('div');
+    host.tabIndex = 0;
+    document.body.append(host);
+    const root = host.attachShadow({ mode: 'open' });
+    const field = document.createElement('input');
+    root.append(field);
+    field.focus();
+    vi.spyOn(canvas, 'getRootNode').mockReturnValue(root);
+
+    (canvas as any)._blurFocusedField();
+
+    expect(document.activeElement).toBe(host);
+    expect(root.activeElement).toBeNull();
+    host.remove();
+  });
+
   it('lets Undo cancel a selection as soon as it is lifted', () => {
     const { canvas } = setupCanvas();
     const notify = vi.spyOn(canvas as any, '_notifyHistory');

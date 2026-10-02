@@ -1688,11 +1688,19 @@ export class DrawingCanvas extends LitElement {
         return;
       }
       // Keep the same document point at the centre, as a window resize does,
-      // on whole pixels.
-      panX = Math.round(panX + (this._vw - savedSize.width) / 2);
-      panY = Math.round(panY + (this._vh - savedSize.height) / 2);
+      // on whole pixels. A half pixel either way is dropped, not rounded up,
+      // or reloads at sizes an odd pixel apart would creep the view along.
+      const ox = (this._vw - savedSize.width) / 2, oy = (this._vh - savedSize.height) / 2;
+      const exactX = panX + ox, exactY = panY + oy;
+      panX = Math.round(panX + Math.trunc(ox));
+      panY = Math.round(panY + Math.trunc(oy));
+      this.setViewport(zoom, panX, panY);
+      // The canvas often resizes again (the tool bar settling to the saved
+      // tool's height), which takes the view back to where it was saved.
+      this._resizePan = { x: panX, y: panY, dx: exactX - panX, dy: exactY - panY };
+    } else {
+      this.setViewport(zoom, panX, panY);
     }
-    this.setViewport(zoom, panX, panY);
     if (this._visibleDocumentFraction() < 0.5) this.resetView();
   }
 
@@ -1889,9 +1897,12 @@ export class DrawingCanvas extends LitElement {
     let el: Element | null = document.activeElement;
     while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
     if (el !== this._textAreaEl && (el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement)) {
-      el.blur();
-      // Typing goes on into the text being edited (a font size was set, say).
+      // Typing goes on into the text being edited (a font size was set, say),
+      // or else to the app, whose shortcuts listen there (a touch drag, unlike
+      // a click, focuses nothing itself).
       if (this._textEditing) this._textAreaEl?.focus();
+      else focusEditor(this);
+      el.blur();
     }
   }
 

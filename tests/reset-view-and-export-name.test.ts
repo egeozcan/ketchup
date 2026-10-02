@@ -74,6 +74,14 @@ describe('DrawingCanvas resizing', () => {
     expect(canvas.getViewport()).toEqual({ zoom: 1, panX: 200, panY: 100 });
   });
 
+  it('comes back to a restored view when the canvas then settles to the size it was saved at', () => {
+    // Restored before the tool bar takes the saved tool's height.
+    const canvas = setupCanvas(800, 600, 1200, 804);
+    canvas.restoreViewport(1, 101, 54, { width: 1200, height: 797 });
+    resizer(canvas)(1200, 797);
+    expect(canvas.getViewport()).toEqual({ zoom: 1, panX: 101, panY: 54 });
+  });
+
   it('keeps a pan made between resizes', () => {
     const canvas = setupCanvas(800, 600, 1200, 800);
     canvas.setViewport(1, 200, 100);
@@ -127,6 +135,17 @@ describe('DrawingCanvas.restoreViewport', () => {
 
     const { panX, panY } = canvas.getViewport();
     expect(Number.isInteger(panX) && Number.isInteger(panY)).toBe(true);
+  });
+
+  it('keeps a view reloaded at window sizes an odd pixel apart where it was', () => {
+    let saved = { zoom: 1, panX: 101, panY: 61, size: { width: 1200, height: 800 } };
+    for (let i = 0; i < 4; i++) {
+      const size = i % 2 ? { width: 1200, height: 800 } : { width: 1201, height: 801 };
+      const canvas = setupCanvas(800, 600, size.width, size.height);
+      canvas.restoreViewport(saved.zoom, saved.panX, saved.panY, saved.size);
+      saved = { ...canvas.getViewport(), size };
+    }
+    expect(saved).toMatchObject({ panX: 101, panY: 61 });
   });
 
   it('shows the whole document when the view was saved on a much larger screen', () => {

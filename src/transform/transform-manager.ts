@@ -311,10 +311,11 @@ export class TransformManager {
    */
   getButtons(): { commitCenter: Point; cancelCenter: Point; buttonRadius: number } {
     const b = this._placeButtons();
-    // ✓ then ✗ reading left to right, as they usually sit (from a left-hand
-    // corner, or on a float turned around, they'd come out the other way).
+    // ✓ then ✗ in reading order, left to right or top to bottom, as they
+    // usually sit (from a left-hand corner, or on a float turned around,
+    // they'd come out the other way).
     const { commitCenter: c, cancelCenter: x } = b;
-    return x.x < c.x - Math.abs(x.y - c.y) ? { ...b, commitCenter: x, cancelCenter: c } : b;
+    return x.x + x.y < c.x + c.y ? { ...b, commitCenter: x, cancelCenter: c } : b;
   }
 
   private _placeButtons(): { commitCenter: Point; cancelCenter: Point; buttonRadius: number } {
@@ -324,13 +325,14 @@ export class TransformManager {
     const order = [1, 0, 2, 3] as const;
     const outside = order.map(corner => getCommitCancelPositions(corners, config, zoom, corner));
     const r = outside[0].buttonRadius;
-    // On touch, kept back from the screen's edges too: a finger there is
-    // taken by the toolbar beside the canvas.
+    const left = -this._pan.x / zoom, top = -this._pan.y / zoom;
+    const right = (this._previewCanvas.width - this._pan.x) / zoom;
+    const bottom = (this._previewCanvas.height - this._pan.y) / zoom;
+    // On touch, kept back from the screen's edges too where they can be: a
+    // finger there is taken by the toolbar beside the canvas.
     const m = r + (this.touchMode ? 12 / zoom : 0);
-    const x0 = -this._pan.x / zoom + m, y0 = -this._pan.y / zoom + m;
-    const x1 = Math.max(x0, (this._previewCanvas.width - this._pan.x) / zoom - m);
-    const y1 = Math.max(y0, (this._previewCanvas.height - this._pan.y) / zoom - m);
-    const fits = (p: Point) => p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1;
+    const x0 = left + m, y0 = top + m, x1 = Math.max(x0, right - m), y1 = Math.max(y0, bottom - m);
+    const fits = (p: Point, edge = m) => p.x >= left + edge && p.x <= right - edge && p.y >= top + edge && p.y <= bottom - edge;
     // Buttons are hit first, so none may cover a drawn handle, the rotation
     // handle or the float's middle (to move it by).
     const center = {
@@ -343,7 +345,7 @@ export class TransformManager {
     const reach = r + config.size / 2 / zoom;
     const clearance = (b: Buttons) => Math.min(...[b.commitCenter, b.cancelCenter]
       .flatMap(c => keepClear.map(t => Math.hypot(t.x - c.x, t.y - c.y))));
-    const usable = (b: Buttons) => fits(b.commitCenter) && fits(b.cancelCenter) && clearance(b) >= reach;
+    const usable = (b: Buttons, edge = m) => fits(b.commitCenter, edge) && fits(b.cancelCenter, edge) && clearance(b) >= reach;
     // Mirrored into the float through their corner, for a float too big on
     // screen to leave room outside it.
     const inside = outside.map((b, i): Buttons => {
@@ -366,7 +368,10 @@ export class TransformManager {
       };
     };
     const pulled = [...outside, ...inside].map(pull);
-    const found = [...outside, ...inside, ...pulled].find(usable);
+    const found = outside.find(b => usable(b))
+      // Beside the float, nearer the screen's edge, rather than on it.
+      ?? outside.find(b => usable(b, r))
+      ?? [...inside, ...pulled].find(b => usable(b));
     if (found) return found;
     // Nowhere clear (a tiny float wedged into a corner of the screen): on
     // screen wherever covers least.

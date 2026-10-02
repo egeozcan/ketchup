@@ -1392,6 +1392,8 @@ export class ToolSettings extends LitElement {
   /** Escape closes an open dropdown, and only that (the app would also cancel a float). */
   private _onDropdownEscape = (e: KeyboardEvent) => {
     if (e.key !== 'Escape' || (!this._projectDropdownOpen && !this._brushDropdownOpen)) return;
+    // A project name being edited in the dropdown takes its own Escape.
+    if (this._renamingProjectId) return;
     e.stopPropagation();
     this._closeDropdown();
     this._closeBrushDropdown();
@@ -1466,8 +1468,11 @@ export class ToolSettings extends LitElement {
     e.stopPropagation();
     if (e.key === 'Enter') {
       this._commitRename(e, id);
+      // The input goes; focus would fall to the page.
+      focusEditor(this);
     } else if (e.key === 'Escape') {
       this._renamingProjectId = null;
+      focusEditor(this);
     }
   }
 

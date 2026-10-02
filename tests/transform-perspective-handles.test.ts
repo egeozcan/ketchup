@@ -533,3 +533,28 @@ describe('✓/✗ with little room', () => {
     }
   });
 });
+
+describe('✓/✗ order and edge room', () => {
+  it('puts ✓ above ✗ when they are stacked', () => {
+    for (const rotation of [90, 270]) {
+      const tm = makeManager();
+      tm.rotation = rotation;
+      const { commitCenter, cancelCenter } = tm.getButtons();
+      expect(Math.abs(cancelCenter.x - commitCenter.x), `${rotation}°`).toBeLessThan(Math.abs(cancelCenter.y - commitCenter.y));
+      expect(commitCenter.y, `${rotation}°`).toBeLessThan(cancelCenter.y);
+    }
+  });
+
+  it('on touch, sits beside a wide float near the screen edge rather than on it', () => {
+    // 300×100 turned 15°, 6px in from a phone screen's top-left corner.
+    const tm = new TransformManager(
+      new ImageData(300, 100), { x: 0, y: 0, w: 300, h: 100 }, makeCanvas(390, 844), 1, { x: 0, y: 0 },
+    );
+    tm.rotation = 15;
+    tm.setTouchMode(true);
+    const corners = (tm as any)._getCorners() as Point[];
+    tm.updateViewport(1, { x: 6 - Math.min(...corners.map(c => c.x)), y: 6 - Math.min(...corners.map(c => c.y)) });
+    const { commitCenter, cancelCenter } = tm.getButtons();
+    for (const c of [commitCenter, cancelCenter]) expect(isInsideTransform(c, corners as any)).toBe(false);
+  });
+});
