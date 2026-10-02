@@ -33,7 +33,7 @@ describe('floodFill edge-pixel rounding', () => {
 
     // With the bug (Math.round), Math.round(9.7) = 10 >= width → false.
     // With the fix (Math.floor), Math.floor(9.7) = 9 < width → proceeds.
-    expect(filled).toBe(true);
+    expect(filled).not.toBeNull();
   });
 
   it('should fill the last row when startY rounds up to height', () => {
@@ -42,7 +42,7 @@ describe('floodFill edge-pixel rounding', () => {
     const ctx = makeCtx(W, H);
 
     const filled = floodFill(ctx, 2, 9.6, '#ff0000', 1);
-    expect(filled).toBe(true);
+    expect(filled).not.toBeNull();
   });
 
   it('should fill at fractional coords near the bottom-right corner', () => {
@@ -52,7 +52,7 @@ describe('floodFill edge-pixel rounding', () => {
 
     // Both x and y near the edge
     const filled = floodFill(ctx, 99.7, 99.6, '#0000ff', 1);
-    expect(filled).toBe(true);
+    expect(filled).not.toBeNull();
   });
 
   it('should NOT fill when coordinates are truly out of bounds', () => {
@@ -61,8 +61,8 @@ describe('floodFill edge-pixel rounding', () => {
     const ctx = makeCtx(W, H);
 
     // x = 10.0 is out of bounds (pixel 10 doesn't exist)
-    expect(floodFill(ctx, 10.0, 5, '#ff0000', 1)).toBe(false);
+    expect(floodFill(ctx, 10.0, 5, '#ff0000', 1)).toBeNull();
     // Negative
-    expect(floodFill(ctx, -0.5, 5, '#ff0000', 1)).toBe(false);
+    expect(floodFill(ctx, -0.5, 5, '#ff0000', 1)).toBeNull();
   });
 });

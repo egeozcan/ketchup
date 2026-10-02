@@ -3,7 +3,7 @@ import { customElement, query, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { Point, HistoryEntry, Layer, LayerSnapshot } from '../types.js';
-import { drawShapePreview, isShapeTool } from '../tools/shapes.js';
+import { drawShapePreview, isShapeTool, shapeBounds } from '../tools/shapes.js';
 import { StampStrokeEngine } from '../engine/stamp-stroke.js';
 import { blendModeToCompositeOp } from '../engine/types.js';
 import type { BrushDescriptor } from '../engine/types.js';
@@ -165,11 +165,22 @@ export class DrawingCanvas extends LitElement {
   private _strokeTintCanvas: HTMLCanvasElement | null = null;
   private _samplingDirty = true;
   /** Coalesces gesture-driven composites into at most one per animation frame. */
-  private _compositeScheduler = createThrottledScheduler(() => this.composite());
+  private _compositeScheduler = createThrottledScheduler(() => this._composite(this._compositeContentPending));
+  /**
+   * Wheel and pinch deliver many events per frame on some devices, and each
+   * viewport-change re-renders the whole app through the context; coalesce
+   * them to one per frame.
+   */
+  private _viewportChangeScheduler = createThrottledScheduler(() => this._dispatchViewportChange());
+  private _viewportChangePending = false;
+  /** A scheduled composite follows a change to layer (or transform) content, not just the view. */
+  private _compositeContentPending = false;
   /** Cached mainCanvas bounding rect — avoids a forced layout on every pointer move. */
   private _canvasRect: DOMRect | null = null;
   /** Set when a new stroke starts so the stroke tint scratch canvas is fully cleared once. */
   private _strokeTintNeedsClear = true;
+  /** `_tintPreviewCanvas` needs a full copy of the layer before this stroke's first merged frame. */
+  private _tintPreviewNeedsCopy = true;
   private _samplingBuffer: HTMLCanvasElement | null = null;
   private _altSampling = false;
 
@@ -234,14 +245,23 @@ export class DrawingCanvas extends LitElement {
   public getWidth() { return this._docWidth; }
   public getHeight() { return this._docHeight; }
   public invalidateSamplingBuffer() { this._samplingDirty = true; }
+  /** A pointer is down on the canvas (drawing, dragging, panning or pinching). */
+  public isGestureActive() { return this._pointers.size > 0; }
 
   /**
    * Request a composite on the next animation frame. Use this for anything driven
    * by a continuous gesture (drawing, dragging, panning, zooming) so a burst of
    * pointer/wheel events produces one redraw per frame instead of one per event.
    * Discrete operations (undo, layer edits, commits) should call composite() directly.
+   *
+   * Pass `contentChanged = false` when no layer pixels changed (pan, zoom, or a
+   * stroke still in the engine's buffer): listeners of `composited` then skip
+   * redrawing thumbnails and minimaps that would come out the same.
    */
-  public scheduleComposite() { this._compositeScheduler.schedule(); }
+  public scheduleComposite(contentChanged = true) {
+    if (contentChanged) this._compositeContentPending = true;
+    this._compositeScheduler.schedule();
+  }
 
   // --- Transform mode ---
 
@@ -444,8 +464,13 @@ export class DrawingCanvas extends LitElement {
   }
 
   public composite() {
+    this._composite(true);
+  }
+
+  private _composite(contentChanged: boolean) {
     if (!this.mainCanvas) return;
     this._compositeScheduler.cancel();
+    this._compositeContentPending = false;
     const displayCtx = this.mainCanvas.getContext('2d')!;
     const vw = this._vw;
     const vh = this._vh;
@@ -509,13 +534,22 @@ export class DrawingCanvas extends LitElement {
             this._tintPreviewCanvas = document.createElement('canvas');
             this._tintPreviewCanvas.width = this._docWidth;
             this._tintPreviewCanvas.height = this._docHeight;
+            this._tintPreviewNeedsCopy = true;
           }
           const tintCtx = this._tintPreviewCanvas.getContext('2d')!;
           tintCtx.globalCompositeOperation = 'source-over';
-          tintCtx.clearRect(0, 0, this._docWidth, this._docHeight);
 
-          // Start with the layer content
-          tintCtx.drawImage(layer.canvas, 0, 0);
+          // Start with the layer content. The layer doesn't change until the
+          // stroke commits, and the stroke's bounds only grow, so after one full
+          // copy per stroke only the stroke's region needs refreshing.
+          if (this._tintPreviewNeedsCopy) {
+            tintCtx.clearRect(0, 0, this._docWidth, this._docHeight);
+            tintCtx.drawImage(layer.canvas, 0, 0);
+            this._tintPreviewNeedsCopy = false;
+          } else {
+            tintCtx.clearRect(b.x, b.y, b.w, b.h);
+            tintCtx.drawImage(layer.canvas, b.x, b.y, b.w, b.h, b.x, b.y, b.w, b.h);
+          }
 
           tintCtx.globalAlpha = preview.opacity;
           if (preview.eraser) {
@@ -559,9 +593,9 @@ export class DrawingCanvas extends LitElement {
 
     this.dispatchEvent(new CustomEvent('composited', {
       bubbles: true, composed: true,
-      detail: null,
+      detail: { contentChanged },
     }));
-    this.invalidateSamplingBuffer();
+    if (contentChanged) this.invalidateSamplingBuffer();
   }
 
   /**
@@ -1349,7 +1383,7 @@ export class DrawingCanvas extends LitElement {
     this._panX = this._panStartOffsetX + (e.clientX - this._panStartX);
     this._panY = this._panStartOffsetY + (e.clientY - this._panStartY);
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
-    this.scheduleComposite();
+    this.scheduleComposite(false);
     if (this._textEditing) this._renderTextPreview();
   }
 
@@ -1405,9 +1439,9 @@ export class DrawingCanvas extends LitElement {
       this._zoom = newZoom;
 
       this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
-      this.scheduleComposite();
+      this.scheduleComposite(false);
       if (this._textEditing) this._renderTextPreview();
-      this._dispatchZoomChange();
+      this._dispatchZoomChange(true);
       return;
     }
 
@@ -1416,21 +1450,38 @@ export class DrawingCanvas extends LitElement {
     this._panX -= e.deltaX;
     this._panY -= e.deltaY;
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
-    this.scheduleComposite();
+    this.scheduleComposite(false);
     if (this._textEditing) this._renderTextPreview();
-    this._dispatchViewportChange();
+    this._scheduleViewportChange();
   };
 
-  private _dispatchZoomChange() {
+  /** `coalesce` defers viewport-change to the next frame, for continuous gestures. */
+  private _dispatchZoomChange(coalesce = false) {
     this.dispatchEvent(new CustomEvent('zoom-change', {
       bubbles: true,
       composed: true,
       detail: { zoom: this._zoom },
     }));
-    this._dispatchViewportChange();
+    if (coalesce) {
+      this._scheduleViewportChange();
+    } else {
+      this._dispatchViewportChange();
+    }
+  }
+
+  private _scheduleViewportChange() {
+    this._viewportChangePending = true;
+    this._viewportChangeScheduler.schedule();
+  }
+
+  /** Dispatch a coalesced viewport-change now rather than on the next frame. */
+  public flushViewportChange() {
+    if (this._viewportChangePending) this._dispatchViewportChange();
   }
 
   private _dispatchViewportChange() {
+    this._viewportChangeScheduler.cancel();
+    this._viewportChangePending = false;
     this.dispatchEvent(new CustomEvent('viewport-change', {
       bubbles: true,
       composed: true,
@@ -1534,7 +1585,7 @@ export class DrawingCanvas extends LitElement {
     this._panX = panX;
     this._panY = panY;
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
-    this.scheduleComposite();
+    this.scheduleComposite(false);
     if (this._textEditing) this._renderTextPreview();
     this._dispatchViewportChange();
   }
@@ -1825,7 +1876,12 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
-    if (e.button !== 0) return;
+    if (e.button !== 0) {
+      // Not a gesture we track (e.g. right-click, whose pointerup a context
+      // menu can swallow); don't leave it counted as a pointer down.
+      this._pointers.delete(e.pointerId);
+      return;
+    }
 
     // TransformManager intercepts all pointer events when active
     if (this._transformManager) {
@@ -1908,9 +1964,9 @@ export class DrawingCanvas extends LitElement {
         const layerCtx = this._getActiveLayerCtx();
         if (layerCtx) {
           this._captureBeforeDraw();
-          const modified = floodFill(layerCtx, fx, fy, this.ctx.state.strokeColor);
-          if (modified) {
-            this._pushDrawHistory();
+          const filled = floodFill(layerCtx, fx, fy, this.ctx.state.strokeColor);
+          if (filled) {
+            this._pushDrawHistory(false, filled);
             this.composite();
           } else {
             this._beforeDrawCanvas = null;
@@ -1989,6 +2045,7 @@ export class DrawingCanvas extends LitElement {
       // The tint scratch canvas is only cleared inside the previous stroke's bounds,
       // so wipe it once per stroke before reusing it.
       this._strokeTintNeedsClear = true;
+      this._tintPreviewNeedsCopy = true;
       const layerCtx = desc.ink.wetness > 0 ? this._getActiveLayerCtx() ?? undefined : undefined;
       this._engine.stroke(p.x, p.y, normalizePointerPressure(e), layerCtx, e.timeStamp);
       this.composite();
@@ -2116,7 +2173,8 @@ export class DrawingCanvas extends LitElement {
       const layerCtx = desc.ink.wetness > 0 ? this._getActiveLayerCtx() ?? undefined : undefined;
       this._engine.stroke(p.x, p.y, normalizePointerPressure(e), layerCtx, e.timeStamp);
       this._lastPoint = p;
-      this.scheduleComposite();
+      // The stroke stays in the engine's buffer until pointerup; the layer is unchanged.
+      this.scheduleComposite(false);
     } else if (isShapeTool(activeTool)) {
       // Preview on overlay with pan transform
       const previewCtx = this.previewCanvas.getContext('2d')!;
@@ -2229,12 +2287,14 @@ export class DrawingCanvas extends LitElement {
     if (!this._drawing) return;
     const p = this._getDocPoint(e);
 
+    let region: PixelRect | undefined;
     if (isShapeTool(activeTool)) {
       // Capture before draw for shapes (they only commit on pointerup)
       this._captureBeforeDraw();
       // Commit shape to active layer
       const layerCtx = this._getActiveLayerCtx();
       if (layerCtx) {
+        region = shapeBounds(this._startPoint!, p, this._brushDescriptor.size);
         drawShapePreview(
           layerCtx,
           activeTool,
@@ -2252,7 +2312,6 @@ export class DrawingCanvas extends LitElement {
     }
 
     // Commit engine stroke buffer to layer before capturing history
-    let region: PixelRect | undefined;
     if (activeTool === 'pencil' || activeTool === 'eraser') {
       const layerCtx = this._getActiveLayerCtx();
       if (layerCtx) {
@@ -2438,9 +2497,9 @@ export class DrawingCanvas extends LitElement {
     this._lastPinchMidY = midY;
 
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
-    this.scheduleComposite();
+    this.scheduleComposite(false);
     if (this._textEditing) this._renderTextPreview();
-    this._dispatchZoomChange();
+    this._dispatchZoomChange(true);
   }
 
   // --- Selection helpers ---
@@ -2955,7 +3014,7 @@ export class DrawingCanvas extends LitElement {
       const layerCtx = this._getActiveLayerCtx();
       if (layerCtx) {
         layerCtx.clearRect(origin.x, origin.y, data.width, data.height);
-        this._pushDrawHistory(true);
+        this._pushDrawHistory(true, { x: origin.x, y: origin.y, w: data.width, h: data.height });
         this.composite();
       } else {
         this._beforeDrawCanvas = null;
@@ -3370,6 +3429,10 @@ export class DrawingCanvas extends LitElement {
     this._resizeObserver?.disconnect();
     this._resizeObserver = null;
     this._compositeScheduler.cancel();
+    // drawing-app flushes a pending viewport change from its own disconnect,
+    // before deciding whether to save; by now it would only re-arm a save.
+    this._viewportChangeScheduler.cancel();
+    this._viewportChangePending = false;
     if (this._transformManager) {
       this._transformManager.dispose();
       this._transformManager = null;

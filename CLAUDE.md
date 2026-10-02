@@ -36,7 +36,7 @@ Each layer owns an offscreen `HTMLCanvasElement` (created via `document.createEl
 
 ### Canvas Architecture
 
-`drawing-canvas.ts` uses a **display canvas** (`#main`) that shows the composited result of all layers, and a `#preview` canvas (absolute-positioned, pointer-events:none) for live previews (shape drawing, selection marching ants). The preview canvas is cleared on commit. A checkerboard pattern is drawn on the display canvas behind layers to indicate transparency.
+`drawing-canvas.ts` uses a **display canvas** (`#main`) that shows the composited result of all layers, and a `#preview` canvas (absolute-positioned, pointer-events:none) for live previews (shape drawing, selection marching ants). The preview canvas is cleared on commit. A checkerboard pattern is drawn on the display canvas behind layers to indicate transparency. Each composite dispatches `composited` with `{ contentChanged }`; pan/zoom and in-progress stroke frames use `scheduleComposite(false)` so the layers panel and navigator skip redrawing thumbnails of unchanged layers — pass `true` (the default) for anything that changes layer pixels.
 
 ### History
 

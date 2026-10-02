@@ -2,17 +2,18 @@ import { type AnyCanvas } from './canvas-pool.js';
 import type { TipDescriptor } from './types.js';
 import { tipGenerators, generateFanTip, generateSplatterTip, TIP_VARIANT_COUNTS } from './tip-generators.js';
 
-interface CacheEntry {
-  canvas: AnyCanvas;
-  key: string;
-  lastUsed: number;
-}
-
-const MAX_ENTRIES = 128;
+/**
+ * Tips are cached by byte size rather than count: pressure-driven size on a
+ * large fan or splatter brush cycles through hundreds of diameter/variant
+ * combinations, which a small count limit would thrash on every dab.
+ */
+const MAX_BYTES = 32 * 1024 * 1024;
 
 export class BrushTipCache {
-  private _entries = new Map<string, CacheEntry>();
-  private _accessCounter = 0;
+  // Map iteration follows insertion order, so re-inserting on each hit keeps
+  // the least recently used entry first and eviction is O(1).
+  private _entries = new Map<string, AnyCanvas>();
+  private _bytes = 0;
 
   private _buildKey(diameter: number, hardness: number, tip: TipDescriptor, variantIndex?: number): string {
     let key = `${tip.shape}-${diameter}-${hardness.toFixed(2)}-${tip.aspect.toFixed(1)}`;
@@ -24,26 +25,17 @@ export class BrushTipCache {
 
   get(diameter: number, hardness: number, tip: TipDescriptor): AnyCanvas {
     const key = this._buildKey(diameter, hardness, tip);
-    const existing = this._entries.get(key);
-    if (existing) {
-      existing.lastUsed = ++this._accessCounter;
-      return existing.canvas;
-    }
+    const existing = this._lookup(key);
+    if (existing) return existing;
 
     const generator = tipGenerators[tip.shape];
-    const canvas = generator(diameter, hardness, tip);
-    this._entries.set(key, { canvas, key, lastUsed: ++this._accessCounter });
-    this._evictIfNeeded();
-    return canvas;
+    return this._insert(key, generator(diameter, hardness, tip));
   }
 
   getVariant(diameter: number, hardness: number, tip: TipDescriptor, variantIndex: number): AnyCanvas {
     const key = this._buildKey(diameter, hardness, tip, variantIndex);
-    const existing = this._entries.get(key);
-    if (existing) {
-      existing.lastUsed = ++this._accessCounter;
-      return existing.canvas;
-    }
+    const existing = this._lookup(key);
+    if (existing) return existing;
 
     let canvas: AnyCanvas;
     if (tip.shape === 'fan') {
@@ -54,28 +46,32 @@ export class BrushTipCache {
       canvas = tipGenerators[tip.shape](diameter, hardness, tip);
     }
 
-    this._entries.set(key, { canvas, key, lastUsed: ++this._accessCounter });
-    this._evictIfNeeded();
+    return this._insert(key, canvas);
+  }
+
+  private _lookup(key: string): AnyCanvas | undefined {
+    const canvas = this._entries.get(key);
+    if (canvas) {
+      this._entries.delete(key);
+      this._entries.set(key, canvas);
+    }
     return canvas;
   }
 
-  private _evictIfNeeded() {
-    while (this._entries.size > MAX_ENTRIES) {
-      let oldest: string | null = null;
-      let oldestTime = Infinity;
-      for (const [key, entry] of this._entries) {
-        if (entry.lastUsed < oldestTime) {
-          oldestTime = entry.lastUsed;
-          oldest = key;
-        }
-      }
-      if (oldest) this._entries.delete(oldest);
-      else break;
+  private _insert(key: string, canvas: AnyCanvas): AnyCanvas {
+    this._entries.set(key, canvas);
+    this._bytes += canvas.width * canvas.height * 4;
+    // Evict least recently used first, but always keep the tip just added.
+    for (const [oldKey, old] of this._entries) {
+      if (this._bytes <= MAX_BYTES || oldKey === key) break;
+      this._entries.delete(oldKey);
+      this._bytes -= old.width * old.height * 4;
     }
+    return canvas;
   }
 
   clear() {
     this._entries.clear();
-    this._accessCounter = 0;
+    this._bytes = 0;
   }
 }

@@ -35,6 +35,19 @@ function drawRegularPolygon(
   ctx.closePath();
 }
 
+/**
+ * Region drawShapePreview() can paint for these arguments. Every shape's path
+ * (Bézier control points included) stays inside the start/end box, and round
+ * caps and joins reach at most half the line width past the path; the extra
+ * pixels cover anti-aliasing.
+ */
+export function shapeBounds(start: Point, end: Point, lineWidth: number): { x: number; y: number; w: number; h: number } {
+  const pad = lineWidth / 2 + 2;
+  const x = Math.min(start.x, end.x) - pad;
+  const y = Math.min(start.y, end.y) - pad;
+  return { x, y, w: Math.abs(end.x - start.x) + pad * 2, h: Math.abs(end.y - start.y) + pad * 2 };
+}
+
 export function drawShapePreview(
   ctx: CanvasRenderingContext2D,
   shape: ShapeType,
@@ -53,6 +66,9 @@ export function drawShapePreview(
   ctx.save();
   ctx.strokeStyle = strokeColor;
   ctx.lineWidth = lineWidth;
+  // shapeBounds() relies on round caps/joins and on every point (Bézier control
+  // points included) staying inside the start/end box; keep both true here, or
+  // undo patches for shapes will be cut short.
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 

@@ -29,6 +29,13 @@ export class TransformManager {
     nw: { x: 0, y: 0 }, ne: { x: 0, y: 0 }, se: { x: 0, y: 0 }, sw: { x: 0, y: 0 },
   };
   private _perspectiveActive = false;
+  /**
+   * The perspective-warped source, kept between composites: warping redraws
+   * the whole source once per mesh triangle, and pan, zoom, hover and stroke
+   * frames composite without moving the corners. Keyed by destination corners,
+   * which (with the fixed source) fully determine the result.
+   */
+  private _warpCache: { key: string; canvas: HTMLCanvasElement; x: number; y: number } | null = null;
 
   // --- Interaction ---
   private _interaction: TransformInteraction = { type: 'idle' };
@@ -365,13 +372,23 @@ export class TransformManager {
       const maxX = Math.ceil(Math.max(...xs)), maxY = Math.ceil(Math.max(...ys));
       const offW = maxX - minX, offH = maxY - minY;
       if (offW > 0 && offH > 0) {
-        const offscreen = document.createElement('canvas');
-        offscreen.width = offW;
-        offscreen.height = offH;
-        const offCtx = offscreen.getContext('2d')!;
-        offCtx.translate(-minX, -minY);
-        drawPerspectiveMesh(offCtx, this._sourceCanvas, srcCorners, dstCorners, gridSize);
-        ctx.drawImage(offscreen, minX, minY);
+        const key = dstCorners.map(c => `${c.x},${c.y}`).join(';');
+        let cache = this._warpCache;
+        if (!cache || cache.key !== key) {
+          // Reuse the canvas; its backing store is reallocated only on a size change.
+          const offscreen = cache?.canvas ?? document.createElement('canvas');
+          if (offscreen.width !== offW || offscreen.height !== offH) {
+            offscreen.width = offW;
+            offscreen.height = offH;
+          }
+          const offCtx = offscreen.getContext('2d')!;
+          offCtx.setTransform(1, 0, 0, 1, 0, 0);
+          offCtx.clearRect(0, 0, offW, offH);
+          offCtx.translate(-minX, -minY);
+          drawPerspectiveMesh(offCtx, this._sourceCanvas, srcCorners, dstCorners, gridSize);
+          cache = this._warpCache = { key, canvas: offscreen, x: minX, y: minY };
+        }
+        ctx.drawImage(cache.canvas, cache.x, cache.y);
       }
     } else {
       const matrix = composeMatrix(this._state);
@@ -474,5 +491,7 @@ export class TransformManager {
     return { x, y, w, h };
   }
 
-  dispose(): void {}
+  dispose(): void {
+    this._warpCache = null;
+  }
 }
