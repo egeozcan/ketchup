@@ -136,4 +136,50 @@ describe('warpPerspective', () => {
     const out = warpPerspective(src, concave, { x: 0, y: 0, w: 40, h: 40 });
     expect(pixel(out, 3, 3)).toEqual([1, 2, 3, 255]);
   });
+
+  it('fills a concave quad up to its outline, without seams and nothing past it', () => {
+    // The bilinear map folds past a concave quad's outline; the result must
+    // still be exactly the outline, anti-aliased, as the handles show it.
+    const src = solid(30, 30, [9, 8, 7, 255]);
+    const quads: Quad[] = [
+      [{ x: 0.5, y: 0.5 }, { x: 120.5, y: 0.5 }, { x: 20.5, y: 20.5 }, { x: 0.5, y: 120.5 }],
+      [{ x: 2, y: 2 }, { x: 300, y: 100 }, { x: 2, y: 200 }, { x: 100, y: 100 }],
+      [{ x: 1, y: 1 }, { x: 400, y: 1 }, { x: 60, y: 60 }, { x: 1, y: 400 }],
+    ];
+    for (const q of quads) {
+      const w = Math.ceil(Math.max(...q.map(p => p.x))) + 2, h = Math.ceil(Math.max(...q.map(p => p.y))) + 2;
+      const out = warpPerspective(src, q, { x: 0, y: 0, w, h });
+      let inside = 0, outside = 0;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const d = signedOutlineDistance(q, x + 0.5, y + 0.5);
+          const alpha = pixel(out, x, y)[3];
+          if (d >= 0.75) {
+            inside++;
+            expect(alpha, `inside (${x}, ${y})`).toBe(255);
+          } else if (d <= -0.75) {
+            outside++;
+            expect(alpha, `outside (${x}, ${y})`).toBe(0);
+          }
+        }
+      }
+      expect(inside).toBeGreaterThan(500);
+      expect(outside).toBeGreaterThan(500);
+    }
+  });
 });
+
+/** Distance from (x, y) to the quad's outline: positive inside (nonzero winding), negative outside. */
+function signedOutlineDistance(q: Quad, x: number, y: number): number {
+  let winding = 0, dist = Infinity;
+  for (let i = 0; i < 4; i++) {
+    const p = q[i], n = q[(i + 1) % 4];
+    const cross = (n.x - p.x) * (y - p.y) - (x - p.x) * (n.y - p.y);
+    if (p.y <= y && n.y > y && cross > 0) winding++;
+    else if (p.y > y && n.y <= y && cross < 0) winding--;
+    const ex = n.x - p.x, ey = n.y - p.y;
+    const t = Math.max(0, Math.min(1, ((x - p.x) * ex + (y - p.y) * ey) / (ex * ex + ey * ey)));
+    dist = Math.min(dist, Math.hypot(x - p.x - ex * t, y - p.y - ey * t));
+  }
+  return winding !== 0 ? dist : -dist;
+}

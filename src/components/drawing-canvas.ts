@@ -2479,6 +2479,12 @@ export class DrawingCanvas extends LitElement {
       this._endPan();
     }
 
+    // End a transform gesture where it is, so a finger left on the screen
+    // stops driving it and a drafted preview warp is redone in full.
+    if (this._transformManager?.cancelInteraction()) {
+      this.composite();
+    }
+
     // Cancel move tool drag
     if (this._moveTempCanvas) {
       if (this._beforeDrawCanvas) {
@@ -3526,6 +3532,10 @@ export class DrawingCanvas extends LitElement {
       this._transformManager = null;
       this._transformContentMode = 'lifted';
       this._floatIsExternalImage = false;
+    }
+    if (this._transformViewCanvas) {
+      this._transformViewCanvas.width = this._transformViewCanvas.height = 0;
+      this._transformViewCanvas = null;
     }
     this._pointers.clear();
     this._pinching = false;

@@ -167,8 +167,10 @@ export function getPerspectiveDestCorners(
  * source rectangle onto the quad and sampled bilinearly with premultiplied
  * alpha, so there is no triangle mesh to leave seams at its edges. The quad's
  * outline is anti-aliased from each pixel's distance to it, and the source is
- * clamped at its border, so an enlarged edge stays crisp. Each pixel depends
- * only on its own position, so a region is exactly that crop of the whole warp.
+ * clamped at its border, so an enlarged edge stays crisp. A concave or
+ * self-intersecting quad is filled up to its outline (nonzero winding), where
+ * the map folds past it. Each pixel depends only on its own position, so a
+ * region is exactly that crop of the whole warp.
  */
 export function warpPerspective(
   src: ImageData,
@@ -192,6 +194,10 @@ export function warpPerspective(
     const dx = ex + gx * v, dy = ey + gy * v;
     return Math.abs(dx) > Math.abs(dy) ? (hx - fx * v) / dx : (hy - fy * v) / dy;
   };
+  // A convex quad is exactly the image of the source rectangle. Past a concave
+  // corner the map folds outside the outline, so there the outline itself
+  // decides what is inside (the source rectangle still covers all of it).
+  const convex = isConvex(dst);
 
   for (let py = 0; py < rh; py++) {
     const [spanStart, spanEnd] = quadRowSpan(dst, ry + py, rx, rw);
@@ -205,13 +211,18 @@ export function warpPerspective(
         v = -k0 / k1;
         u = uAt(hx, hy, v);
       } else {
-        const disc = k1 * k1 - 4 * k0 * k2;
-        if (disc < 0) continue;
+        let disc = k1 * k1 - 4 * k0 * k2;
+        if (disc < 0) {
+          // Unmapped. Next to a concave quad's outline that can still be within
+          // its anti-aliased fringe, sampled at the nearest real solution.
+          if (convex) continue;
+          disc = 0;
+        }
         const w = Math.sqrt(disc);
         v = (-k1 - w) * ik2;
         u = uAt(hx, hy, v);
         // Of the two roots, keep the one inside (or nearest) the source.
-        if (u < 0 || u > 1 || v < 0 || v > 1) {
+        if (!(u >= 0 && u <= 1 && v >= 0 && v <= 1)) {
           const v2 = (-k1 + w) * ik2;
           const u2 = uAt(hx, hy, v2);
           if (outside(u2, v2) < outside(u, v)) { u = u2; v = v2; }
@@ -223,15 +234,17 @@ export function warpPerspective(
       // Inside, (distance in u or v) × |Jacobian| / |other partial derivative|
       // estimates the distance to the nearest edge cheaply (squared, sparing the
       // square roots); near or outside the outline, where that estimate breaks
-      // down as the map folds, the distance to the edges is measured directly.
-      const inside = u >= 0 && u <= 1 && v >= 0 && v <= 1;
+      // down as the map folds, and throughout a quad that isn't convex, the
+      // distance to the edges is measured directly.
+      const inside = convex ? u >= 0 && u <= 1 && v >= 0 && v <= 1 : quadWinding(dst, cx, cy) !== 0;
       let coverage = 1;
       const mu = u < 1 - u ? u : 1 - u, mv = v < 1 - v ? v : 1 - v;
       const pux = ex + gx * v, puy = ey + gy * v;
       const pvx = fx + gx * u, pvy = fy + gy * u;
       const jac = pux * pvy - puy * pvx;
       const du = mu * jac, dv = mv * jac;
-      if (!inside || du * du < 0.25 * (pvx * pvx + pvy * pvy) || dv * dv < 0.25 * (pux * pux + puy * puy)) {
+      if (!convex || !inside
+        || du * du < 0.25 * (pvx * pvx + pvy * pvy) || dv * dv < 0.25 * (pux * pux + puy * puy)) {
         const dist = Math.sqrt(Math.min(
           segmentDist2(cx, cy, a, b), segmentDist2(cx, cy, b, c),
           segmentDist2(cx, cy, c, d), segmentDist2(cx, cy, d, a),
@@ -277,11 +290,39 @@ function segmentDist2(x: number, y: number, p: Point, q: Point): number {
   return dx * dx + dy * dy;
 }
 
-/** How far (u, v) lies outside the unit square, in u/v units; 0 inside. */
+/** How far (u, v) lies outside the unit square, in u/v units; 0 inside, Infinity if undefined. */
 function outside(u: number, v: number): number {
+  if (u !== u || v !== v) return Infinity;
   const du = u < 0 ? -u : u > 1 ? u - 1 : 0;
   const dv = v < 0 ? -v : v > 1 ? v - 1 : 0;
   return du > dv ? du : dv;
+}
+
+/** Whether every corner of the quad turns the same way (or not at all). */
+function isConvex(q: [Point, Point, Point, Point]): boolean {
+  let left = false, right = false;
+  for (let i = 0; i < 4; i++) {
+    const p = q[i], n = q[(i + 1) % 4], m = q[(i + 2) % 4];
+    const turn = (n.x - p.x) * (m.y - n.y) - (n.y - p.y) * (m.x - n.x);
+    if (turn > 0) left = true;
+    else if (turn < 0) right = true;
+  }
+  return !(left && right);
+}
+
+/** The quad outline's winding number around (x, y): nonzero inside. */
+function quadWinding(q: [Point, Point, Point, Point], x: number, y: number): number {
+  let winding = 0;
+  for (let i = 0; i < 4; i++) {
+    const p = q[i], n = q[(i + 1) % 4];
+    const side = (n.x - p.x) * (y - p.y) - (x - p.x) * (n.y - p.y);
+    if (p.y <= y) {
+      if (n.y > y && side > 0) winding++;
+    } else if (n.y <= y && side < 0) {
+      winding--;
+    }
+  }
+  return winding;
 }
 
 /**

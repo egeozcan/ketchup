@@ -194,6 +194,7 @@ export function makeTransformManagerStub(overrides: Record<string, unknown> = {}
     onPointerDown: vi.fn(() => true),
     onPointerMove: vi.fn(),
     onPointerUp: vi.fn(() => null),
+    cancelInteraction: vi.fn(() => false),
     getCursor: vi.fn(() => 'move'),
     ...overrides,
   };

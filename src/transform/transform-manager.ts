@@ -251,6 +251,16 @@ export class TransformManager {
     return result;
   }
 
+  /**
+   * Ends a gesture whose pointer was cancelled, leaving the transform where it
+   * got to. Returns whether one was in progress.
+   */
+  cancelInteraction(): boolean {
+    if (this._interaction.type === 'idle') return false;
+    this._interaction = { type: 'idle' };
+    return true;
+  }
+
   // --- Private interaction handlers ---
 
   private _handleMove(docPoint: Point, modifiers: { shift: boolean }): void {
@@ -379,8 +389,9 @@ export class TransformManager {
   }
 
   /**
-   * Draws the transformed content for preview. Given `fullResolutionIn`, only
-   * the part inside it is drawn, exactly as `commit` would write it.
+   * Draws the transformed content for preview. Given `fullResolutionIn`, the
+   * part inside it is drawn exactly as `commit` would write it; a perspective
+   * warp may then be left out beyond it, so pass the target's whole area.
    */
   renderTransformed(ctx: CanvasRenderingContext2D, fullResolutionIn?: TransformRect): void {
     if (fullResolutionIn) this._render(ctx, fullResolutionIn, Infinity);
@@ -436,7 +447,19 @@ export class TransformManager {
       h = bottom - y;
     }
     if (w <= 0 || h <= 0) return null;
-    const scale = Math.min(1, Math.sqrt(maxPixels / (w * h)));
+    // A reduced-resolution warp is the same warp of a quad scaled down, drawn
+    // scaled back up. Rounding it out to whole pixels can take it past the
+    // budget, so it shrinks until it fits.
+    let scale = Math.min(1, Math.sqrt(maxPixels / (w * h)));
+    let sx: number, sy: number, sw: number, sh: number;
+    for (;;) {
+      sx = Math.floor(x * scale);
+      sy = Math.floor(y * scale);
+      sw = Math.ceil((x + w) * scale) - sx;
+      sh = Math.ceil((y + h) * scale) - sy;
+      if (sw * sh <= maxPixels) break;
+      scale *= Math.sqrt(maxPixels / (sw * sh));
+    }
     const key = dstCorners.map(c => `${c.x},${c.y}`).join(';');
     for (const cache of [this._warpCache, this._draftWarpCache]) {
       if (cache && cache.key === key && cache.scale >= scale && cache.x <= x && cache.y <= y
@@ -445,10 +468,6 @@ export class TransformManager {
       }
     }
     const cache = scale === 1 ? this._warpCache : this._draftWarpCache;
-    // A reduced-resolution warp is the same warp of a quad scaled down, drawn
-    // scaled back up.
-    const sx = Math.floor(x * scale), sy = Math.floor(y * scale);
-    const sw = Math.ceil((x + w) * scale) - sx, sh = Math.ceil((y + h) * scale) - sy;
     const scaled = scale === 1
       ? dstCorners
       : dstCorners.map(c => ({ x: c.x * scale, y: c.y * scale })) as typeof dstCorners;

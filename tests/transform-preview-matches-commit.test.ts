@@ -56,6 +56,22 @@ describe('perspective preview and commit', () => {
     expect([committed.x, committed.y, committed.w, committed.h]).toEqual([0, 0, 100, 100]);
   });
 
+  it('keeps a draft within its pixel budget, whatever the shape of its bounds', () => {
+    for (const [x, y] of [[20000, 15000], [9000, 3000], [5000, 4000], [4097, 4097]]) {
+      const tm = makePerspectiveManager();
+      (tm as any)._perspectiveCorners.se = { x, y };
+      tm.renderTransformed(makeCanvas(100, 100).getContext('2d')!);
+      const atRest = (tm as any)._draftWarpCache.canvas as HTMLCanvasElement;
+      expect(atRest.width * atRest.height, `${x}, ${y} at rest`).toBeLessThanOrEqual(4096 * 4096);
+
+      (tm as any)._interaction = { type: 'perspective', corner: 'se', startPoint: { x: 10, y: 10 } };
+      (tm as any)._perspectiveCorners.se = { x: x + 1, y };
+      tm.renderTransformed(makeCanvas(100, 100).getContext('2d')!);
+      const dragged = (tm as any)._draftWarpCache.canvas as HTMLCanvasElement;
+      expect(dragged.width * dragged.height, `${x}, ${y} dragged`).toBeLessThanOrEqual(1024 * 1024);
+    }
+  });
+
   it('drafts a large warp while a handle is dragged, and redoes it in full on release', () => {
     const tm = new TransformManager(
       new ImageData(1500, 1500), { x: 0, y: 0, w: 1500, h: 1500 }, makeCanvas(100, 100), 1, { x: 0, y: 0 },
@@ -209,6 +225,14 @@ describe('transform preview under a layer blend mode', () => {
     expect(scratch.width).toBe(0);
   });
 
+  it('frees the scratch canvas when disconnected mid-transform', () => {
+    const { canvas, merges } = setup();
+    canvas.composite();
+    const scratch = merges[0].canvas;
+    canvas.disconnectedCallback();
+    expect(scratch.width).toBe(0);
+  });
+
   it('flattens the merged layer for export, at commit quality', () => {
     const { canvas, merges, renderTransformed } = setup();
     canvas.renderFlattened(null);
@@ -251,5 +275,29 @@ describe('autosave of an active float', () => {
     // of reusing a blob stored while the float was still on it.
     expect(snap).not.toBeNull();
     expect(snap!.layerId).toBe(layer.id);
+  });
+});
+
+describe('a pointer cancelled during a transform gesture', () => {
+  it('ends the gesture where it is, so the drafted warp is redone in full', () => {
+    const canvas = new DrawingCanvas();
+    const layer = makeLayer(100, 100);
+    (canvas as any)._ctx = { value: { state: makeState({ layers: [layer], activeLayerId: layer.id }) } };
+    attachCanvasElements(canvas, 100, 100);
+    const tm = new TransformManager(
+      new ImageData(1500, 1500), { x: 0, y: 0, w: 1500, h: 1500 }, makeCanvas(100, 100), 1, { x: 0, y: 0 },
+    );
+    (tm as any)._perspectiveActive = true;
+    (tm as any)._perspectiveCorners.se = { x: 30, y: 20 };
+    (tm as any)._interaction = { type: 'perspective', corner: 'se', startPoint: { x: 1500, y: 1500 } };
+    (canvas as any)._transformManager = tm;
+    canvas.composite();
+    expect((tm as any)._warpCache).toBeNull();
+
+    (canvas as any)._onPointerCancel({ pointerId: 1 } as PointerEvent);
+
+    expect((tm as any)._perspectiveCorners.se).toEqual({ x: 30, y: 20 });
+    expect((tm as any)._interaction.type).toBe('idle');
+    expect((tm as any)._warpCache.scale).toBe(1);
   });
 });
