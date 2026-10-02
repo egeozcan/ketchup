@@ -1003,7 +1003,8 @@ export class DrawingApp extends LitElement {
       e.preventDefault();
       if (this._state.activeTool !== 'select') {
         this.canvas?.cancelCrop();
-        this.canvas?.clearSelection();
+        // An active float is what gets duplicated, so it stays.
+        if (!this.canvas?.isTransformActive()) this.canvas?.clearSelection();
         this._state = { ...this._state, activeTool: 'select' };
         this._markDirty('setting');
       }
@@ -1253,6 +1254,15 @@ export class DrawingApp extends LitElement {
     this._state = { ...this._state, documentWidth: width, documentHeight: height };
   }
 
+  /**
+   * Commits a pasted or dropped image's float before the layer list changes
+   * around it. Cancelling it removes its layer and that layer's history, and
+   * the indices of other reorders and deletions would then be off by one.
+   */
+  private _acceptPastedImage() {
+    if (this.canvas?.hasExternalFloat) this.canvas.commitTransform();
+  }
+
   private _buildContextValue(): DrawingContextValue {
     return {
       state: this._state,
@@ -1317,6 +1327,7 @@ export class DrawingApp extends LitElement {
         if (this._state.layers.length <= 1) return;
         const idx = this._state.layers.findIndex(l => l.id === id);
         if (idx === -1) return;
+        this._acceptPastedImage();
         if (id === this._state.activeLayerId) {
           this.canvas?.clearSelection();
         }
@@ -1361,6 +1372,7 @@ export class DrawingApp extends LitElement {
       reorderLayer: (id: string, newIndex: number) => {
         const oldIndex = this._state.layers.findIndex(l => l.id === id);
         if (oldIndex === -1 || oldIndex === newIndex) return;
+        this._acceptPastedImage();
         const newLayers = [...this._state.layers];
         const [layer] = newLayers.splice(oldIndex, 1);
         const normalizedIndex = newIndex < 0

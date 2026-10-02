@@ -158,7 +158,8 @@ export class DrawingCanvas extends LitElement {
   private _clipboard: ImageData | null = null;
   private _clipboardOrigin: Point | null = null;
   private _clipboardRotation = 0;
-  private _clipboardBlobSize: number | null = null;
+  /** Our latest write to the system clipboard: whether it got there, once settled. */
+  private _systemClipboardWrite: Promise<boolean> | null = null;
 
   private _engine = new StampStrokeEngine();
   private _tintPreviewCanvas: HTMLCanvasElement | null = null;
@@ -1837,6 +1838,8 @@ export class DrawingCanvas extends LitElement {
   private _onWindowBlur = () => {
     this._altSampling = false;
     this._clearEyedropperPreview();
+    // Something may be copied elsewhere now; see paste().
+    this._systemClipboardWrite = null;
   };
 
   // --- Brush cursor / preview ---
@@ -2721,6 +2724,8 @@ export class DrawingCanvas extends LitElement {
         this.composite();
         this.requestUpdate();
         this._dispatchTransformChange();
+        // Undo can now cancel the float.
+        this._notifyHistory();
       }
     }
   }
@@ -2896,6 +2901,10 @@ export class DrawingCanvas extends LitElement {
     if (rect.w < 1 || rect.h < 1) return;
     const state = this._ctx.value?.state;
     if (!state) return;
+    // Work in progress goes onto its layer first: a lifted float has left a
+    // hole there, which the crop's undo snapshot would otherwise keep.
+    if (this._transformManager) this.commitTransform();
+    if (this._textEditing) this._commitText();
 
     // Snapshot before-state
     const beforeWidth = this._docWidth;
@@ -3097,17 +3106,16 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _writeToSystemClipboard(canvas: HTMLCanvasElement) {
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      this._clipboardBlobSize = blob.size;
-      // Absent outside secure contexts (plain HTTP); the internal clipboard still works.
-      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') return;
-      navigator.clipboard.write([
-        new ClipboardItem({ 'image/png': blob }),
-      ]).catch(() => {
-        // Clipboard API denied — internal clipboard still works
-      });
-    }, 'image/png');
+    // Absent outside secure contexts (plain HTTP); the internal clipboard still works.
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') return;
+    const png = new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(blob => (blob ? resolve(blob) : reject(new Error('PNG encoding failed'))), 'image/png');
+    });
+    // Started now, within the shortcut's user activation (Safari requires
+    // it), with the image to follow; paste waits for it.
+    this._systemClipboardWrite = navigator.clipboard
+      .write([new ClipboardItem({ 'image/png': png })])
+      .then(() => true, () => false);
   }
 
   public cutSelection() {
@@ -3157,6 +3165,13 @@ export class DrawingCanvas extends LitElement {
   }
 
   public async paste() {
+    // Until our own copy reaches the system clipboard, that still holds what
+    // was there before; if it never gets there, the internal clipboard is the
+    // latest copy (until the window loses focus, when one may be made elsewhere).
+    if (this._systemClipboardWrite && !(await this._systemClipboardWrite)) {
+      this.pasteSelection();
+      return;
+    }
     try {
       const items = await navigator.clipboard.read();
       for (const item of items) {
@@ -3231,6 +3246,8 @@ export class DrawingCanvas extends LitElement {
     this.composite();
     this.requestUpdate();
     this._dispatchTransformChange();
+    // Undo can now cancel the float.
+    this._notifyHistory();
   }
 
   public selectAllCanvas() {
@@ -3258,6 +3275,8 @@ export class DrawingCanvas extends LitElement {
     this.composite();
     this.requestUpdate();
     this._dispatchTransformChange();
+    // Undo can now cancel the float.
+    this._notifyHistory();
   }
 
   public duplicateInPlace() {
