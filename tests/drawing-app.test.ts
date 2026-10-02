@@ -362,6 +362,34 @@ describe('DrawingApp', () => {
     expect((app as any).canvas.clearSelection).not.toHaveBeenCalled();
   });
 
+  it('leaves a project whose stored data failed to load as it is, carrying on in a new one', async () => {
+    const app = createAppWithCanvasSpies();
+    Object.defineProperty(app, 'updateComplete', { configurable: true, get: () => Promise.resolve(true) });
+    const broken = { id: 'broken', name: 'Sketch', createdAt: 0, updatedAt: 0, thumbnailRef: null };
+    const fresh = { id: 'fresh', name: 'Untitled', createdAt: 1, updatedAt: 1, thumbnailRef: null };
+    (app as any)._currentProject = broken;
+    (app as any)._backend = {
+      state: { get: vi.fn(async () => { throw new Error('Blob not found'); }) },
+      projects: { create: vi.fn(async () => fresh), list: vi.fn(async () => [fresh, broken]) },
+    };
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await (app as any)._loadProject('broken');
+
+    expect((app as any)._currentProject.id).toBe('fresh');
+
+    // And if not even a new project can be made, nothing is saved over it.
+    (app as any)._currentProject = broken;
+    (app as any)._backend.projects.create = vi.fn(async () => { throw new Error('QuotaExceededError'); });
+    await (app as any)._loadProject('broken');
+    expect((app as any)._currentProject.id).toBe('broken');
+    (app as any)._dirty = true;
+    const put = vi.fn();
+    (app as any)._backend.state.save = put;
+    await (app as any)._save();
+    expect(put).not.toHaveBeenCalled();
+  });
+
   it('falls back to the first layer if saved activeLayerId is invalid on load', async () => {
     const app = createAppWithCanvasSpies();
 

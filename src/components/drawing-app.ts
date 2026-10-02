@@ -605,7 +605,7 @@ export class DrawingApp extends LitElement {
       return this._savePromise;
     }
     if (!this._currentProject || !this._dirty || this._projectLoads > 0) return;
-    if (!this._backend) return;
+    if (!this._backend || this._currentProject.id === this._unsavableProjectId) return;
 
     this._savePromise = (async () => {
       this._saveInProgress = true;
@@ -1311,9 +1311,23 @@ export class DrawingApp extends LitElement {
       }
     } catch (err) {
       console.error('Failed to load project:', err);
+      // What is stored stays as it is: saving this blank document under its
+      // id would replace it (and drop its images). Carry on in a new project,
+      // or, if not even that can be made, without saving.
+      try {
+        const meta = await this._backend!.projects.create({ name: 'Untitled', thumbnailRef: null });
+        this._currentProject = meta;
+        this._projectList = await this._backend!.projects.list();
+      } catch (createErr) {
+        console.error('Could not start a new project:', createErr);
+        this._unsavableProjectId = projectId;
+      }
       await this._resetToFreshProject();
     }
   }
+
+  /** A project whose stored data failed to load and must not be saved over. */
+  private _unsavableProjectId: string | null = null;
 
 
   /** Set document dimensions without clearing history (used by crop commit/undo). */

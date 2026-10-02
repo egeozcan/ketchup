@@ -1,7 +1,7 @@
 // src/storage/indexeddb/indexeddb-projects.ts
 import type { BlobRef, ProjectMeta, ProjectStore } from '../types.js';
 import { StorageNotFoundError } from '../errors.js';
-import { mapDOMException } from './error-utils.js';
+import { mapDOMException, txAbortError } from './error-utils.js';
 import { generateUUID } from './migration.js';
 
 const PROJECTS_STORE = 'projects';
@@ -70,6 +70,7 @@ export class IndexedDBProjectStore implements ProjectStore {
       tx.objectStore(PROJECTS_STORE).add(record);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
     return record;
   }
@@ -98,6 +99,7 @@ export class IndexedDBProjectStore implements ProjectStore {
       getReq.onerror = () => reject(mapDOMException(getReq.error));
       tx.oncomplete = () => resolve(updated);
       tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
   }
 
@@ -107,6 +109,7 @@ export class IndexedDBProjectStore implements ProjectStore {
       tx.objectStore(PROJECTS_STORE).delete(id);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
   }
 }

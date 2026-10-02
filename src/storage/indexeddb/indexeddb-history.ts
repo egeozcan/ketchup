@@ -1,6 +1,6 @@
 // src/storage/indexeddb/indexeddb-history.ts
 import type { ProjectHistoryRecord, ProjectHistoryStore } from '../types.js';
-import { mapDOMException } from './error-utils.js';
+import { mapDOMException, txAbortError } from './error-utils.js';
 
 const HISTORY_STORE = 'project-history';
 
@@ -39,6 +39,7 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
       }
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
   }
 
@@ -63,6 +64,7 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
       cursorReq.onerror = () => reject(mapDOMException(cursorReq.error));
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
   }
 
@@ -88,8 +90,9 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
       }
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onabort = () => reject(txAbortError(tx));
       // A quota failure at commit time aborts without an error event.
-      tx.onabort = () => reject(mapDOMException(tx.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
   }
 
@@ -108,6 +111,7 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
       req.onerror = () => reject(mapDOMException(req.error));
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
   }
 }
