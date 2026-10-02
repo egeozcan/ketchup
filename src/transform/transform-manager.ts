@@ -6,7 +6,7 @@ import {
 } from './transform-types.js';
 import {
   composeMatrix, docToLocal, localToDoc, getTransformCenter,
-  snapAngle, drawPerspectiveMesh, getPerspectiveDestCorners,
+  snapAngle, getPerspectiveDestCorners, warpPerspective,
 } from './transform-math.js';
 import {
   hitTestHandle, hitTestRotationHandle, isInsideTransform,
@@ -14,8 +14,11 @@ import {
   drawHandles, drawRotationHandle as drawRotationHandleUI, drawCommitCancelButtons, getCursorForPoint,
 } from './transform-handles.js';
 
-/** Mesh resolution of the perspective warp, shared by the preview and the commit. */
-const PERSPECTIVE_GRID_SIZE = 32;
+/**
+ * A preview warp larger than this (4096², about the most iOS Safari allows a
+ * canvas) is only rendered where the target context can show it.
+ */
+const MAX_WARP_PIXELS = 4096 * 4096;
 
 export class TransformManager {
   // --- Source data ---
@@ -33,13 +36,16 @@ export class TransformManager {
   };
   private _perspectiveActive = false;
   /**
-   * The perspective-warped source, kept between composites: warping fills
-   * every mesh triangle, and pan, zoom, hover and stroke frames composite
-   * without moving the corners. Keyed by destination corners, which (with the
-   * fixed source) fully determine the result. Commit draws this same canvas,
-   * so what was previewed is what lands on the layer.
+   * The perspective-warped source, kept between composites: warping maps
+   * every pixel, and pan, zoom, hover and stroke frames composite without
+   * moving the corners. Keyed by destination corners, which (with the fixed
+   * source) fully determine every pixel, so any region of it is reused as
+   * long as it covers what is needed. Commit draws from this same canvas, so
+   * what was previewed is what lands on the layer.
    */
-  private _warpCache: { key: string; canvas: HTMLCanvasElement; x: number; y: number } | null = null;
+  private _warpCache: {
+    key: string; canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number;
+  } | null = null;
 
   // --- Interaction ---
   private _interaction: TransformInteraction = { type: 'idle' };
@@ -139,6 +145,13 @@ export class TransformManager {
   }
 
   get perspectiveActive(): boolean { return this._perspectiveActive; }
+
+  /** Changes whenever `renderTransformed` would draw something different. */
+  get renderKey(): string {
+    const s = this._state;
+    const p = this._perspectiveActive ? this._perspectiveCorners : null;
+    return JSON.stringify([s.x, s.y, s.width, s.height, s.rotation, s.skewX, s.skewY, s.scaleX, s.scaleY, p]);
+  }
 
   setTouchMode(touch: boolean): void {
     this._handleConfig = touch ? HANDLE_CONFIG_TOUCH : HANDLE_CONFIG_DESKTOP;
@@ -363,7 +376,7 @@ export class TransformManager {
 
   renderTransformed(ctx: CanvasRenderingContext2D): void {
     if (this._perspectiveActive) {
-      const warp = this._getWarp();
+      const warp = this._getWarp(this._visibleRegion(ctx));
       if (warp) ctx.drawImage(warp.canvas, warp.x, warp.y);
     } else {
       const matrix = composeMatrix(this._state);
@@ -375,40 +388,62 @@ export class TransformManager {
   }
 
   /**
-   * The perspective-warped source on a transparent canvas at its document
-   * position. The mesh sums its triangles additively, so it must not be drawn
-   * straight onto existing pixels; this canvas is drawn with source-over instead.
+   * Where `ctx` can draw, in document space, if the whole warp would be too
+   * large a canvas; otherwise null, so the whole warp is rendered and cached.
    */
-  private _getWarp(): { canvas: HTMLCanvasElement; x: number; y: number } | null {
+  private _visibleRegion(ctx: CanvasRenderingContext2D): TransformRect | null {
+    const bounds = this._getSnapshotBounds();
+    if (bounds.w * bounds.h <= MAX_WARP_PIXELS) return null;
+    const { a, b, c, d, e, f } = ctx.getTransform();
+    const det = a * d - b * c;
+    if (!det) return bounds;
+    const { width, height } = ctx.canvas;
+    const pts = [[0, 0], [width, 0], [width, height], [0, height]].map(([px, py]) => ({
+      x: (d * (px - e) - c * (py - f)) / det,
+      y: (a * (py - f) - b * (px - e)) / det,
+    }));
+    const x = Math.floor(Math.min(...pts.map(p => p.x)));
+    const y = Math.floor(Math.min(...pts.map(p => p.y)));
+    return {
+      x, y,
+      w: Math.ceil(Math.max(...pts.map(p => p.x))) - x,
+      h: Math.ceil(Math.max(...pts.map(p => p.y))) - y,
+    };
+  }
+
+  /**
+   * The perspective-warped source on a canvas at its document position,
+   * covering at least the part of the warp inside `clip` (all of it if null).
+   */
+  private _getWarp(clip: TransformRect | null): { canvas: HTMLCanvasElement; x: number; y: number } | null {
     const dstCorners = getPerspectiveDestCorners(this._state, this._perspectiveCorners);
-    const xs = dstCorners.map(c => c.x), ys = dstCorners.map(c => c.y);
-    const minX = Math.floor(Math.min(...xs)), minY = Math.floor(Math.min(...ys));
-    const maxX = Math.ceil(Math.max(...xs)), maxY = Math.ceil(Math.max(...ys));
-    const offW = maxX - minX, offH = maxY - minY;
-    if (offW <= 0 || offH <= 0) return null;
-    const key = dstCorners.map(c => `${c.x},${c.y}`).join(';');
-    let cache = this._warpCache;
-    if (!cache || cache.key !== key) {
-      const srcCorners: [Point, Point, Point, Point] = [
-        { x: 0, y: 0 },
-        { x: this._sourceCanvas.width, y: 0 },
-        { x: this._sourceCanvas.width, y: this._sourceCanvas.height },
-        { x: 0, y: this._sourceCanvas.height },
-      ];
-      // Reuse the canvas; its backing store is reallocated only on a size change.
-      const offscreen = cache?.canvas ?? document.createElement('canvas');
-      if (offscreen.width !== offW || offscreen.height !== offH) {
-        offscreen.width = offW;
-        offscreen.height = offH;
-      }
-      const offCtx = offscreen.getContext('2d')!;
-      offCtx.setTransform(1, 0, 0, 1, 0, 0);
-      offCtx.clearRect(0, 0, offW, offH);
-      offCtx.translate(-minX, -minY);
-      drawPerspectiveMesh(offCtx, this._sourceCanvas, srcCorners, dstCorners, PERSPECTIVE_GRID_SIZE);
-      cache = this._warpCache = { key, canvas: offscreen, x: minX, y: minY };
+    const bounds = this._getSnapshotBounds();
+    let { x, y, w, h } = bounds;
+    if (clip) {
+      const right = Math.min(x + w, clip.x + clip.w), bottom = Math.min(y + h, clip.y + clip.h);
+      x = Math.max(x, clip.x);
+      y = Math.max(y, clip.y);
+      w = right - x;
+      h = bottom - y;
     }
-    return cache;
+    if (w <= 0 || h <= 0) return null;
+    const key = dstCorners.map(c => `${c.x},${c.y}`).join(';');
+    const cache = this._warpCache;
+    if (cache && cache.key === key && cache.x <= x && cache.y <= y
+      && cache.x + cache.w >= x + w && cache.y + cache.h >= y + h) {
+      return cache;
+    }
+    // Reuse the canvas; its backing store is reallocated only on a size change.
+    const canvas = cache?.canvas ?? document.createElement('canvas');
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    canvas.getContext('2d')!.putImageData(
+      warpPerspective(this._sourceImageData, dstCorners, { x, y, w, h }), 0, 0,
+    );
+    this._warpCache = { key, canvas, x, y, w, h };
+    return this._warpCache;
   }
 
   snapshot(): { canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number } {
@@ -429,7 +464,9 @@ export class TransformManager {
   commit(layerCanvas: HTMLCanvasElement): void {
     const ctx = layerCanvas.getContext('2d')!;
     if (this._perspectiveActive) {
-      const warp = this._getWarp();
+      // Only what lands on the layer: the full warp of a corner dragged far
+      // outside the document could be too large a canvas to allocate.
+      const warp = this._getWarp({ x: 0, y: 0, w: layerCanvas.width, h: layerCanvas.height });
       if (warp) {
         ctx.save();
         ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -503,6 +540,8 @@ export class TransformManager {
   }
 
   dispose(): void {
+    // Release the backing store now rather than whenever this is collected.
+    if (this._warpCache) this._warpCache.canvas.width = this._warpCache.canvas.height = 0;
     this._warpCache = null;
   }
 }
