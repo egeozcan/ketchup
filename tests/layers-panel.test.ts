@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { LayersPanel } from '../src/components/layers-panel.ts';
 import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../src/contexts/drawing-context.ts';
-import { makeState } from './helpers.ts';
+import { makeLayer, makeState } from './helpers.ts';
 
 describe('LayersPanel mobile update cycle', () => {
   it('renders sheet visibility in one update when context opens or closes it', async () => {
@@ -224,6 +224,52 @@ describe('LayersPanel rename', () => {
       expect(document.activeElement, k).toBe(host);
       expect(root.activeElement, k).toBeNull();
       expect(renameLayer, k).toHaveBeenCalledTimes(k === 'Enter' ? 1 : 0);
+      host.remove();
+    }
+  });
+});
+
+describe('LayersPanel menus and rows', () => {
+  it('keeps Escape that closes a menu from reaching the app, which would cancel a float', () => {
+    const panel = new LayersPanel();
+    (panel as any)._contextMenuOpen = true;
+    const open = { key: 'Escape', stopPropagation: vi.fn() };
+    (panel as any)._onDocKeyDown(open);
+    expect(open.stopPropagation).toHaveBeenCalled();
+    expect((panel as any)._contextMenuOpen).toBe(false);
+
+    const closed = { key: 'Escape', stopPropagation: vi.fn() };
+    (panel as any)._onDocKeyDown(closed);
+    expect(closed.stopPropagation).not.toHaveBeenCalled();
+  });
+
+  it('starts no reorder from a control in the row, such as the opacity slider', () => {
+    const panel = new LayersPanel();
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    (panel as any)._onReorderPointerDown({ id: 'l1' }, { button: 0, pointerId: 1, clientY: 10, composedPath: () => [slider] });
+    expect((panel as any)._draggedLayerId).toBeNull();
+    const row = document.createElement('div');
+    (panel as any)._onReorderPointerDown({ id: 'l1' }, { button: 0, pointerId: 1, clientY: 10, composedPath: () => [row], currentTarget: row });
+    expect((panel as any)._draggedLayerId).toBe('l1');
+  });
+
+  it('keeps each row with its layer when layers are reordered, so focus stays on the same layer', async () => {
+    const host = document.createElement('div');
+    const a = makeLayer(10, 10, { id: 'a' }), b = makeLayer(10, 10, { id: 'b' });
+    const context = { state: makeState({ layers: [a, b], activeLayerId: 'a', layersPanelOpen: true }), isMobile: false } as unknown as DrawingContextValue;
+    const provider = new ContextProvider(host, { context: drawingContext, initialValue: context });
+    const panel = new LayersPanel();
+    host.append(panel);
+    document.body.append(host);
+    try {
+      await panel.updateComplete;
+      const rowOf = (id: string) => panel.shadowRoot!.querySelector(`[data-layer-id="${id}"]`);
+      const before = rowOf('a');
+      provider.setValue({ ...context, state: { ...context.state, layers: [b, a] } });
+      await panel.updateComplete;
+      expect(rowOf('a')).toBe(before);
+    } finally {
       host.remove();
     }
   });

@@ -94,6 +94,18 @@ describe('a float meeting other operations', () => {
     expect(pasteSelection).not.toHaveBeenCalled();
   });
 
+  it('pastes nothing after text was copied in a field, though the window never lost focus', async () => {
+    const { canvas } = setupCanvas();
+    (canvas as any)._systemClipboardWrite = Promise.resolve(true);
+    (canvas as any)._onOtherCopy();
+    vi.stubGlobal('navigator', { clipboard: { read: vi.fn(async () => [{ types: ['text/plain'] }]) } });
+    const pasteSelection = vi.spyOn(canvas, 'pasteSelection').mockImplementation(() => {});
+
+    await canvas.paste();
+
+    expect(pasteSelection).not.toHaveBeenCalled();
+  });
+
   it('pastes the internal copy when the system clipboard can\'t be read', async () => {
     const { canvas } = setupCanvas();
     vi.stubGlobal('navigator', { clipboard: { read: vi.fn(async () => { throw new DOMException('denied', 'NotAllowedError'); }) } });
@@ -538,6 +550,25 @@ describe('app shortcuts and layer changes with a float', () => {
     expect((app as any)._state.activeTool).toBe('hand');
     expect(canvas.commitTransform).not.toHaveBeenCalled();
     expect(canvas.clearSelection).not.toHaveBeenCalled();
+  });
+
+  it('takes keys pressed with nothing focused, unless the user last clicked away from it', () => {
+    const { app } = makeApp();
+    const handled = vi.fn();
+    (app as any)._onKeyDown = handled;
+    const stray = { ...key('z'), target: document.body, defaultPrevented: false } as unknown as KeyboardEvent;
+    // Focus fell from something inside (a button disabled under it, say).
+    (app as any)._onFocusIn();
+    (app as any)._onStrayKeyDown(stray);
+    expect(handled).toHaveBeenCalledTimes(1);
+
+    (app as any)._onDocumentPointerDown({ composedPath: () => [document.body] });
+    (app as any)._onStrayKeyDown(stray);
+    expect(handled).toHaveBeenCalledTimes(1);
+
+    (app as any)._onDocumentPointerDown({ composedPath: () => [app] });
+    (app as any)._onStrayKeyDown({ ...stray, target: document.createElement('input') });
+    expect(handled).toHaveBeenCalledTimes(1);
   });
 
   it('deletes an active float under any tool', () => {

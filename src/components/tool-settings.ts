@@ -12,6 +12,7 @@ import { getStampThumbnailUrl, removeStampThumbnail } from '../utils/stamp-thumb
 import { MAX_STAMP_SIZE, MIN_STAMP_SIZE } from '../tools/stamp-size.js';
 import { SHAPE_TOOLS, isShapeTool } from '../tools/shapes.js';
 import { toolIcons, toolLabels, toolShortcuts } from './tool-icons.js';
+import { focusEditor } from '../utils/focus-editor.js';
 
 /** Icons for the project dropdown's per-row actions. */
 const projectActionIcons = {
@@ -1141,6 +1142,7 @@ export class ToolSettings extends LitElement {
   override connectedCallback() {
     super.connectedCallback();
     // Stamps loaded on first willUpdate when projectId is available
+    document.addEventListener('keydown', this._onDropdownEscape, true);
   }
 
   override willUpdate() {
@@ -1170,6 +1172,7 @@ export class ToolSettings extends LitElement {
 
   override disconnectedCallback() {
     super.disconnectedCallback();
+    document.removeEventListener('keydown', this._onDropdownEscape, true);
     this._closeDropdown();
     document.removeEventListener('click', this._onBrushDropdownOutsideClick);
     this._closePanel();
@@ -1373,6 +1376,26 @@ export class ToolSettings extends LitElement {
       document.addEventListener('click', this._onDocumentClick);
     }
   }
+
+  /**
+   * Enter applies a number field's value and hands the keyboard back to the
+   * app (whose shortcuts listen on it), so the next Enter or Escape commits
+   * or cancels the transform or stamp.
+   */
+  private _blurOnEnter = (e: KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    const input = e.target as HTMLInputElement;
+    focusEditor(this);
+    if (this.shadowRoot?.activeElement === input) input.blur();
+  };
+
+  /** Escape closes an open dropdown, and only that (the app would also cancel a float). */
+  private _onDropdownEscape = (e: KeyboardEvent) => {
+    if (e.key !== 'Escape' || (!this._projectDropdownOpen && !this._brushDropdownOpen)) return;
+    e.stopPropagation();
+    this._closeDropdown();
+    this._closeBrushDropdown();
+  };
 
   private _onSelectProject(id: string) {
     this._closeDropdown();
@@ -1722,15 +1745,7 @@ export class ToolSettings extends LitElement {
     const { x, y, width, height, rotation, skewX, skewY, flipH, flipV } = vals;
     const set = (key: string, value: number | boolean) => this._ctx.value?.setTransformValue(key, value);
 
-    // Enter applies the value and hands the keyboard back to the app (whose
-    // shortcuts listen on it), so the next Enter or Escape commits or cancels
-    // the transform.
-    const blurOnEnter = (e: KeyboardEvent) => {
-      if (e.key !== 'Enter') return;
-      const input = e.target as HTMLInputElement;
-      ((this.getRootNode() as ShadowRoot).host as HTMLElement | undefined)?.focus({ preventScroll: true });
-      if (this.shadowRoot?.activeElement === input) input.blur();
-    };
+    const blurOnEnter = this._blurOnEnter;
     const onNumericInput = (key: string, suffix?: string) => (e: Event) => {
       const input = e.target as HTMLInputElement;
       const raw = input.value;
@@ -2155,6 +2170,7 @@ export class ToolSettings extends LitElement {
                 title="Stamp size in pixels"
                 .value=${String(stampSize)}
                 @change=${this._onStampSize}
+                @keydown=${this._blurOnEnter}
               />
             `
           : html`<span class="size-value">${brushSize}</span>`}

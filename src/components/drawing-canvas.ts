@@ -19,6 +19,7 @@ import { TransformManager } from '../transform/transform-manager.js';
 import { HANDLE_CONFIG_TOUCH } from '../transform/transform-types.js';
 import { detectContentBounds } from '../transform/transform-math.js';
 import { diffBounds, cropImageData, type PixelRect } from '../utils/image-diff.js';
+import { focusEditor } from '../utils/focus-editor.js';
 import './resize-dialog.js';
 import type { ResizeDialog } from './resize-dialog.js';
 
@@ -1911,6 +1912,11 @@ export class DrawingCanvas extends LitElement {
     this._systemClipboardWrite = null;
   };
 
+  /** Text copied in a field or on the page (our own copy shortcuts fire no copy event): see paste(). */
+  private _onOtherCopy = () => {
+    this._systemClipboardWrite = null;
+  };
+
   // --- Brush cursor / preview ---
 
   private _renderBrushCursor() {
@@ -3287,8 +3293,12 @@ export class DrawingCanvas extends LitElement {
 
     // Create the TransformManager for the external image
     this._floatIsExternalImage = true;
-    const cx = this._docWidth / 2;
-    const cy = this._docHeight / 2;
+    // Centred on the part of the document in view (all of it, when all is),
+    // so it lands on screen when zoomed in on a corner.
+    const vx0 = Math.max(0, -this._panX / this._zoom), vx1 = Math.min(this._docWidth, (this._vw - this._panX) / this._zoom);
+    const vy0 = Math.max(0, -this._panY / this._zoom), vy1 = Math.min(this._docHeight, (this._vh - this._panY) / this._zoom);
+    const cx = vx1 > vx0 ? (vx0 + vx1) / 2 : this._docWidth / 2;
+    const cy = vy1 > vy0 ? (vy0 + vy1) / 2 : this._docHeight / 2;
     const x = Math.round(cx - w / 2);
     const y = Math.round(cy - h / 2);
 
@@ -3752,6 +3762,9 @@ export class DrawingCanvas extends LitElement {
     ta.setAttribute('autocapitalize', 'off');
     ta.setAttribute('spellcheck', 'false');
     ta.setAttribute('aria-label', 'Text');
+    // Focused while text is edited; not a stop for Tab, where it would take
+    // keys meant for the app.
+    ta.tabIndex = -1;
     ta.addEventListener('input', () => {
       if (this._textEditing) {
         this._startTextCursorBlink();
@@ -3774,6 +3787,8 @@ export class DrawingCanvas extends LitElement {
     this.addEventListener('dragleave', this._onDragLeave);
     this.addEventListener('drop', this._onDrop);
     window.addEventListener('blur', this._onWindowBlur);
+    document.addEventListener('copy', this._onOtherCopy, true);
+    document.addEventListener('cut', this._onOtherCopy, true);
     window.addEventListener('resize', this._invalidateCanvasRect);
     // Any scroll in an ancestor can move the canvas without resizing it.
     window.addEventListener('scroll', this._invalidateCanvasRect, true);
@@ -3816,6 +3831,8 @@ export class DrawingCanvas extends LitElement {
     this.removeEventListener('dragleave', this._onDragLeave);
     this.removeEventListener('drop', this._onDrop);
     window.removeEventListener('blur', this._onWindowBlur);
+    document.removeEventListener('copy', this._onOtherCopy, true);
+    document.removeEventListener('cut', this._onOtherCopy, true);
     window.removeEventListener('resize', this._invalidateCanvasRect);
     window.removeEventListener('scroll', this._invalidateCanvasRect, true);
   }
@@ -4072,9 +4089,7 @@ export class DrawingCanvas extends LitElement {
       this._textAreaEl.value = '';
       // Give the keyboard back to the app (its shortcuts listen there), not
       // the page; unless the user already moved focus somewhere else.
-      if (this.shadowRoot?.activeElement === this._textAreaEl) {
-        ((this.getRootNode() as ShadowRoot).host as HTMLElement | undefined)?.focus({ preventScroll: true });
-      }
+      if (this.shadowRoot?.activeElement === this._textAreaEl) focusEditor(this);
       this._textAreaEl.blur();
     }
     this._dispatchPendingTextChange();

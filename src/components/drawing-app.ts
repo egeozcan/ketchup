@@ -2090,9 +2090,33 @@ export class DrawingApp extends LitElement {
     });
     this._mobileObserver.observe(this);
     this.addEventListener('keydown', this._onKeyDown);
+    this.addEventListener('focusin', this._onFocusIn);
+    document.addEventListener('keydown', this._onStrayKeyDown);
+    document.addEventListener('pointerdown', this._onDocumentPointerDown, true);
     window.addEventListener('beforeunload', this._onBeforeUnload);
     document.addEventListener('visibilitychange', this._onVisibilityChange);
   }
+
+  /**
+   * Whether keys pressed with nothing focused are the editor's: focus last
+   * fell from something in it (a button that was disabled or removed, say)
+   * rather than the user clicking away from it on the page.
+   */
+  private _strayKeysOurs = false;
+
+  private _onFocusIn = () => { this._strayKeysOurs = true; };
+
+  private _onDocumentPointerDown = (e: PointerEvent) => {
+    this._strayKeysOurs = e.composedPath().includes(this);
+  };
+
+  private _onStrayKeyDown = (e: KeyboardEvent) => {
+    if (!this._strayKeysOurs || e.defaultPrevented) return;
+    if (e.target !== document.body && e.target !== document.documentElement) return;
+    // Take the keyboard back, so later keys come straight here.
+    this.focus({ preventScroll: true });
+    this._onKeyDown(e);
+  };
 
   private _initStorage() {
     if (this._initPromise) return;
@@ -2153,6 +2177,9 @@ export class DrawingApp extends LitElement {
     this._mobileObserver?.disconnect();
     this._mobileObserver = null;
     this.removeEventListener('keydown', this._onKeyDown);
+    this.removeEventListener('focusin', this._onFocusIn);
+    document.removeEventListener('keydown', this._onStrayKeyDown);
+    document.removeEventListener('pointerdown', this._onDocumentPointerDown, true);
     window.removeEventListener('beforeunload', this._onBeforeUnload);
     document.removeEventListener('visibilitychange', this._onVisibilityChange);
     // Deliver a coalesced wheel/pinch viewport change while it can still be saved.

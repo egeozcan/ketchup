@@ -1,10 +1,12 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { createThrottledScheduler } from '../utils/raf-throttle.js';
 import { customElement, state } from 'lit/decorators.js';
+import { repeat } from 'lit/directives/repeat.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { Layer } from '../types.js';
 import { BLEND_MODE_LABELS } from '../engine/types.js';
+import { focusEditor } from '../utils/focus-editor.js';
 
 @customElement('layers-panel')
 export class LayersPanel extends LitElement {
@@ -521,10 +523,12 @@ export class LayersPanel extends LitElement {
   };
 
   private _onDocKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      this._closeContextMenu();
-      this._dropdownOpen = false;
-    }
+    if (e.key !== 'Escape' || (!this._contextMenuOpen && !this._dropdownOpen)) return;
+    // Seen first (capture) and kept from the app, which would take it to
+    // cancel a float as well.
+    e.stopPropagation();
+    this._closeContextMenu();
+    this._dropdownOpen = false;
   };
 
   override connectedCallback() {
@@ -533,7 +537,7 @@ export class LayersPanel extends LitElement {
     (this.getRootNode() as ShadowRoot | Document).addEventListener('composited', this._onComposited);
     window.addEventListener('resize', this._onResize);
     document.addEventListener('click', this._onDocClick);
-    document.addEventListener('keydown', this._onDocKeyDown);
+    document.addEventListener('keydown', this._onDocKeyDown, true);
   }
 
   override disconnectedCallback() {
@@ -542,7 +546,7 @@ export class LayersPanel extends LitElement {
     this._thumbnailScheduler.cancel();
     window.removeEventListener('resize', this._onResize);
     document.removeEventListener('click', this._onDocClick);
-    document.removeEventListener('keydown', this._onDocKeyDown);
+    document.removeEventListener('keydown', this._onDocKeyDown, true);
   }
 
   @state() private _sheetOpen = false;
@@ -614,16 +618,12 @@ export class LayersPanel extends LitElement {
     e.stopPropagation();
     if (e.key === 'Enter') {
       this._commitRename(layerId, e.target as HTMLInputElement);
-      this._focusApp();
+      // The input goes; focus would fall to the page.
+      focusEditor(this);
     } else if (e.key === 'Escape') {
       this._editingLayerId = null;
-      this._focusApp();
+      focusEditor(this);
     }
-  }
-
-  /** Hands the keyboard back to the app as the input goes, or it falls to the page and shortcuts stop working. */
-  private _focusApp() {
-    ((this.getRootNode() as ShadowRoot).host as HTMLElement | undefined)?.focus({ preventScroll: true });
   }
 
   private _onRenameBlur(layerId: string, e: FocusEvent) {
@@ -654,6 +654,8 @@ export class LayersPanel extends LitElement {
 
   private _onReorderPointerDown(layer: Layer, e: PointerEvent) {
     if (e.button !== 0) return;
+    // A control in the row (the opacity slider, say) has a drag of its own.
+    if ((e.composedPath()[0] as Element).closest?.('input, select, button, textarea')) return;
     this._draggedLayerId = layer.id;
     this._dragPointerId = e.pointerId;
     this._dragStartY = e.clientY;
@@ -897,6 +899,20 @@ export class LayersPanel extends LitElement {
     this._contextMenuOpen = false;
   }
 
+  /** Keeps a menu opened near the window's right or bottom edge inside it. */
+  private _fitContextMenu() {
+    const menu = this.shadowRoot?.querySelector<HTMLElement>('.context-menu');
+    if (!menu) return;
+    const { width, height } = menu.getBoundingClientRect();
+    const x = Math.max(0, Math.min(this._contextMenuX, window.innerWidth - width));
+    const y = Math.max(0, Math.min(this._contextMenuY, window.innerHeight - height));
+    // Straight onto the element: the menu is already drawn, and this needs no second render.
+    if (x !== this._contextMenuX || y !== this._contextMenuY) {
+      menu.style.left = `${x}px`;
+      menu.style.top = `${y}px`;
+    }
+  }
+
   // ── Helpers ────────────────────────────────
 
   private _getLayerById(id: string): Layer | undefined {
@@ -986,7 +1002,7 @@ export class LayersPanel extends LitElement {
       </div>
 
       <div class="layer-list">
-        ${reversed.map(layer => this._renderLayerRow(layer, layers, activeLayerId))}
+        ${repeat(reversed, layer => layer.id, layer => this._renderLayerRow(layer, layers, activeLayerId))}
       </div>
 
       ${this._contextMenuOpen ? html`
@@ -1193,6 +1209,9 @@ export class LayersPanel extends LitElement {
 
   override updated(changed: Map<string, unknown>) {
     super.updated(changed);
+    if (this._contextMenuOpen && ['_contextMenuOpen', '_contextMenuX', '_contextMenuY'].some(k => changed.has(k))) {
+      this._fitContextMenu();
+    }
 
     // Every viewport change (wheel zoom, pan, pinch) rebuilds the context value and
     // re-renders this panel, so painting thumbnails on every update would redraw
