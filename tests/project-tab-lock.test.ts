@@ -170,7 +170,7 @@ describe('one tab edits a project at a time', () => {
     expect(locks.held.has('ketchup-project:p')).toBe(true);
   });
 
-  it('takes the project from a tab that does not answer', async () => {
+  it('asks before taking the project from a tab that does not answer, and takes it if told to', async () => {
     vi.stubGlobal('BroadcastChannel', FakeChannel);
     const locks = fakeLocks();
     locks.holdElsewhere('ketchup-project:p');
@@ -182,11 +182,82 @@ describe('one tab edits a project at a time', () => {
     vi.useFakeTimers();
     const done = (app as any)._editHere(true);
     await vi.advanceTimersByTimeAsync(1900);
+    expect((app as any)._otherTabSilent).toBe(false);
+    await vi.advanceTimersByTimeAsync(5000);
     expect(load).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(200);
+    expect((app as any)._otherTabSilent).toBe(true);
+    expect((app as any)._readOnly).toBe(true);
+
+    (app as any)._forceTakeOver();
+    await vi.advanceTimersByTimeAsync(100);
     await done;
     expect(load).toHaveBeenCalled();
     expect((app as any)._readOnly).toBe(false);
+    expect((app as any)._otherTabSilent).toBe(false);
+  });
+
+  it('keeps work a tab had not stored when its project is taken, to save as a new project', async () => {
+    const locks = fakeLocks();
+    const backend = new MockBackend();
+    await backend.init();
+    const project = await backend.projects.create({ name: 'P', thumbnailRef: null });
+    const { app } = makeApp();
+    const layer = makeLayer(20, 20, { id: 'l1' });
+    (app as any)._state = makeState({ layers: [layer], activeLayerId: 'l1', documentWidth: 20, documentHeight: 20 });
+    Object.defineProperty(app, 'canvas', { configurable: true, value: makeAppCanvasStub({ mainCanvas: makeCanvas(40, 30) }) });
+    (app as any)._backend = backend;
+    await (app as any)._enterProject(project, async () => { (app as any)._trackLoadedProject(project.id, [], []); });
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb) {
+      cb(new Blob(['png'], { type: 'image/png' }));
+    });
+
+    // Taken with nothing unstored: only shown.
+    void locks.request(`ketchup-project:${project.id}`, { steal: true }, () => new Promise(() => {}));
+    await settle();
+    expect((app as any)._readOnly).toBe(true);
+    expect((app as any)._stranded).toBe(false);
+
+    // Taken with a stroke not yet stored: kept, and leaving asks first.
+    const again = await backend.projects.create({ name: 'Q', thumbnailRef: null });
+    await (app as any)._enterProject(again, async () => { (app as any)._trackLoadedProject(again.id, [], []); });
+    (app as any)._contentVersion++;
+    (app as any)._dirty = true;
+    void locks.request(`ketchup-project:${again.id}`, { steal: true }, () => new Promise(() => {}));
+    await settle();
+    expect((app as any)._stranded).toBe(true);
+    const leave = { preventDefault: vi.fn() };
+    (app as any)._onBeforeUnload(leave);
+    expect(leave.preventDefault).toHaveBeenCalled();
+
+    await (app as any)._keepAsNewProject();
+    const copy = (app as any)._currentProject;
+    expect(copy.name).toBe('Q (copy)');
+    expect((app as any)._readOnly).toBe(false);
+    expect((app as any)._stranded).toBe(false);
+    expect(await backend.state.get(copy.id)).toBeTruthy();
+    expect(await backend.state.get(again.id)).toBeFalsy();
+    await settle();
+    expect(locks.held.has(`ketchup-project:${copy.id}`)).toBe(true);
+  });
+
+  it('reopens the project a tab had open before a reload', async () => {
+    fakeLocks();
+    const backend = new MockBackend();
+    await backend.init();
+    const mine = await backend.projects.create({ name: 'Mine', thumbnailRef: null });
+    await new Promise(r => setTimeout(r, 5));
+    await backend.projects.create({ name: 'Newer', thumbnailRef: null });
+    expect((await backend.projects.list())[0].id).not.toBe(mine.id);
+    const { app } = makeApp();
+    (app as any)._backend = backend;
+    (app as any)._loadProject = vi.fn(async () => {});
+    sessionStorage.setItem('ketchup-tab-project', mine.id);
+    try {
+      await (app as any)._bootstrapProjects();
+      expect((app as any)._currentProject.id).toBe(mine.id);
+    } finally {
+      sessionStorage.clear();
+    }
   });
 
   it('keeps the project, and its work, when its save fails as another tab asks for it', async () => {
@@ -301,12 +372,36 @@ describe('one tab edits a project at a time', () => {
     expect((app as any)._projectLock?.id).toBe(id);
     expect(locks.held.has(`ketchup-project:${id}`)).toBe(true);
 
+    const load = vi.spyOn(app as any, '_loadProject');
+    expect(load).not.toHaveBeenCalled();
     app.remove();
     await settle();
     expect(locks.held.has(`ketchup-project:${id}`)).toBe(false);
+    // Back: another tab may have changed it meanwhile, so it's loaded again.
     document.body.append(app);
     await settle();
+    expect(load).toHaveBeenCalledWith(id);
     expect((app as any)._projectLock?.id).toBe(id);
+    expect((app as any)._readOnly).toBe(false);
+  });
+
+  it('keeps the project while out of the page if its work could not be stored', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    const locks = fakeLocks();
+    const backend = new MockBackend();
+    const { app } = makeApp();
+    app.storageBackend = backend;
+    document.body.append(app);
+    await app.whenReady();
+    await settle();
+    const id = (app as any)._currentProject.id;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(backend.state, 'save').mockRejectedValue(new Error('QuotaExceededError'));
+    (app as any)._markDirty();
+    app.remove();
+    await settle(30);
+    expect((app as any)._dirty).toBe(true);
+    expect(locks.held.has(`ketchup-project:${id}`)).toBe(true);
     expect((app as any)._readOnly).toBe(false);
   });
 
