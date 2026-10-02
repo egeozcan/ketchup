@@ -25,6 +25,10 @@ const WARP_DRAG_PIXELS = 1024 * 1024;
 /** Copies of the float are full resolution unless absurdly large (corners dragged far off). */
 const WARP_SNAPSHOT_PIXELS = 8192 * 8192;
 
+interface WarpCache {
+  key: string; canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number; scale: number;
+}
+
 export class TransformManager {
   // --- Source data ---
   private _sourceImageData: ImageData;
@@ -44,13 +48,15 @@ export class TransformManager {
    * The perspective-warped source, kept between composites: warping maps
    * every pixel, and pan, zoom, hover and stroke frames composite without
    * moving the corners. Keyed by destination corners, which (with the fixed
-   * source) fully determine every pixel, so any region of it is reused as
-   * long as it covers what is needed. Commit draws from this same canvas, so
-   * what was previewed is what lands on the layer.
+   * source) fully determine every pixel, so any region of a warp is reused as
+   * long as it covers what is needed. Full-resolution warps (what commit,
+   * autosave and, below WARP_PREVIEW_PIXELS, the preview use) and reduced
+   * ones (drafts) are kept apart, so neither evicts the other: commit draws
+   * from the warp the preview showed, and repeated autosaves of a drafted
+   * float don't redo either.
    */
-  private _warpCache: {
-    key: string; canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number; scale: number;
-  } | null = null;
+  private _warpCache: WarpCache | null = null;
+  private _draftWarpCache: WarpCache | null = null;
 
   // --- Interaction ---
   private _interaction: TransformInteraction = { type: 'idle' };
@@ -432,11 +438,13 @@ export class TransformManager {
     if (w <= 0 || h <= 0) return null;
     const scale = Math.min(1, Math.sqrt(maxPixels / (w * h)));
     const key = dstCorners.map(c => `${c.x},${c.y}`).join(';');
-    const cache = this._warpCache;
-    if (cache && cache.key === key && cache.scale >= scale && cache.x <= x && cache.y <= y
-      && cache.x + cache.w >= x + w && cache.y + cache.h >= y + h) {
-      return cache;
+    for (const cache of [this._warpCache, this._draftWarpCache]) {
+      if (cache && cache.key === key && cache.scale >= scale && cache.x <= x && cache.y <= y
+        && cache.x + cache.w >= x + w && cache.y + cache.h >= y + h) {
+        return cache;
+      }
     }
+    const cache = scale === 1 ? this._warpCache : this._draftWarpCache;
     // A reduced-resolution warp is the same warp of a quad scaled down, drawn
     // scaled back up.
     const sx = Math.floor(x * scale), sy = Math.floor(y * scale);
@@ -453,8 +461,10 @@ export class TransformManager {
     canvas.getContext('2d')!.putImageData(
       warpPerspective(this._sourceImageData, scaled, { x: sx, y: sy, w: sw, h: sh }), 0, 0,
     );
-    this._warpCache = { key, canvas, x: sx / scale, y: sy / scale, w: sw / scale, h: sh / scale, scale };
-    return this._warpCache;
+    const warp = { key, canvas, x: sx / scale, y: sy / scale, w: sw / scale, h: sh / scale, scale };
+    if (scale === 1) this._warpCache = warp;
+    else this._draftWarpCache = warp;
+    return warp;
   }
 
   /**
@@ -567,8 +577,10 @@ export class TransformManager {
   }
 
   dispose(): void {
-    // Release the backing store now rather than whenever this is collected.
-    if (this._warpCache) this._warpCache.canvas.width = this._warpCache.canvas.height = 0;
-    this._warpCache = null;
+    // Release the backing stores now rather than whenever this is collected.
+    for (const cache of [this._warpCache, this._draftWarpCache]) {
+      if (cache) cache.canvas.width = cache.canvas.height = 0;
+    }
+    this._warpCache = this._draftWarpCache = null;
   }
 }

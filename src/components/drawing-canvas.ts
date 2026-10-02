@@ -593,13 +593,17 @@ export class DrawingCanvas extends LitElement {
         if (mergeTransform) {
           // The merged copy stops at the document edge; still show the float
           // beyond it while it is being positioned, as on a normal layer.
-          displayCtx.save();
-          displayCtx.beginPath();
-          displayCtx.rect(-1e6, -1e6, 2e6, 2e6);
-          displayCtx.rect(0, 0, this._docWidth, this._docHeight);
-          displayCtx.clip('evenodd');
-          transform.renderTransformed(displayCtx);
-          displayCtx.restore();
+          const fb = transform.getBounds();
+          const inside = fb.x >= 0 && fb.y >= 0 && fb.x + fb.w <= this._docWidth && fb.y + fb.h <= this._docHeight;
+          if (!inside) {
+            displayCtx.save();
+            displayCtx.beginPath();
+            displayCtx.rect(-1e6, -1e6, 2e6, 2e6);
+            displayCtx.rect(0, 0, this._docWidth, this._docHeight);
+            displayCtx.clip('evenodd');
+            transform.renderTransformed(displayCtx);
+            displayCtx.restore();
+          }
         } else {
           transform.renderTransformed(displayCtx);
         }
@@ -1332,20 +1336,30 @@ export class DrawingCanvas extends LitElement {
       scratch.width = width;
       scratch.height = height;
     }
+    // Only the document's on-screen rectangle is ever drawn in, so only it is
+    // cleared and copied.
+    const m = ctx.getTransform();
+    const lw = layer.canvas.width, lh = layer.canvas.height;
+    const xs = [m.e, m.a * lw + m.e, m.c * lh + m.e, m.a * lw + m.c * lh + m.e];
+    const ys = [m.f, m.b * lw + m.f, m.d * lh + m.f, m.b * lw + m.d * lh + m.f];
+    const rx = Math.max(0, Math.floor(Math.min(...xs))), ry = Math.max(0, Math.floor(Math.min(...ys)));
+    const rw = Math.min(width, Math.ceil(Math.max(...xs))) - rx;
+    const rh = Math.min(height, Math.ceil(Math.max(...ys))) - ry;
+    if (rw <= 0 || rh <= 0) return;
     const sctx = scratch.getContext('2d')!;
     sctx.setTransform(1, 0, 0, 1, 0, 0);
-    sctx.clearRect(0, 0, width, height);
-    sctx.setTransform(ctx.getTransform());
+    sctx.clearRect(rx, ry, rw, rh);
+    sctx.setTransform(m);
     sctx.save();
     sctx.beginPath();
-    sctx.rect(0, 0, layer.canvas.width, layer.canvas.height);
+    sctx.rect(0, 0, lw, lh);
     sctx.clip();
     sctx.drawImage(layer.canvas, 0, 0);
     tm.renderTransformed(sctx);
     sctx.restore();
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.drawImage(scratch, 0, 0);
+    ctx.drawImage(scratch, rx, ry, rw, rh, rx, ry, rw, rh);
     ctx.restore();
   }
 
@@ -3404,8 +3418,10 @@ export class DrawingCanvas extends LitElement {
     // Only the part on the document survives a commit, so only that is kept;
     // a corner dragged far outside could otherwise ask for too large a canvas.
     const snapshot = this._transformManager.snapshot({ x: 0, y: 0, w: this._docWidth, h: this._docHeight });
-    if (!snapshot) return null;
-    return { layerId, tempCanvas: snapshot.canvas, x: snapshot.x, y: snapshot.y };
+    // A float moved wholly off the document still leaves its layer changed
+    // (lifted content leaves a hole), so report it, with nothing to draw.
+    const tempCanvas = snapshot?.canvas ?? document.createElement('canvas');
+    return { layerId, tempCanvas, x: snapshot?.x ?? 0, y: snapshot?.y ?? 0 };
   }
 
   private _onDragOver = (e: DragEvent) => {

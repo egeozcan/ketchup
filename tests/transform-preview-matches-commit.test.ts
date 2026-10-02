@@ -18,12 +18,15 @@ describe('perspective preview and commit', () => {
     const displayCtx = makeCanvas(100, 100).getContext('2d')!;
     const previewDraw = vi.spyOn(displayCtx, 'drawImage');
     tm.renderTransformed(displayCtx);
+    const previewed = (tm as any)._warpCache;
 
     const layer = makeCanvas(100, 100);
     const layerCtx = layer.getContext('2d')!;
     const commitDraw = vi.spyOn(layerCtx, 'drawImage');
     tm.commit(layer);
 
+    // Not merely an equal warp: the same one, not recomputed.
+    expect((tm as any)._warpCache).toBe(previewed);
     expect(previewDraw).toHaveBeenCalledTimes(1);
     expect(commitDraw).toHaveBeenCalledTimes(1);
     expect(commitDraw.mock.calls[0]).toEqual(previewDraw.mock.calls[0]);
@@ -42,7 +45,7 @@ describe('perspective preview and commit', () => {
     const tm = makePerspectiveManager();
     (tm as any)._perspectiveCorners.se = { x: 20000, y: 20000 };
     tm.renderTransformed(makeCanvas(300, 200).getContext('2d')!);
-    const preview = (tm as any)._warpCache;
+    const preview = (tm as any)._draftWarpCache;
     expect(preview.scale).toBeLessThan(1);
     expect(preview.canvas.width * preview.canvas.height).toBeLessThanOrEqual(4096 * 4096);
 
@@ -63,7 +66,8 @@ describe('perspective preview and commit', () => {
 
     (tm as any)._interaction = { type: 'perspective', corner: 'se', startPoint: { x: 1500, y: 1500 } };
     tm.renderTransformed(ctx);
-    expect((tm as any)._warpCache.scale).toBeLessThan(1);
+    expect((tm as any)._draftWarpCache.scale).toBeLessThan(1);
+    expect((tm as any)._warpCache).toBeNull();
 
     tm.onPointerUp({ x: 1500, y: 1500 });
     tm.renderTransformed(ctx);
@@ -84,17 +88,35 @@ describe('perspective preview and commit', () => {
     const tm = makePerspectiveManager();
     (tm as any)._perspectiveCorners.se = { x: 20000, y: 20000 };
     tm.renderTransformed(makeCanvas(100, 100).getContext('2d')!);
-    expect((tm as any)._warpCache.scale).toBeLessThan(1);
+    expect((tm as any)._draftWarpCache.scale).toBeLessThan(1);
     tm.renderTransformed(makeCanvas(100, 100).getContext('2d')!, { x: 0, y: 0, w: 100, h: 100 });
     expect((tm as any)._warpCache.scale).toBe(1);
+  });
+
+  it('keeps the draft and the full warp apart, so autosaves redo neither', () => {
+    const tm = makePerspectiveManager();
+    (tm as any)._perspectiveCorners.se = { x: 20000, y: 20000 };
+    const ctx = makeCanvas(100, 100).getContext('2d')!;
+    tm.renderTransformed(ctx);
+    const draft = (tm as any)._draftWarpCache;
+    tm.snapshot({ x: 0, y: 0, w: 100, h: 100 });
+    const full = (tm as any)._warpCache;
+
+    tm.renderTransformed(ctx);
+    tm.snapshot({ x: 0, y: 0, w: 100, h: 100 });
+    expect((tm as any)._draftWarpCache).toBe(draft);
+    expect((tm as any)._warpCache).toBe(full);
   });
 
   it('frees the warp when disposed', () => {
     const tm = makePerspectiveManager();
     tm.renderTransformed(makeCanvas(100, 100).getContext('2d')!);
-    const warp = (tm as any)._warpCache.canvas as HTMLCanvasElement;
+    tm.renderTransformed(makeCanvas(100, 100).getContext('2d')!, { x: 0, y: 0, w: 50, h: 50 });
+    (tm as any)._perspectiveCorners.se = { x: 20000, y: 20000 };
+    tm.renderTransformed(makeCanvas(100, 100).getContext('2d')!);
+    const warps = [(tm as any)._warpCache.canvas, (tm as any)._draftWarpCache.canvas] as HTMLCanvasElement[];
     tm.dispose();
-    expect(warp.width).toBe(0);
+    expect(warps.map(w => w.width)).toEqual([0, 0]);
   });
 });
 
@@ -154,6 +176,7 @@ describe('transform preview under a layer blend mode', () => {
 
   it('still shows the float outside the document, and only there, on a blended layer', () => {
     const { canvas, displayCtx, renderTransformed } = setup();
+    (canvas as any)._transformManager.getBounds.mockReturnValue({ x: -10, y: 20, w: 30, h: 30 });
     const path: string[] = [];
     vi.spyOn(displayCtx, 'beginPath').mockImplementation(() => { path.length = 0; });
     vi.spyOn(displayCtx, 'rect').mockImplementation((...args) => { path.push(args.join(',')); });
@@ -168,6 +191,13 @@ describe('transform preview under a layer blend mode', () => {
     // Everything except the document, which the merged layer already covers.
     expect(clipped).toContain('0,0,100,100');
     expect(clipped).toHaveLength(2);
+  });
+
+  it('skips the outside-document pass for a float within the document', () => {
+    const { canvas, displayCtx, renderTransformed } = setup();
+    (canvas as any)._transformManager.getBounds.mockReturnValue({ x: 10, y: 10, w: 20, h: 20 });
+    canvas.composite();
+    expect(renderTransformed).not.toHaveBeenCalledWith(displayCtx);
   });
 
   it('frees the scratch canvas once the transform ends', () => {
@@ -204,5 +234,22 @@ describe('transform preview under a layer blend mode', () => {
     expect(merges).toHaveLength(1);
     expect(draws).toContainEqual({ src: merges[0].canvas, op: 'multiply', alpha: 0.5 });
     expect(draws.some(d => d.src === layer.canvas)).toBe(false);
+  });
+});
+
+describe('autosave of an active float', () => {
+  it('still reports a float moved wholly off the document, with nothing to draw', () => {
+    const canvas = new DrawingCanvas();
+    const layer = makeLayer(100, 100);
+    (canvas as any)._ctx = { value: { state: makeState({ layers: [layer], activeLayerId: layer.id }) } };
+    attachCanvasElements(canvas, 100, 100);
+    (canvas as any)._transformManager = makeTransformManagerStub({ snapshot: vi.fn(() => null) });
+
+    const snap = canvas.getFloatSnapshot();
+
+    // Reported, so the save re-reads the layer (with its lifted hole) instead
+    // of reusing a blob stored while the float was still on it.
+    expect(snap).not.toBeNull();
+    expect(snap!.layerId).toBe(layer.id);
   });
 });
