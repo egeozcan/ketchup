@@ -14,6 +14,9 @@ import {
   drawHandles, drawRotationHandle as drawRotationHandleUI, drawCommitCancelButtons, getCursorForPoint,
 } from './transform-handles.js';
 
+/** Mesh resolution of the perspective warp, shared by the preview and the commit. */
+const PERSPECTIVE_GRID_SIZE = 32;
+
 export class TransformManager {
   // --- Source data ---
   private _sourceImageData: ImageData;
@@ -30,10 +33,11 @@ export class TransformManager {
   };
   private _perspectiveActive = false;
   /**
-   * The perspective-warped source, kept between composites: warping redraws
-   * the whole source once per mesh triangle, and pan, zoom, hover and stroke
-   * frames composite without moving the corners. Keyed by destination corners,
-   * which (with the fixed source) fully determine the result.
+   * The perspective-warped source, kept between composites: warping fills
+   * every mesh triangle, and pan, zoom, hover and stroke frames composite
+   * without moving the corners. Keyed by destination corners, which (with the
+   * fixed source) fully determine the result. Commit draws this same canvas,
+   * so what was previewed is what lands on the layer.
    */
   private _warpCache: { key: string; canvas: HTMLCanvasElement; x: number; y: number } | null = null;
 
@@ -359,37 +363,8 @@ export class TransformManager {
 
   renderTransformed(ctx: CanvasRenderingContext2D): void {
     if (this._perspectiveActive) {
-      const srcCorners: [Point, Point, Point, Point] = [
-        { x: 0, y: 0 },
-        { x: this._sourceCanvas.width, y: 0 },
-        { x: this._sourceCanvas.width, y: this._sourceCanvas.height },
-        { x: 0, y: this._sourceCanvas.height },
-      ];
-      const dstCorners = getPerspectiveDestCorners(this._state, this._perspectiveCorners);
-      const gridSize = 8;
-      const xs = dstCorners.map(c => c.x), ys = dstCorners.map(c => c.y);
-      const minX = Math.floor(Math.min(...xs)), minY = Math.floor(Math.min(...ys));
-      const maxX = Math.ceil(Math.max(...xs)), maxY = Math.ceil(Math.max(...ys));
-      const offW = maxX - minX, offH = maxY - minY;
-      if (offW > 0 && offH > 0) {
-        const key = dstCorners.map(c => `${c.x},${c.y}`).join(';');
-        let cache = this._warpCache;
-        if (!cache || cache.key !== key) {
-          // Reuse the canvas; its backing store is reallocated only on a size change.
-          const offscreen = cache?.canvas ?? document.createElement('canvas');
-          if (offscreen.width !== offW || offscreen.height !== offH) {
-            offscreen.width = offW;
-            offscreen.height = offH;
-          }
-          const offCtx = offscreen.getContext('2d')!;
-          offCtx.setTransform(1, 0, 0, 1, 0, 0);
-          offCtx.clearRect(0, 0, offW, offH);
-          offCtx.translate(-minX, -minY);
-          drawPerspectiveMesh(offCtx, this._sourceCanvas, srcCorners, dstCorners, gridSize);
-          cache = this._warpCache = { key, canvas: offscreen, x: minX, y: minY };
-        }
-        ctx.drawImage(cache.canvas, cache.x, cache.y);
-      }
+      const warp = this._getWarp();
+      if (warp) ctx.drawImage(warp.canvas, warp.x, warp.y);
     } else {
       const matrix = composeMatrix(this._state);
       ctx.save();
@@ -397,6 +372,43 @@ export class TransformManager {
       ctx.drawImage(this._sourceCanvas, 0, 0, this._state.width, this._state.height);
       ctx.restore();
     }
+  }
+
+  /**
+   * The perspective-warped source on a transparent canvas at its document
+   * position. The mesh sums its triangles additively, so it must not be drawn
+   * straight onto existing pixels; this canvas is drawn with source-over instead.
+   */
+  private _getWarp(): { canvas: HTMLCanvasElement; x: number; y: number } | null {
+    const dstCorners = getPerspectiveDestCorners(this._state, this._perspectiveCorners);
+    const xs = dstCorners.map(c => c.x), ys = dstCorners.map(c => c.y);
+    const minX = Math.floor(Math.min(...xs)), minY = Math.floor(Math.min(...ys));
+    const maxX = Math.ceil(Math.max(...xs)), maxY = Math.ceil(Math.max(...ys));
+    const offW = maxX - minX, offH = maxY - minY;
+    if (offW <= 0 || offH <= 0) return null;
+    const key = dstCorners.map(c => `${c.x},${c.y}`).join(';');
+    let cache = this._warpCache;
+    if (!cache || cache.key !== key) {
+      const srcCorners: [Point, Point, Point, Point] = [
+        { x: 0, y: 0 },
+        { x: this._sourceCanvas.width, y: 0 },
+        { x: this._sourceCanvas.width, y: this._sourceCanvas.height },
+        { x: 0, y: this._sourceCanvas.height },
+      ];
+      // Reuse the canvas; its backing store is reallocated only on a size change.
+      const offscreen = cache?.canvas ?? document.createElement('canvas');
+      if (offscreen.width !== offW || offscreen.height !== offH) {
+        offscreen.width = offW;
+        offscreen.height = offH;
+      }
+      const offCtx = offscreen.getContext('2d')!;
+      offCtx.setTransform(1, 0, 0, 1, 0, 0);
+      offCtx.clearRect(0, 0, offW, offH);
+      offCtx.translate(-minX, -minY);
+      drawPerspectiveMesh(offCtx, this._sourceCanvas, srcCorners, dstCorners, PERSPECTIVE_GRID_SIZE);
+      cache = this._warpCache = { key, canvas: offscreen, x: minX, y: minY };
+    }
+    return cache;
   }
 
   snapshot(): { canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number } {
@@ -417,14 +429,13 @@ export class TransformManager {
   commit(layerCanvas: HTMLCanvasElement): void {
     const ctx = layerCanvas.getContext('2d')!;
     if (this._perspectiveActive) {
-      const srcCorners: [Point, Point, Point, Point] = [
-        { x: 0, y: 0 },
-        { x: this._sourceCanvas.width, y: 0 },
-        { x: this._sourceCanvas.width, y: this._sourceCanvas.height },
-        { x: 0, y: this._sourceCanvas.height },
-      ];
-      const dstCorners = getPerspectiveDestCorners(this._state, this._perspectiveCorners);
-      drawPerspectiveMesh(ctx, this._sourceCanvas, srcCorners, dstCorners, 32);
+      const warp = this._getWarp();
+      if (warp) {
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.drawImage(warp.canvas, warp.x, warp.y);
+        ctx.restore();
+      }
     } else {
       const matrix = composeMatrix(this._state);
       ctx.save();

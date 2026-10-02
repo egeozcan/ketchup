@@ -161,8 +161,15 @@ export function getPerspectiveDestCorners(
 
 /**
  * Draw a perspective-warped image using triangle mesh subdivision.
- * Subdivides the source image into a grid of triangles and draws each
- * with an affine approximation.
+ * Subdivides the source image into a grid of triangles and fills each with
+ * the source as a pattern under that triangle's affine approximation.
+ *
+ * Draw into a transparent canvas and composite that onto its destination:
+ * for a convex destination quad the triangles are summed with `lighter`,
+ * so the anti-aliased coverage of two triangles sharing an edge adds up to
+ * the full pixel instead of leaving a faint seam, as source-over would.
+ * A concave or folded quad's triangles may overlap, and summing would
+ * brighten the overlap, so those fall back to source-over.
  */
 export function drawPerspectiveMesh(
   ctx: CanvasRenderingContext2D,
@@ -171,9 +178,13 @@ export function drawPerspectiveMesh(
   dstCorners: [Point, Point, Point, Point],
   gridSize: number,
 ): void {
+  const pattern = ctx.createPattern(sourceCanvas, 'no-repeat');
+  if (!pattern) return;
   const [sTL, sTR, sBR, sBL] = srcCorners;
   const [dTL, dTR, dBR, dBL] = dstCorners;
 
+  ctx.save();
+  if (isConvexQuad(dstCorners)) ctx.globalCompositeOperation = 'lighter';
   for (let row = 0; row < gridSize; row++) {
     for (let col = 0; col < gridSize; col++) {
       const u0 = col / gridSize;
@@ -191,10 +202,25 @@ export function drawPerspectiveMesh(
       const dP01 = bilinear(dTL, dTR, dBR, dBL, u0, v1);
       const dP11 = bilinear(dTL, dTR, dBR, dBL, u1, v1);
 
-      drawTexturedTriangle(ctx, sourceCanvas, sP00, sP10, sP01, dP00, dP10, dP01);
-      drawTexturedTriangle(ctx, sourceCanvas, sP10, sP11, sP01, dP10, dP11, dP01);
+      drawTexturedTriangle(ctx, pattern, sP00, sP10, sP01, dP00, dP10, dP01);
+      drawTexturedTriangle(ctx, pattern, sP10, sP11, sP01, dP10, dP11, dP01);
     }
   }
+  ctx.restore();
+}
+
+/** True if every turn of the quad goes the same way (no dent, no fold). */
+function isConvexQuad(q: [Point, Point, Point, Point]): boolean {
+  let sign = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = q[i], b = q[(i + 1) % 4], c = q[(i + 2) % 4];
+    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (Math.abs(cross) < 1e-9) return false;
+    const s = cross > 0 ? 1 : -1;
+    if (sign !== 0 && s !== sign) return false;
+    sign = s;
+  }
+  return true;
 }
 
 /** Bilinear interpolation across a quad. */
@@ -205,12 +231,12 @@ function bilinear(tl: Point, tr: Point, br: Point, bl: Point, u: number, v: numb
 }
 
 /**
- * Draw a single textured triangle using affine transform.
- * Maps source triangle (s0,s1,s2) onto destination triangle (d0,d1,d2).
+ * Fill destination triangle (d0,d1,d2) with the source pattern mapped by the
+ * affine transform taking source triangle (s0,s1,s2) onto it.
  */
 function drawTexturedTriangle(
   ctx: CanvasRenderingContext2D,
-  img: HTMLCanvasElement,
+  pattern: CanvasPattern,
   s0: Point, s1: Point, s2: Point,
   d0: Point, d1: Point, d2: Point,
 ): void {
@@ -233,16 +259,14 @@ function drawTexturedTriangle(
   const me = d0.x - ma * s0.x - mb * s0.y;
   const mf = d0.y - mc * s0.x - md * s0.y;
 
-  ctx.save();
+  // The pattern transform is applied on top of the caller's transform: the
+  // preview renders into an offscreen canvas translated to the warped bounds' origin.
+  pattern.setTransform({ a: ma, b: mc, c: mb, d: md, e: me, f: mf });
+  ctx.fillStyle = pattern;
   ctx.beginPath();
   ctx.moveTo(d0.x, d0.y);
   ctx.lineTo(d1.x, d1.y);
   ctx.lineTo(d2.x, d2.y);
   ctx.closePath();
-  ctx.clip();
-  // Compose with, not replace, the caller's transform: the preview renders
-  // into an offscreen canvas translated to the warped bounds' origin.
-  ctx.transform(ma, mc, mb, md, me, mf);
-  ctx.drawImage(img, 0, 0);
-  ctx.restore();
+  ctx.fill();
 }

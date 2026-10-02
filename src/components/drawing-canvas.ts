@@ -162,6 +162,8 @@ export class DrawingCanvas extends LitElement {
 
   private _engine = new StampStrokeEngine();
   private _tintPreviewCanvas: HTMLCanvasElement | null = null;
+  /** Scratch canvas holding the active layer with the floating transform merged in. */
+  private _transformMergeCanvas: HTMLCanvasElement | null = null;
   private _strokeTintCanvas: HTMLCanvasElement | null = null;
   private _samplingDirty = true;
   /** Coalesces gesture-driven composites into at most one per animation frame. */
@@ -501,6 +503,7 @@ export class DrawingCanvas extends LitElement {
     for (const layer of layers) {
       if (!layer.visible) continue;
       displayCtx.globalAlpha = layer.opacity;
+      const layerCanvas = this._layerWithTransform(layer, activeLayerId);
       if (hasBlend) {
         displayCtx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
       }
@@ -522,7 +525,7 @@ export class DrawingCanvas extends LitElement {
         const canDrawDirect = !preview.eraser && layer.opacity >= 1 && layer.blendMode === 'normal';
 
         if (canDrawDirect) {
-          displayCtx.drawImage(layer.canvas, 0, 0);
+          displayCtx.drawImage(layerCanvas, 0, 0);
           const strokeSrc = preview.color === null
             ? (preview.canvas as HTMLCanvasElement)
             : this._tintStrokeRegion(preview.canvas as HTMLCanvasElement, b, preview.color);
@@ -544,11 +547,11 @@ export class DrawingCanvas extends LitElement {
           // copy per stroke only the stroke's region needs refreshing.
           if (this._tintPreviewNeedsCopy) {
             tintCtx.clearRect(0, 0, this._docWidth, this._docHeight);
-            tintCtx.drawImage(layer.canvas, 0, 0);
+            tintCtx.drawImage(layerCanvas, 0, 0);
             this._tintPreviewNeedsCopy = false;
           } else {
             tintCtx.clearRect(b.x, b.y, b.w, b.h);
-            tintCtx.drawImage(layer.canvas, b.x, b.y, b.w, b.h, b.x, b.y, b.w, b.h);
+            tintCtx.drawImage(layerCanvas, b.x, b.y, b.w, b.h, b.x, b.y, b.w, b.h);
           }
 
           tintCtx.globalAlpha = preview.opacity;
@@ -571,13 +574,9 @@ export class DrawingCanvas extends LitElement {
           displayCtx.drawImage(this._tintPreviewCanvas, 0, 0);
         }
       } else {
-        displayCtx.drawImage(layer.canvas, 0, 0);
+        displayCtx.drawImage(layerCanvas, 0, 0);
       }
 
-      // Draw transform manager content after its owning layer
-      if (this._transformManager && layer.id === activeLayerId) {
-        this._transformManager.renderTransformed(displayCtx);
-      }
       if (hasBlend) {
         displayCtx.globalCompositeOperation = 'source-over';
       }
@@ -1292,6 +1291,29 @@ export class DrawingCanvas extends LitElement {
   }
 
   /**
+   * The layer as it will be once the active transform commits: its floating
+   * content merged in with source-over, as `TransformManager.commit` does.
+   * Compositing this, instead of the layer and then the floating content each
+   * under the layer's blend mode and opacity, keeps previews true to the commit.
+   * Other layers, and every layer when no transform is active, come back as is.
+   */
+  private _layerWithTransform(layer: Layer, activeLayerId: string | null): HTMLCanvasElement {
+    if (!this._transformManager || layer.id !== activeLayerId) return layer.canvas;
+    const { width, height } = layer.canvas;
+    let merged = this._transformMergeCanvas;
+    if (!merged) merged = this._transformMergeCanvas = document.createElement('canvas');
+    if (merged.width !== width || merged.height !== height) {
+      merged.width = width;
+      merged.height = height;
+    }
+    const ctx = merged.getContext('2d')!;
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(layer.canvas, 0, 0);
+    this._transformManager.renderTransformed(ctx);
+    return merged;
+  }
+
+  /**
    * Flattens every visible layer (plus any active transform at its layer's
    * z-position) onto a new canvas at document size, without the checkerboard.
    * `background` fills the canvas first; `null` keeps transparency.
@@ -1312,11 +1334,8 @@ export class DrawingCanvas extends LitElement {
       if (!layer.visible) continue;
       exportCtx.globalAlpha = layer.opacity;
       exportCtx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
-      exportCtx.drawImage(layer.canvas, 0, 0);
-      // Include active transform content at its z-position
-      if (this._transformManager && layer.id === activeLayerId) {
-        this._transformManager.renderTransformed(exportCtx);
-      }
+      // Includes active transform content at its z-position
+      exportCtx.drawImage(this._layerWithTransform(layer, activeLayerId), 0, 0);
       exportCtx.globalCompositeOperation = 'source-over';
       exportCtx.globalAlpha = 1.0;
     }
@@ -1629,12 +1648,9 @@ export class DrawingCanvas extends LitElement {
         if (!layer.visible) continue;
         ctx.globalAlpha = layer.opacity;
         ctx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
-        ctx.drawImage(layer.canvas, 0, 0);
+        // Includes active transform content at its z-position
+        ctx.drawImage(this._layerWithTransform(layer, activeLayerId), 0, 0);
         ctx.globalCompositeOperation = 'source-over';
-        // Include active transform content at its z-position
-        if (this._transformManager && layer.id === activeLayerId) {
-          this._transformManager.renderTransformed(ctx);
-        }
       }
       ctx.globalAlpha = 1;
       this._samplingDirty = false;
