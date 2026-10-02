@@ -155,6 +155,22 @@ describe('a float meeting other operations', () => {
     host.remove();
   });
 
+  it('sets up its text field and size observer again when it comes back into the document', async () => {
+    const { canvas } = setupCanvas();
+    const observe = vi.fn();
+    vi.stubGlobal('ResizeObserver', class { observe = observe; disconnect() {} });
+    const root = canvas.attachShadow({ mode: 'open' });
+    (canvas as any).renderRoot = root;
+    Object.defineProperty(canvas, 'hasUpdated', { value: true });
+    vi.spyOn(canvas as any, '_resizeToFit').mockImplementation(() => {});
+
+    canvas.connectedCallback();
+
+    expect(root.contains((canvas as any)._textAreaEl)).toBe(true);
+    expect(observe).toHaveBeenCalledWith(canvas);
+    canvas.disconnectedCallback();
+  });
+
   it('lets Undo cancel a selection as soon as it is lifted', () => {
     const { canvas } = setupCanvas();
     const notify = vi.spyOn(canvas as any, '_notifyHistory');
@@ -623,6 +639,24 @@ describe('app shortcuts and layer changes with a float', () => {
       active.mockRestore();
     }
   });
+  it('commits work in progress when taken out of the document, before it would be let go of', () => {
+    const { app, canvas } = makeApp({ isTransformActive: vi.fn(() => true) });
+    app.disconnectedCallback();
+    expect(canvas.clearSelection).toHaveBeenCalled();
+  });
+
+  it('heeds a dialog or field inside itself, not a host page\'s dialog around it', () => {
+    const { app } = makeApp();
+    const hostDialog = document.createElement('dialog');
+    hostDialog.setAttribute('open', '');
+    const ownDialog = document.createElement('dialog');
+    ownDialog.setAttribute('open', '');
+    const keyIn = (...path: EventTarget[]) => ({ composedPath: () => path }) as unknown as KeyboardEvent;
+    expect((app as any)._isTextEntryTarget(keyIn(app, hostDialog, document.body))).toBe(false);
+    expect((app as any)._isTextEntryTarget(keyIn(ownDialog, app, hostDialog))).toBe(true);
+    expect((app as any)._isTextEntryTarget(keyIn(document.createElement('input'), app))).toBe(true);
+  });
+
   it('deletes an active float under any tool', () => {
     const { app, canvas } = makeApp({ isTransformActive: vi.fn(() => true) });
     (app as any)._state = { ...(app as any)._state, activeTool: 'pencil' };
