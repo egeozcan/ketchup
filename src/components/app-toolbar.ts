@@ -6,6 +6,7 @@ import type { ToolType } from '../types.js';
 import { toolIcons, toolLabels, toolShortcuts, actionIcons, CHILD_TOOLS, shapesIcon } from './tool-icons.js';
 import { SHAPE_TOOLS, isShapeTool } from '../tools/shapes.js';
 import './tool-settings.js';
+import { keyIsForEditorOf } from '../utils/focus-editor.js';
 
 /** Modifier-key prefix for shortcut hints: ⌘ on Apple platforms, Ctrl+ elsewhere. */
 const modKey = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '\u2318' : 'Ctrl+';
@@ -441,7 +442,7 @@ export class AppToolbar extends LitElement {
 
   /** Escape closes an open popover, and only that (the app would also cancel a float). */
   private _onPopoverEscape = (e: KeyboardEvent) => {
-    if (e.key !== 'Escape' || this._popoverGroup === null) return;
+    if (e.key !== 'Escape' || this._popoverGroup === null || !keyIsForEditorOf(this, e)) return;
     e.stopPropagation();
     this._closePopover();
   };

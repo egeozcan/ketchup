@@ -314,6 +314,11 @@ export class DrawingCanvas extends LitElement {
     return true;
   }
 
+  /** Puts text still being typed onto its layer (before an export, say). */
+  commitPendingText() {
+    if (this._textEditing) this._commitText();
+  }
+
   /** True while the text tool holds typed text that is not on a layer yet. */
   hasPendingText(): boolean {
     return this._textEditing && !!this._textAreaEl?.value;
@@ -324,7 +329,14 @@ export class DrawingCanvas extends LitElement {
     this.dispatchEvent(new CustomEvent('pending-text-change', {
       detail: { pending: this.hasPendingText() },
     }));
+    // Redo waits while text is typed (see redo()).
+    if (this.hasPendingText() !== this._redoHeldByText) {
+      this._redoHeldByText = this.hasPendingText();
+      this._notifyHistory(false);
+    }
   }
+
+  private _redoHeldByText = false;
 
   enterTransformMode(): void {
     if (this._transformManager) return;
@@ -1042,7 +1054,7 @@ export class DrawingCanvas extends LitElement {
         composed: true,
         detail: {
           canUndo: this._historyIndex >= 0 || this._transformManager !== null,
-          canRedo: this._historyIndex < this._history.length - 1,
+          canRedo: this._historyIndex < this._history.length - 1 && !this.hasPendingText(),
           stackChanged,
         },
       }),
@@ -1114,11 +1126,16 @@ export class DrawingCanvas extends LitElement {
     const entry = this._history[this._historyIndex];
     this._historyIndex--;
     this._applyUndo(entry);
+    // A crop rectangle drawn on the other size of document no longer fits it.
+    if (entry.type === 'crop' && this._cropRect) this.cancelCrop();
     this.composite();
     this._notifyHistory();
   }
 
   public redo() {
+    // Committing typed text would be a new step, which ends the redo stack:
+    // Redo waits until the text is done.
+    if (this.hasPendingText()) return;
     if (this._textEditing) {
       this._commitText();
     }
@@ -1149,6 +1166,7 @@ export class DrawingCanvas extends LitElement {
     this._historyIndex++;
     const entry = this._history[this._historyIndex];
     this._applyRedo(entry);
+    if (entry.type === 'crop' && this._cropRect) this.cancelCrop();
     this.composite();
     this._notifyHistory();
   }
@@ -2239,6 +2257,10 @@ export class DrawingCanvas extends LitElement {
         const layerCtx = this._getActiveLayerCtx();
         if (layerCtx) {
           this._captureBeforeDraw();
+          // WebKit may defer the snapshot's drawImage until it is read, and
+          // the fill's putImageData then shows through it (the fill had no
+          // undo step): read it now.
+          this._beforeDrawCanvas?.getContext('2d')!.getImageData(0, 0, 1, 1);
           const filled = floodFill(layerCtx, fx, fy, this.ctx.state.strokeColor);
           if (filled) {
             this._pushDrawHistory(false, filled);
@@ -2392,8 +2414,19 @@ export class DrawingCanvas extends LitElement {
     {
       const activeTool = this.ctx.state.activeTool;
 
+      // Held down and dragged, a mouse or pen picks where the loupe is, so
+      // what it's let go on is the colour, as with a finger (which picks as
+      // it lifts).
+      const pickHere = () => {
+        if (!tracked || e.pointerType === 'touch' || !(e.buttons & 1)) return;
+        const p = this._getDocPoint(e);
+        const color = this._sampleColor(p.x, p.y);
+        if (color) this.ctx.setStrokeColor(color);
+      };
+
       if (activeTool === 'eyedropper') {
         this._renderEyedropperPreview(e);
+        pickHere();
         return;
       }
 
@@ -2404,6 +2437,7 @@ export class DrawingCanvas extends LitElement {
           return;
         }
         this._renderEyedropperPreview(e);
+        pickHere();
         return;
       }
     }
@@ -3168,7 +3202,13 @@ export class DrawingCanvas extends LitElement {
   /** Commit the active crop: trim all layers, push history, dispatch dimension change. */
   public commitCrop() {
     if (!this._cropRect) return;
-    const rect = this._cropRect;
+    // Within the document (it may have changed size under the rectangle).
+    const x = Math.max(0, this._cropRect.x), y = Math.max(0, this._cropRect.y);
+    const rect = {
+      x, y,
+      w: Math.min(this._docWidth, this._cropRect.x + this._cropRect.w) - x,
+      h: Math.min(this._docHeight, this._cropRect.y + this._cropRect.h) - y,
+    };
     if (rect.w < 1 || rect.h < 1) return;
     const state = this._ctx.value?.state;
     if (!state) return;
@@ -3635,13 +3675,13 @@ export class DrawingCanvas extends LitElement {
     this._notifyHistory();
   }
 
-  public clearSelection() {
+  public clearSelection({ keepCrop = false } = {}) {
     if (this._textEditing) {
       this._commitText();
     }
 
     // Cancel any pending crop rect
-    if (this._cropRect) {
+    if (this._cropRect && !keepCrop) {
       this.cancelCrop();
     }
 
@@ -3841,6 +3881,9 @@ export class DrawingCanvas extends LitElement {
     if (this.hasUpdated) {
       this.shadowRoot!.appendChild(ta);
       this._observeSize();
+      // A composite scheduled before it left was dropped as it went.
+      this.scheduleComposite(false);
+      if (this._cropRect) this._drawCropPreview();
     }
   }
 

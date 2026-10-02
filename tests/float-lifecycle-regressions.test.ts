@@ -163,11 +163,14 @@ describe('a float meeting other operations', () => {
     (canvas as any).renderRoot = root;
     Object.defineProperty(canvas, 'hasUpdated', { value: true });
     vi.spyOn(canvas as any, '_resizeToFit').mockImplementation(() => {});
+    const schedule = vi.spyOn(canvas, 'scheduleComposite').mockImplementation(() => {});
 
     canvas.connectedCallback();
 
     expect(root.contains((canvas as any)._textAreaEl)).toBe(true);
     expect(observe).toHaveBeenCalledWith(canvas);
+    // A composite scheduled before it left was dropped.
+    expect(schedule).toHaveBeenCalledWith(false);
     canvas.disconnectedCallback();
   });
 
@@ -606,6 +609,7 @@ describe('app shortcuts and layer changes with a float', () => {
     let takesFocus = true;
     vi.spyOn(app, 'focus').mockImplementation(() => {});
     const active = vi.spyOn(document, 'activeElement', 'get').mockImplementation(() => (takesFocus ? app : document.body));
+    vi.spyOn(app, 'getRootNode').mockReturnValue(document);
     // What holds the editor (the page's body, or a host's dialog), not connected here.
     const holder = document.createElement('div');
     holder.append(app);
@@ -642,7 +646,38 @@ describe('app shortcuts and layer changes with a float', () => {
   it('commits work in progress when taken out of the document, before it would be let go of', () => {
     const { app, canvas } = makeApp({ isTransformActive: vi.fn(() => true) });
     app.disconnectedCallback();
-    expect(canvas.clearSelection).toHaveBeenCalled();
+    // A crop being set up stays for when it's back.
+    expect(canvas.clearSelection).toHaveBeenCalledWith({ keepCrop: true });
+  });
+
+  it('closes its storage only once a reopen under way has finished', async () => {
+    const { app } = makeApp();
+    const dispose = vi.fn(async () => {});
+    const backend = { dispose } as any;
+    (app as any)._backend = backend;
+    let reopened!: () => void;
+    (app as any)._backendReopen = new Promise<void>(r => { reopened = r; });
+
+    (app as any)._closeBackend(backend);
+    expect(dispose).not.toHaveBeenCalled();
+    (app as any)._backendReopen = null;
+    reopened();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(dispose).toHaveBeenCalled();
+  });
+
+  it('keeps the compact layout in child mode at any width, and leaves it with child mode', () => {
+    const { app } = makeApp();
+    (app as any)._updateMobileLayout(390);
+    expect((app as any)._isMobile).toBe(true);
+    (app as any)._buildContextValue().setChildMode(true);
+    // Turned on its side.
+    (app as any)._updateMobileLayout(844);
+    expect((app as any)._isMobile).toBe(true);
+    expect((app as any)._state.childMode).toBe(true);
+    (app as any)._buildContextValue().setChildMode(false);
+    expect((app as any)._isMobile).toBe(false);
   });
 
   it('heeds a dialog or field inside itself, not a host page\'s dialog around it', () => {
@@ -664,6 +699,13 @@ describe('app shortcuts and layer changes with a float', () => {
     (app as any)._onKeyDown({ ...key('b'), ctrlKey: false });
     expect(focusText).toHaveBeenCalled();
     expect((app as any)._state.activeTool).toBe('text');
+    // Keys that work the control (arrows on a slider, Escape) stay with it.
+    focusText.mockClear();
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    (app as any)._onKeyDown({ ...key('ArrowLeft'), ctrlKey: false, composedPath: () => [slider] });
+    (app as any)._onKeyDown({ ...key('Escape'), ctrlKey: false });
+    expect(focusText).not.toHaveBeenCalled();
     // Shortcuts with a modifier still are.
     focusText.mockClear();
     (app as any)._onKeyDown(key('z'));

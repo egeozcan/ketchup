@@ -6,7 +6,7 @@ import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { Layer } from '../types.js';
 import { BLEND_MODE_LABELS } from '../engine/types.js';
-import { focusEditor } from '../utils/focus-editor.js';
+import { focusEditor, keyIsForEditorOf } from '../utils/focus-editor.js';
 
 @customElement('layers-panel')
 export class LayersPanel extends LitElement {
@@ -524,7 +524,7 @@ export class LayersPanel extends LitElement {
 
   private _onDocKeyDown = (e: KeyboardEvent) => {
     // A layer name being edited takes its own Escape.
-    if (e.key !== 'Escape' || this._editingLayerId) return;
+    if (e.key !== 'Escape' || this._editingLayerId || !keyIsForEditorOf(this, e)) return;
     // Seen first (capture) and kept from the app, which would take it to
     // cancel a float as well: a menu closes, or else the phone's sheet.
     if (this._contextMenuOpen || this._dropdownOpen) {

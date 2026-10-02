@@ -384,6 +384,51 @@ describe('DrawingCanvas', () => {
     expect((canvas as any)._transformManager).toBeNull();
   });
 
+  it('holds Redo while text is typed, rather than committing it and losing what could be redone', () => {
+    const { canvas } = setupCanvas();
+    const entry = { type: 'rename', layerId: 'x', before: 'a', after: 'b' };
+    (canvas as any)._history = [entry];
+    (canvas as any)._historyIndex = -1;
+    (canvas as any)._textEditing = true;
+    (canvas as any)._textAreaEl = Object.assign(document.createElement('textarea'), { value: 'Hi' });
+    let detail: { canRedo: boolean } | null = null;
+    canvas.addEventListener('history-change', (e: Event) => { detail = (e as CustomEvent).detail; });
+    const commitText = vi.spyOn(canvas as any, '_commitText').mockImplementation(() => {});
+
+    canvas.redo();
+    (canvas as any)._notifyHistory();
+
+    expect(commitText).not.toHaveBeenCalled();
+    expect((canvas as any)._historyIndex).toBe(-1);
+    expect(detail!.canRedo).toBe(false);
+  });
+
+  it('crops only within the document, which may have changed size under the rectangle', () => {
+    const { canvas, layers } = setupCanvas({ width: 100, height: 80 });
+    (canvas as any)._cropRectValue = { x: 50, y: 40, w: 300, h: 200 };
+    const crop = vi.fn();
+    canvas.addEventListener('crop-commit', (e: Event) => crop((e as CustomEvent).detail));
+
+    canvas.commitCrop();
+
+    expect([layers[0].canvas.width, layers[0].canvas.height]).toEqual([50, 40]);
+  });
+
+  it('picks the colour where a held mouse is let go, as a finger does', () => {
+    const { canvas } = setupCanvas({ stateOverrides: { activeTool: 'eyedropper' } });
+    const setStrokeColor = vi.fn();
+    (canvas as any)._ctx.value.setStrokeColor = setStrokeColor;
+    vi.spyOn(canvas as any, '_sampleColor').mockImplementation(((x: number) => (x < 50 ? '#ffffff' : '#00ff00')) as any);
+    vi.spyOn(canvas as any, '_renderEyedropperPreview').mockImplementation(() => {});
+    const mouse = (buttons: number, clientX: number) =>
+      ({ button: 0, buttons, pointerId: 1, clientX, clientY: 10, pointerType: 'mouse', isPrimary: true, preventDefault() {} }) as unknown as PointerEvent;
+
+    (canvas as any)._onPointerDown(mouse(1, 10));
+    (canvas as any)._onPointerMove(mouse(1, 80));
+
+    expect(setStrokeColor).toHaveBeenLastCalledWith('#00ff00');
+  });
+
   it('reports canUndo when a transform is active with empty history', () => {
     const { canvas } = setupCanvas();
     (canvas as any)._history = [];

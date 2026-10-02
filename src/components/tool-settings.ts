@@ -12,7 +12,7 @@ import { getStampThumbnailUrl, removeStampThumbnail } from '../utils/stamp-thumb
 import { MAX_STAMP_SIZE, MIN_STAMP_SIZE } from '../tools/stamp-size.js';
 import { SHAPE_TOOLS, isShapeTool } from '../tools/shapes.js';
 import { toolIcons, toolLabels, toolShortcuts } from './tool-icons.js';
-import { focusEditor } from '../utils/focus-editor.js';
+import { focusEditor, keyIsForEditorOf } from '../utils/focus-editor.js';
 
 /** Icons for the project dropdown's per-row actions. */
 const projectActionIcons = {
@@ -1391,7 +1391,7 @@ export class ToolSettings extends LitElement {
 
   /** Escape closes an open dropdown, and only that (the app would also cancel a float). */
   private _onDropdownEscape = (e: KeyboardEvent) => {
-    if (e.key !== 'Escape' || (!this._projectDropdownOpen && !this._brushDropdownOpen)) return;
+    if (e.key !== 'Escape' || (!this._projectDropdownOpen && !this._brushDropdownOpen) || !keyIsForEditorOf(this, e)) return;
     // A project name being edited in the dropdown takes its own Escape.
     if (this._renamingProjectId) return;
     e.stopPropagation();

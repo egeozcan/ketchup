@@ -19,3 +19,30 @@ export function focusEditor(from: Node): boolean {
   }
   return false;
 }
+
+/** The editor (`drawing-app`) a node is part of, through the shadow trees it sits in. */
+export function editorOf(node: Node): HTMLElement | null {
+  for (let root = node.getRootNode(); root instanceof ShadowRoot; root = root.host.getRootNode()) {
+    if (root.host.localName === 'drawing-app') return root.host as HTMLElement;
+  }
+  return null;
+}
+
+/** Whether `node` is `ancestor` or inside it, counting a shadow root as inside its host. */
+export function containsAcrossShadows(ancestor: Node, node: Node): boolean {
+  for (let n: Node | null = node; n; n = n.parentNode ?? (n instanceof ShadowRoot ? n.host : null)) {
+    if (n === ancestor) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a key is for the editor `el` is part of: typed inside it, or with
+ * nothing focused. A menu it has open shouldn't take Escape from another
+ * editor on the page, or from the host page's own fields.
+ */
+export function keyIsForEditorOf(el: Node, e: KeyboardEvent): boolean {
+  const editor = editorOf(el);
+  return !editor || e.composedPath().includes(editor)
+    || e.target === document.body || e.target === document.documentElement;
+}

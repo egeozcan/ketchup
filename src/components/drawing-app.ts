@@ -19,6 +19,7 @@ import { DEFAULT_STAMP_SIZE, normalizeStampSize } from '../tools/stamp-size.js';
 import './app-toolbar.js';
 import './tool-settings.js';
 import { generateUUID } from '../utils/uuid.js';
+import { containsAcrossShadows } from '../utils/focus-editor.js';
 import './drawing-canvas.js';
 import './layers-panel.js';
 import './navigator-panel.js';
@@ -986,8 +987,9 @@ export class DrawingApp extends LitElement {
     }
     // Typing meant for text being edited, after a click on Bold or a colour
     // took the keyboard: back into the text, where the key lands (a focus
-    // moved during keydown takes the typed character), not a shortcut.
-    if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key !== 'Tab' && !['Shift', 'Control', 'Meta', 'Alt', 'CapsLock'].includes(e.key)
+    // moved during keydown takes the typed character), not a shortcut. Keys
+    // that work the focused control (arrows, Enter, Escape) stay there.
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete')
       && this.canvas?.focusText?.()) {
       return;
     }
@@ -1275,7 +1277,9 @@ export class DrawingApp extends LitElement {
       };
       // The layout the view is restored into: the size observer may not have
       // reported yet, and a phone restored in the desktop layout gets reset.
-      const width = this.getBoundingClientRect().width;
+      // Its content width, as the observer reports it (not the safe-area padding).
+      const style = getComputedStyle(this);
+      const width = this.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       if (width > 0) this._updateMobileLayout(width);
       if (this._isMobile) this._desktopLayersPanelOpen = record.layersPanelOpen;
       await this.updateComplete;
@@ -1684,6 +1688,8 @@ export class DrawingApp extends LitElement {
       setTransformValue: (key: string, value: number | boolean) => this.canvas?.setTransformValue(key, value),
       setChildMode: (on: boolean) => {
         this._state = { ...this._state, childMode: on };
+        // Leaving it on a wide screen: the full layout again.
+        if (!on && this._layoutWidth > 0) this._updateMobileLayout(this._layoutWidth);
         // Switch to pencil when entering child mode if current tool isn't child-friendly
         if (on && !CHILD_TOOL_SET.has(this._state.activeTool)) {
           // As any tool switch does: a float, crop or text in progress ends.
@@ -1779,7 +1785,8 @@ export class DrawingApp extends LitElement {
     // for, whatever the host opens next.
     const rendered = this._documentReplacement.then(async () => {
       await this._ready;
-      this.canvas.clearSelection();
+      // A crop being set up isn't work to commit; it stays for the user.
+      this.canvas.clearSelection({ keepCrop: true });
       const canvas = this.canvas.renderFlattened(background);
       return { canvas, mark: this._markDocument() };
     });
@@ -1884,6 +1891,8 @@ export class DrawingApp extends LitElement {
   /** Save, as the host sees it: embedded, the host is asked; standalone, a PNG downloads. */
   private _requestSave() {
     if (!this.embedded) {
+      // Text still being typed is on screen; the PNG has it too.
+      this.canvas?.commitPendingText();
       this.canvas?.saveCanvas();
       return;
     }
@@ -2087,7 +2096,10 @@ export class DrawingApp extends LitElement {
   }
 
   private _updateMobileLayout(width: number) {
-    const useMobileLayout = shouldUseMobileLayout(width, this._isMobile);
+    this._layoutWidth = width;
+    // Child mode keeps the compact layout at any width: a phone turned on its
+    // side would otherwise show a child the whole app (projects, delete).
+    const useMobileLayout = this._state.childMode || shouldUseMobileLayout(width, this._isMobile);
     if (useMobileLayout === this._isMobile) return;
 
     this._isMobile = useMobileLayout;
@@ -2100,11 +2112,10 @@ export class DrawingApp extends LitElement {
       this._state = { ...this._state, layersPanelOpen: this._desktopLayersPanelOpen };
       this._desktopLayersPanelOpen = null;
     }
-    // Child mode uses the compact toolbar; disable it when switching to desktop.
-    if (!useMobileLayout && this._state.childMode) {
-      this._state = { ...this._state, childMode: false };
-    }
   }
+
+  /** The width the layout was last chosen for. */
+  private _layoutWidth = 0;
 
   override connectedCallback() {
     super.connectedCallback();
@@ -2152,12 +2163,13 @@ export class DrawingApp extends LitElement {
   private _onStrayKeyDown = (e: KeyboardEvent) => {
     // Tab moves on from where focus was, as the browser does.
     if (!this._strayKeysOurs || e.defaultPrevented || e.key === 'Tab') return;
-    // Focus fell to the page, or to what holds the editor (a host's dialog).
-    if (!(e.target instanceof Node) || e.target === this || !e.target.contains(this)) return;
+    // Focus fell to the page, or to what holds the editor (a host's dialog,
+    // or a host component whose shadow tree it is in).
+    if (!(e.target instanceof Node) || e.target === this || !containsAcrossShadows(e.target, this)) return;
     // Take the keyboard back, so later keys come straight here; an editor
     // that can't take it (hidden, inert, no tabindex) leaves keys alone.
     this.focus({ preventScroll: true });
-    if (document.activeElement !== this) return;
+    if ((this.getRootNode() as Document | ShadowRoot).activeElement !== this) return;
     this._onKeyDown(e);
   };
 
@@ -2219,8 +2231,8 @@ export class DrawingApp extends LitElement {
     super.disconnectedCallback();
     // Work in progress goes onto its layer while the canvas can still put it
     // there (it lets go of a float, a text box and a stroke as it leaves), and
-    // in time for the save below.
-    this.canvas?.clearSelection();
+    // in time for the save below. A crop being set up stays for a return.
+    this.canvas?.clearSelection({ keepCrop: true });
     this._mobileObserver?.disconnect();
     this._mobileObserver = null;
     this.removeEventListener('keydown', this._onKeyDown);
@@ -2264,6 +2276,11 @@ export class DrawingApp extends LitElement {
 
   private _closeBackend(backend: StorageBackend | undefined) {
     if (!backend || this.isConnected) return;
+    // Reopening (back briefly, gone again): close once it's open.
+    if (this._backendReopen) {
+      void this._backendReopen.then(() => this._closeBackend(backend));
+      return;
+    }
     if (backend === this._backend) this._backendClosed = true;
     void backend.dispose();
   }

@@ -128,3 +128,30 @@ describe('Escape on the phone\'s popovers and sheet', () => {
     expect((panel as any)._sheetOpen).toBe(false);
   });
 });
+
+describe('keys and the editor they are for', () => {
+  it('finds the editor through a host component\'s shadow root', async () => {
+    const { containsAcrossShadows, keyIsForEditorOf } = await import('../src/utils/focus-editor.ts');
+    const host = document.createElement('div');
+    document.body.append(host);
+    const editor = document.createElement('drawing-app');
+    host.attachShadow({ mode: 'open' }).append(editor);
+    const toolbar = document.createElement('div');
+    editor.attachShadow({ mode: 'open' }).append(toolbar);
+    try {
+      expect(document.body.contains(editor)).toBe(false);
+      expect(containsAcrossShadows(document.body, editor)).toBe(true);
+      expect(containsAcrossShadows(editor, document.body)).toBe(false);
+
+      const keyOn = (target: EventTarget, path: EventTarget[]) => ({ target, composedPath: () => path }) as unknown as KeyboardEvent;
+      // Inside it, or with nothing focused: its.
+      expect(keyIsForEditorOf(toolbar, keyOn(editor, [editor, host.shadowRoot!, host, document.body]))).toBe(true);
+      expect(keyIsForEditorOf(toolbar, keyOn(document.body, [document.body]))).toBe(true);
+      // A host page's field, or another editor: not.
+      const field = document.createElement('input');
+      expect(keyIsForEditorOf(toolbar, keyOn(field, [field, document.body]))).toBe(false);
+    } finally {
+      host.remove();
+    }
+  });
+});
