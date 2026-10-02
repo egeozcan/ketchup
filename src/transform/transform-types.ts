@@ -66,6 +66,11 @@ export interface HandleConfig {
   shape: 'square' | 'circle';
   /** Rotation handle stem length in viewport pixels */
   rotationStemLength: number;
+  /**
+   * How far (viewport pixels) a press outside the float may move and still
+   * be a click that commits, rather than a drag that rotates: fingers drift.
+   */
+  outsideDragThreshold: number;
 }
 
 export const HANDLE_CONFIG_DESKTOP: HandleConfig = {
@@ -73,6 +78,7 @@ export const HANDLE_CONFIG_DESKTOP: HandleConfig = {
   hitRadius: 6,
   shape: 'square',
   rotationStemLength: 30,
+  outsideDragThreshold: 3,
 };
 
 export const HANDLE_CONFIG_TOUCH: HandleConfig = {
@@ -80,10 +86,8 @@ export const HANDLE_CONFIG_TOUCH: HandleConfig = {
   hitRadius: 20,
   shape: 'circle',
   rotationStemLength: 50,
+  outsideDragThreshold: 10,
 };
 
 /** Minimum size in document pixels (before zoom) during resize */
 export const MIN_TRANSFORM_SIZE = 4;
-
-/** Distance threshold for click-outside vs drag-outside in viewport pixels */
-export const OUTSIDE_DRAG_THRESHOLD = 3;

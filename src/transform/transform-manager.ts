@@ -2,7 +2,7 @@ import type { Point } from '../types.js';
 import {
   type HandleConfig, type TransformState, type TransformInteraction,
   type PerspectiveCorners, type TransformRect,
-  HANDLE_CONFIG_DESKTOP, HANDLE_CONFIG_TOUCH, MIN_TRANSFORM_SIZE, OUTSIDE_DRAG_THRESHOLD,
+  HANDLE_CONFIG_DESKTOP, HANDLE_CONFIG_TOUCH, MIN_TRANSFORM_SIZE,
 } from './transform-types.js';
 import {
   composeMatrix, docToLocal, localToDoc, getTransformCenter, getTransformedCorners,
@@ -32,6 +32,8 @@ const WARP_SNAPSHOT_PIXELS = 8192 * 8192;
 interface WarpCache {
   key: string; canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number; scale: number;
 }
+
+const CORNERS = ['nw', 'ne', 'se', 'sw'] as const;
 
 export class TransformManager {
   // --- Source data ---
@@ -116,14 +118,22 @@ export class TransformManager {
   get width(): number { return Math.abs(this._state.width * this._state.scaleX); }
   set width(v: number) {
     if (v <= 0) return;
-    this._state.scaleX = (this._state.scaleX < 0 ? -1 : 1) * v / this._state.width;
+    // The box itself, about its middle, as a handle resize does, so X and Y
+    // keep describing it (scale only carries a flip); a warp stretches with it.
+    const s = this._state, k = v / this.width;
+    s.x += (s.width - s.width * k) / 2;
+    s.width *= k;
+    for (const corner of CORNERS) this._perspectiveCorners[corner].x *= k;
     this._onChange();
   }
 
   get height(): number { return Math.abs(this._state.height * this._state.scaleY); }
   set height(v: number) {
     if (v <= 0) return;
-    this._state.scaleY = (this._state.scaleY < 0 ? -1 : 1) * v / this._state.height;
+    const s = this._state, k = v / this.height;
+    s.y += (s.height - s.height * k) / 2;
+    s.height *= k;
+    for (const corner of CORNERS) this._perspectiveCorners[corner].y *= k;
     this._onChange();
   }
 
@@ -229,7 +239,7 @@ export class TransformManager {
         const dx = docPoint.x - this._interaction.startPoint.x;
         const dy = docPoint.y - this._interaction.startPoint.y;
         const distVp = Math.sqrt(dx * dx + dy * dy) * this._zoom;
-        if (distVp > OUTSIDE_DRAG_THRESHOLD) {
+        if (distVp > this._handleConfig.outsideDragThreshold) {
           const center = getTransformCenter(this._state);
           const startAngle = Math.atan2(
             this._interaction.startPoint.y - center.y,
@@ -275,11 +285,24 @@ export class TransformManager {
 
   /**
    * Ends a gesture whose pointer was cancelled, leaving the transform where it
-   * got to. Returns whether one was in progress.
+   * got to, or (`revert`, as when the finger turns out to start a pinch) where
+   * it was when grabbed. Returns whether one was in progress.
    */
-  cancelInteraction(): boolean {
-    if (this._interaction.type === 'idle') return false;
+  cancelInteraction(revert = false): boolean {
+    const inter = this._interaction;
+    if (inter.type === 'idle') return false;
     this._interaction = { type: 'idle' };
+    if (revert) {
+      const s = this._state;
+      switch (inter.type) {
+        case 'moving': s.x = inter.startX; s.y = inter.startY; break;
+        case 'resizing': if (inter.origin.state) Object.assign(s, inter.origin.state); break;
+        case 'rotating': s.rotation = inter.startRotation; break;
+        case 'skewing': s.skewX = inter.startSkewX; s.skewY = inter.startSkewY; break;
+        case 'perspective': this._perspectiveCorners[inter.corner] = { ...inter.startOffset }; break;
+      }
+      this._onChange();
+    }
     return true;
   }
 
@@ -288,8 +311,10 @@ export class TransformManager {
   private _handleMove(docPoint: Point, modifiers: { shift: boolean }): void {
     const inter = this._interaction;
     if (inter.type !== 'moving') return;
-    let dx = docPoint.x - inter.startPoint.x;
-    let dy = docPoint.y - inter.startPoint.y;
+    // Whole pixels, as the Move tool moves: a fractional offset would
+    // resample (blur) everything on commit.
+    let dx = Math.round(docPoint.x - inter.startPoint.x);
+    let dy = Math.round(docPoint.y - inter.startPoint.y);
     if (modifiers.shift) {
       if (Math.abs(dx) > Math.abs(dy)) { dy = 0; } else { dx = 0; }
     }

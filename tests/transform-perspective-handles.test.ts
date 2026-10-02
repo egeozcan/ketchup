@@ -259,6 +259,47 @@ describe('perspective corners', () => {
     expect(tm.onPointerUp(commitCenter)).toBe('commit-button');
   });
 
+  it('moves by whole pixels, so a commit does not resample', () => {
+    const tm = makeManager();
+    tm.onPointerDown({ x: 50, y: 40 }, none);
+    tm.onPointerMove({ x: 63.65, y: 47.3 }, none);
+    tm.onPointerUp({ x: 63.65, y: 47.3 });
+    expect([tm.x, tm.y]).toEqual([14, 7]);
+  });
+
+  it('resizes the box itself about its middle for a typed size, so X and Y stay its top-left', () => {
+    const tm = makeManager();
+    tm.width = 200;
+    expect([tm.x, tm.width]).toEqual([-50, 200]);
+    expect(tm.getBounds()).toMatchObject({ x: -50, w: 200 });
+    tm.x = 0;
+    expect(tm.getBounds()).toMatchObject({ x: 0, w: 200 });
+  });
+
+  it('takes a drifting finger outside the float as a tap, which commits', () => {
+    const tm = makeManager();
+    tm.setTouchMode(true);
+    tm.onPointerDown({ x: 200, y: 200 }, none);
+    expect(tm.onPointerMove({ x: 207, y: 204 }, none)).toBe(false);
+    expect(tm.onPointerUp({ x: 207, y: 204 })).toBe('commit');
+  });
+
+  it('leaves a middle to move a float by when it is small on screen', () => {
+    for (const touch of [false, true]) {
+      const tm = new TransformManager(new ImageData(12, 12), { x: 0, y: 0, w: 12, h: 12 }, makeCanvas(300, 300), 1, { x: 0, y: 0 });
+      tm.setTouchMode(touch);
+      tm.onPointerDown({ x: 6, y: 6 }, none);
+      expect((tm as any)._interaction.type, touch ? 'touch' : 'mouse').toBe('moving');
+    }
+  });
+
+  it('puts ✗ level with ✓ beside an upright float', () => {
+    const tm = makeManager();
+    const { commitCenter, cancelCenter } = getCommitCancelPositions((tm as any)._getCorners(), HANDLE_CONFIG_DESKTOP, 1);
+    expect(cancelCenter.y).toBeCloseTo(commitCenter.y, 9);
+    expect(cancelCenter.x).toBeGreaterThan(commitCenter.x);
+  });
+
   it('grabs the nearest of handles that have come together', () => {
     const tm = makeManager();
     // The bottom-right corner almost onto the bottom-left one.

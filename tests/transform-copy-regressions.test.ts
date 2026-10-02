@@ -30,6 +30,7 @@ function setupTransformedCanvas() {
     1,
     { x: 0, y: 0 },
   );
+  // A typed size resizes the box itself, so X and Y are then its top-left.
   transform.width = 16;
   transform.height = 6;
   transform.x = 5;
@@ -56,7 +57,7 @@ describe('DrawingCanvas transformed selection clipboard operations', () => {
 
     expect((canvas as any)._clipboard.width).toBe(16);
     expect((canvas as any)._clipboard.height).toBe(6);
-    expect((canvas as any)._clipboardOrigin).toEqual({ x: 2, y: 9 });
+    expect((canvas as any)._clipboardOrigin).toEqual({ x: 5, y: 7 });
   });
 
   it('cutSelection copies the transformed float, then deletes it without touching anything around it', () => {
@@ -74,7 +75,7 @@ describe('DrawingCanvas transformed selection clipboard operations', () => {
     expect(commit).not.toHaveBeenCalled();
     expect(clearRectSpy).not.toHaveBeenCalled();
     expect((canvas as any)._clipboard.width).toBe(16);
-    expect((canvas as any)._clipboardOrigin).toEqual({ x: 2, y: 9 });
+    expect((canvas as any)._clipboardOrigin).toEqual({ x: 5, y: 7 });
     expect(canvas.isTransformActive()).toBe(false);
     // The lift's hole is what stays: one undo step back to before it.
     expect(pushHistory).toHaveBeenCalledWith(true);
@@ -112,10 +113,10 @@ describe('DrawingCanvas transformed selection clipboard operations', () => {
 
     expect((canvas as any)._clipboard.width).toBe(16);
     expect((canvas as any)._clipboard.height).toBe(6);
-    expect((canvas as any)._clipboardOrigin).toEqual({ x: 2, y: 9 });
+    expect((canvas as any)._clipboardOrigin).toEqual({ x: 5, y: 7 });
     expect((canvas as any).getTransformValues()).toMatchObject({
-      x: 2,
-      y: 9,
+      x: 5,
+      y: 7,
       width: 16,
       height: 6,
     });

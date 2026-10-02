@@ -69,7 +69,17 @@ export function hitTestHandle(
   zoom: number,
 ): HandleType | null {
   const positions = getDocHandlePositions(corners);
-  const hitDist = config.hitRadius / zoom;
+  let hitDist = config.hitRadius / zoom;
+  // Inside a float small on screen, full-size handles would cover it and leave
+  // nothing to move it by: there they reach at most a quarter of its narrower side.
+  if (isInsideTransform(docPoint, corners)) {
+    let side = Infinity;
+    for (let i = 0; i < 4; i++) {
+      const p = corners[i], n = corners[(i + 1) % 4];
+      side = Math.min(side, Math.hypot(n.x - p.x, n.y - p.y) * zoom);
+    }
+    hitDist = Math.min(config.hitRadius, side / 4) / zoom;
+  }
 
   let nearest: HandleType | null = null;
   let best = hitDist * hitDist;
@@ -216,13 +226,15 @@ export function getCommitCancelPositions(
   const buttonRadius = (touch ? 22 : 12) / zoom;
   const gap = (touch ? 48 : 28) / zoom;
 
-  // Both buttons on the diagonal, the cancel button further out, so neither
-  // comes nearer a handle than the commit button does, however it is turned.
   const ux = len > 1e-6 ? dx / len : Math.SQRT1_2, uy = len > 1e-6 ? dy / len : -Math.SQRT1_2;
+  // The cancel button beside it, further along the float's own right (level
+  // with it on an upright float), so it stays clear of the handles however
+  // the float is turned or flipped.
+  const px = right.x || right.y ? right.x : 1, py = right.x || right.y ? right.y : 0;
 
   return {
     commitCenter: { x: tr.x + ux * offsetPx, y: tr.y + uy * offsetPx },
-    cancelCenter: { x: tr.x + ux * (offsetPx + gap), y: tr.y + uy * (offsetPx + gap) },
+    cancelCenter: { x: tr.x + ux * offsetPx + px * gap, y: tr.y + uy * offsetPx + py * gap },
     buttonRadius,
   };
 }

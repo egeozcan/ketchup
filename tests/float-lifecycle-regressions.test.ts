@@ -106,13 +106,13 @@ describe('touches, missed releases and context menus', () => {
   const touch = (pointerId: number, clientX: number, clientY: number) =>
     ({ button: 0, pointerId, clientX, clientY, pointerType: 'touch', preventDefault() {} }) as unknown as PointerEvent;
 
-  it('places a stamp when a tap lifts, not when it lands', () => {
+  it('places a stamp when a touch lifts, where it lifts (it is previewed under the finger)', () => {
     const { canvas, stamp } = setupTool('stamp');
     (canvas as any)._onPointerDown(touch(1, 40, 40));
     expect(stamp).not.toHaveBeenCalled();
-    (canvas as any)._onPointerUp(touch(1, 42, 41));
+    (canvas as any)._onPointerUp(touch(1, 72, 61));
     expect(stamp).toHaveBeenCalledTimes(1);
-    expect(stamp.mock.calls[0].slice(1, 3)).toEqual([40, 40]);
+    expect(stamp.mock.calls[0].slice(1, 3)).toEqual([72, 61]);
     // Nothing left counted as down.
     expect(canvas.isGestureActive()).toBe(false);
   });
@@ -130,6 +130,77 @@ describe('touches, missed releases and context menus', () => {
     }
   });
 
+  it('forgets a finger that lifted off the canvas once a new touch begins', () => {
+    const { canvas } = setupTool('pencil');
+    // A pinch whose first finger lifted somewhere its release never reached.
+    (canvas as any)._pointers.set(7, { x: 0, y: 0, type: 'touch' });
+    (canvas as any)._onPointerDown({ ...touch(8, 40, 40), isPrimary: true });
+    expect([...(canvas as any)._pointers.keys()]).toEqual([8]);
+    expect((canvas as any)._pinching).toBe(false);
+  });
+
+  it('keeps hold of both pinch fingers, so their releases always arrive', () => {
+    const { canvas } = setupTool('pencil');
+    const capture = vi.spyOn(canvas.mainCanvas, 'setPointerCapture');
+    (canvas as any)._onPointerDown(touch(1, 40, 40));
+    (canvas as any)._onPointerDown(touch(2, 70, 70));
+    expect(capture.mock.calls.map(c => c[0]).sort()).toEqual(expect.arrayContaining([1, 2]));
+  });
+
+  it('ignores a palm resting on the screen during a pen stroke', () => {
+    const { canvas } = setupTool('pencil');
+    const pen = { button: 0, pointerId: 5, clientX: 20, clientY: 20, pointerType: 'pen', isPrimary: true, pressure: 0.5, preventDefault() {} };
+    (canvas as any)._onPointerDown(pen);
+    (canvas as any)._onPointerDown({ ...touch(6, 60, 60), isPrimary: true });
+    expect((canvas as any)._pinching).toBe(false);
+    expect((canvas as any)._drawing).toBe(true);
+    (canvas as any)._onPointerUp(touch(6, 60, 60));
+    expect((canvas as any)._drawing).toBe(true);
+  });
+
+  it('puts a float back where it was grabbed when the finger turns out to start a pinch', () => {
+    const { canvas } = setupTool('select');
+    const tm = float();
+    (canvas as any)._transformManager = tm;
+    (canvas as any)._onPointerDown(touch(1, 23, 23));
+    (canvas as any)._onPointerMove(touch(1, 33, 30));
+    (canvas as any)._onPointerDown(touch(2, 80, 80));
+    expect([tm.x, tm.y]).toEqual([20, 20]);
+  });
+
+  it('gives crop handles a finger-sized reach on touch', async () => {
+    const { hitTestCropHandle } = await import('../src/tools/crop.ts');
+    const rect = { x: 50, y: 50, w: 200, h: 150 };
+    // 12 px outside the right edge's handle.
+    expect(hitTestCropHandle(rect, { x: 262, y: 125 }, 1)).toBeNull();
+    expect(hitTestCropHandle(rect, { x: 262, y: 125 }, 1, 20)).toBe('e');
+  });
+
+  it('keeps typing when a pinch starts outside the text box', () => {
+    const { canvas } = setupTool('text');
+    (canvas as any)._textEditing = true;
+    (canvas as any)._textPosition = { x: 10, y: 10 };
+    const commit = vi.spyOn(canvas as any, '_commitText').mockImplementation(() => {});
+    (canvas as any)._onPointerDown(touch(1, 90, 90));
+    (canvas as any)._onPointerDown(touch(2, 95, 60));
+    (canvas as any)._onPointerUp(touch(2, 95, 60));
+    (canvas as any)._onPointerUp(touch(1, 90, 90));
+    expect(commit).not.toHaveBeenCalled();
+    // A plain tap outside still commits, when it lifts.
+    (canvas as any)._onPointerDown({ ...touch(3, 90, 90), isPrimary: true });
+    (canvas as any)._onPointerUp(touch(3, 90, 90));
+    expect(commit).toHaveBeenCalled();
+  });
+
+  it('keeps a crop rectangle when a pinch starts outside it', () => {
+    const { canvas } = setupTool('crop');
+    const rect = { x: 10, y: 10, w: 30, h: 30 };
+    (canvas as any)._cropRectValue = { ...rect };
+    (canvas as any)._onPointerDown(touch(1, 80, 80));
+    (canvas as any)._onPointerDown(touch(2, 90, 90));
+    expect((canvas as any)._cropRectValue).toEqual(rect);
+  });
+
   it('ends a gesture whose mouse release was never seen', () => {
     const { canvas } = setupTool('select');
     (canvas as any)._transformManager = float();
@@ -138,6 +209,18 @@ describe('touches, missed releases and context menus', () => {
     (canvas as any)._onPointerMove({ buttons: 0, pointerId: 1, clientX: 30, clientY: 30, pointerType: 'mouse' } as PointerEvent);
     expect((canvas as any)._transformManager._interaction.type).toBe('idle');
     expect(canvas.isGestureActive()).toBe(false);
+  });
+
+  it('ends a gesture whose release was missed where it was last pressed, not where the mouse wandered', () => {
+    const { canvas } = setupTool('select');
+    const tm = new TransformManager(new ImageData(40, 40), { x: 20, y: 20, w: 40, h: 40 }, makeCanvas(100, 100), 1, { x: 0, y: 0 });
+    (canvas as any)._transformManager = tm;
+    const mouse = (buttons: number, clientX: number, clientY: number) =>
+      ({ button: 0, buttons, pointerId: 1, clientX, clientY, pointerType: 'mouse', isPrimary: true, preventDefault() {} }) as unknown as PointerEvent;
+    (canvas as any)._onPointerDown(mouse(1, 40, 40));
+    (canvas as any)._onPointerMove(mouse(1, 50, 47));
+    (canvas as any)._onPointerMove(mouse(0, 95, 90));
+    expect([tm.x, tm.y]).toEqual([30, 27]);
   });
 
   it('keeps the context menu away from a transform (Ctrl+click on macOS)', () => {

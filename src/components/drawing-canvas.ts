@@ -16,6 +16,7 @@ import { drawSelectionRect } from '../tools/select.js';
 import { drawCropOverlay, hitTestCropHandle, parseAspectRatio, constrainCropToRatio, type CropRect, type CropHandle } from '../tools/crop.js';
 import { drawText, measureTextBlock, buildFontString, LINE_HEIGHT } from '../tools/text.js';
 import { TransformManager } from '../transform/transform-manager.js';
+import { HANDLE_CONFIG_TOUCH } from '../transform/transform-types.js';
 import { detectContentBounds } from '../transform/transform-math.js';
 import { diffBounds, cropImageData, type PixelRect } from '../utils/image-diff.js';
 import './resize-dialog.js';
@@ -37,6 +38,17 @@ export function exportFileBaseName(projectName: string | undefined): string {
     .replace(/\s+/g, ' ')
     .replace(/^[.\s]+|[.\s]+$/g, '');
   return cleaned || 'drawing';
+}
+
+/** A pointer release at (clientX, clientY), standing in for one that was missed. */
+function releasedAt(e: PointerEvent, clientX: number, clientY: number): PointerEvent {
+  return {
+    pointerId: e.pointerId, pointerType: e.pointerType, isPrimary: e.isPrimary,
+    button: 0, buttons: 0, clientX, clientY, pressure: 0,
+    tiltX: e.tiltX, tiltY: e.tiltY, twist: e.twist, width: e.width, height: e.height,
+    timeStamp: e.timeStamp, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey,
+    preventDefault: () => e.preventDefault(),
+  } as PointerEvent;
 }
 
 @customElement('drawing-canvas')
@@ -145,7 +157,11 @@ export class DrawingCanvas extends LitElement {
   private static readonly ZOOM_STEP = 1.1;
 
   // --- Multi-touch state ---
-  private _pointers = new Map<number, { x: number; y: number }>();
+  private _pointers = new Map<number, { x: number; y: number; type: string }>();
+  /** Touches that landed during a pen stroke: a resting palm, ignored until they lift. */
+  private _palmPointers = new Set<number>();
+  /** The two pointers a pinch is following; when that pair changes it starts afresh. */
+  private _pinchPair = '';
   private _pinching = false;
   private _lastPinchDist = 0;
   private _lastPinchMidX = 0;
@@ -212,6 +228,8 @@ export class DrawingCanvas extends LitElement {
   private _cropHandle: CropHandle | null = null;
   private _cropDragOrigin: Point | null = null;
   private _cropRectOrigin: CropRect | null = null;
+  /** The rect a new crop drag replaced, restored if that drag turns out to start a pinch. */
+  private _cropRectBeforeNew: CropRect | null = null;
   /** Drives the on-canvas Apply/Cancel buttons. */
   @state() private _cropActionsVisible = false;
 
@@ -1848,6 +1866,20 @@ export class DrawingCanvas extends LitElement {
     if (previewCtx) previewCtx.clearRect(0, 0, this._vw, this._vh);
   }
 
+  /** Blurs a focused form field elsewhere in the app, applying a value typed in it. */
+  private _blurFocusedField() {
+    let el: Element | null = document.activeElement;
+    while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
+    if (el !== this._textAreaEl && (el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement)) {
+      el.blur();
+    }
+  }
+
+  private _isInTextBox(p: Point): boolean {
+    const box = this._getTextBoundingBox();
+    return p.x >= box.x && p.x <= box.x + box.w && p.y >= box.y && p.y <= box.y + box.h;
+  }
+
   /** On macOS Ctrl+click opens it, and a transform uses Ctrl+drag. */
   private _onContextMenu = (e: Event) => {
     if (this._transformManager) e.preventDefault();
@@ -1960,8 +1992,25 @@ export class DrawingCanvas extends LitElement {
     // Re-measure once per gesture: panels and toolbars may have shifted the canvas
     // since the last pointer interaction.
     this._invalidateCanvasRect();
+    if (!this._replayingTap) {
+      // A touch while a pen is down is a resting palm, not a second finger.
+      if (e.pointerType === 'touch' && [...this._pointers.values()].some(p => p.type === 'pen')) {
+        this._palmPointers.add(e.pointerId);
+        return;
+      }
+      // A primary pointer means no other of its kind is down: any still
+      // listed lost its release (lifted off the canvas, say).
+      if (e.isPrimary) {
+        for (const [id, p] of this._pointers) {
+          if (id !== e.pointerId && p.type === e.pointerType) this._pointers.delete(id);
+        }
+      }
+      // A value typed in a panel field applies when the field blurs, which
+      // this press would only do after this handler; apply it first.
+      this._blurFocusedField();
+    }
     // Track all active pointers for multi-touch
-    this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
 
     // Two fingers → enter pinch/pan mode
     if (this._pointers.size === 2) {
@@ -1994,10 +2043,15 @@ export class DrawingCanvas extends LitElement {
       // Touch gets bigger handles and buttons, laid out differently; a first
       // tap on the ✓/✗ drawn for the mouse still means them.
       const tm = this._transformManager;
-      if (e.pointerType === 'touch' && !tm.touchMode && !tm.hitTestButton(p)) tm.setTouchMode(true);
+      if (e.pointerType === 'touch' && !tm.touchMode && !tm.hitTestButton(p)) {
+        tm.setTouchMode(true);
+        // A touch-layout button here was never on screen: this tap only
+        // switches layouts.
+        if (tm.hitTestButton(p)) return;
+      }
       const modifiers = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey };
       this._transformManager.onPointerDown(p, modifiers);
-      this.mainCanvas.setPointerCapture(e.pointerId);
+      if (!this._replayingTap) this.mainCanvas.setPointerCapture(e.pointerId);
       return;
     }
 
@@ -2005,7 +2059,8 @@ export class DrawingCanvas extends LitElement {
 
     if (e.pointerType === 'touch' && !this._replayingTap && (
       activeTool === 'stamp' || activeTool === 'fill' || activeTool === 'eyedropper'
-      || (activeTool === 'text' && !this._textEditing))) {
+      // A new text box, or committing one by tapping outside it.
+      || (activeTool === 'text' && (!this._textEditing || !this._isInTextBox(this._getDocPoint(e)))))) {
       // Keeps the text box's textarea focusable, as below.
       if (activeTool === 'text') e.preventDefault();
       this._pendingTap = { pointerId: e.pointerId, down: e };
@@ -2030,7 +2085,7 @@ export class DrawingCanvas extends LitElement {
     if (activeTool === 'crop') {
       this.mainCanvas.setPointerCapture(e.pointerId);
       const p = this._getDocPoint(e);
-      this._handleCropPointerDown(p);
+      this._handleCropPointerDown(p, e.pointerType === 'touch');
       return;
     }
 
@@ -2171,16 +2226,18 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _onPointerMove(e: PointerEvent) {
+    if (this._palmPointers.has(e.pointerId)) return;
     // A mouse release never seen (a context menu took it, say) leaves a
-    // gesture running with no button held: end it now.
-    if (e.pointerType === 'mouse' && e.buttons === 0 && this._pointers.has(e.pointerId)) {
-      this._onPointerUp(e);
+    // gesture running with no button held: end it where it was last pressed.
+    const tracked = this._pointers.get(e.pointerId);
+    if (e.pointerType === 'mouse' && e.buttons === 0 && tracked) {
+      this._onPointerUp(releasedAt(e, tracked.x, tracked.y));
       return;
     }
 
     // Update pointer position
-    if (this._pointers.has(e.pointerId)) {
-      this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (tracked) {
+      this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: tracked.type });
     }
 
     const rect = this._getCanvasRect();
@@ -2335,6 +2392,7 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _onPointerUp(e: PointerEvent) {
+    if (this._palmPointers.delete(e.pointerId)) return;
     // Remove pointer from tracking
     this._pointers.delete(e.pointerId);
 
@@ -2351,10 +2409,12 @@ export class DrawingCanvas extends LitElement {
     const tap = this._pendingTap;
     if (tap && tap.pointerId === e.pointerId) {
       this._pendingTap = null;
-      // The eyedropper samples where the finger lifts; the rest act where it
-      // landed, unless it slid off into a drag.
+      // The eyedropper samples, and a stamp (previewed under the finger) lands,
+      // where the finger lifts; the rest act where it landed, unless it slid
+      // off into a drag.
+      const tool = this.ctx.state.activeTool;
       const slid = Math.hypot(e.clientX - tap.down.clientX, e.clientY - tap.down.clientY) > 10;
-      const act = this.ctx.state.activeTool === 'eyedropper' ? e : slid ? null : tap.down;
+      const act = tool === 'eyedropper' || tool === 'stamp' ? e : slid ? null : tap.down;
       if (act) {
         this._replayingTap = true;
         try {
@@ -2512,6 +2572,7 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _onPointerCancel(e: PointerEvent) {
+    if (this._palmPointers.delete(e.pointerId)) return;
     this._pointers.delete(e.pointerId);
     if (this._pendingTap?.pointerId === e.pointerId) this._pendingTap = null;
     if (this._pinching) {
@@ -2528,7 +2589,8 @@ export class DrawingCanvas extends LitElement {
    * Cancel any in-progress tool operation and release pointer capture.
    * Called when a second pointer arrives (entering pinch/pan mode).
    */
-  private _cancelCurrentTool(pointerId: number) {
+  /** `revert`: the gesture turned out to be a pinch's first finger, so undo what it started. */
+  private _cancelCurrentTool(pointerId: number, revert = false) {
     // Release pointer capture if held
     try { this.mainCanvas.releasePointerCapture(pointerId); } catch { /* not captured */ }
 
@@ -2556,9 +2618,9 @@ export class DrawingCanvas extends LitElement {
       this._endPan();
     }
 
-    // End a transform gesture where it is, so a finger left on the screen
-    // stops driving it and a drafted preview warp is redone in full.
-    if (this._transformManager?.cancelInteraction()) {
+    // End a transform gesture where it is (or was, for a pinch), so a finger
+    // left on the screen stops driving it and a drafted warp is redone in full.
+    if (this._transformManager?.cancelInteraction(revert)) {
       this.composite();
     }
 
@@ -2582,8 +2644,11 @@ export class DrawingCanvas extends LitElement {
       this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);
     }
 
-    // Cancel crop drag (keep existing rect, normalized so it stays committable)
+    // Cancel crop drag (keep existing rect, normalized so it stays committable;
+    // for a pinch, the rect as it was before)
     const wasCropGesture = this._cropDragging || this._cropHandle !== null;
+    if (revert && this._cropDragging) this._cropRect = this._cropRectBeforeNew;
+    else if (revert && this._cropHandle !== null && this._cropRectOrigin) this._cropRect = { ...this._cropRectOrigin };
     this._cropDragging = false;
     this._cropHandle = null;
     this._cropDragOrigin = null;
@@ -2605,13 +2670,19 @@ export class DrawingCanvas extends LitElement {
   private _enterPinchMode(e: PointerEvent) {
     // A held tap becomes the pinch's first finger: nothing to carry out.
     this._pendingTap = null;
-    // Cancel whatever the first finger was doing
+    // Undo whatever the first finger had started.
     for (const [id] of this._pointers) {
       if (id !== e.pointerId) {
-        this._cancelCurrentTool(id);
+        this._cancelCurrentTool(id, true);
         break;
       }
     }
+    // Both fingers' releases must come here, even off the canvas, or a
+    // finger would stay counted as down.
+    for (const id of this._pointers.keys()) {
+      try { this.mainCanvas.setPointerCapture(id); } catch { /* already gone */ }
+    }
+    this._pinchPair = [...this._pointers.keys()].slice(0, 2).join();
 
     this._pinching = true;
     const pts = [...this._pointers.values()];
@@ -2626,6 +2697,15 @@ export class DrawingCanvas extends LitElement {
   private _updatePinch() {
     const pts = [...this._pointers.values()];
     if (pts.length < 2) return;
+    // A third finger took over from a lifted one: start from where they are.
+    const pair = [...this._pointers.keys()].slice(0, 2).join();
+    if (pair !== this._pinchPair) {
+      this._pinchPair = pair;
+      this._lastPinchDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+      this._lastPinchMidX = (pts[0].x + pts[1].x) / 2;
+      this._lastPinchMidY = (pts[0].y + pts[1].y) / 2;
+      return;
+    }
 
     const dx = pts[1].x - pts[0].x;
     const dy = pts[1].y - pts[0].y;
@@ -2682,9 +2762,11 @@ export class DrawingCanvas extends LitElement {
     this._startPoint = p;
   }
 
-  private _handleCropPointerDown(p: Point) {
+  private _handleCropPointerDown(p: Point, touch = false) {
+    this._cropRectBeforeNew = null;
     if (this._cropRect) {
-      const handle = hitTestCropHandle(this._cropRect, p, this._zoom);
+      // Fingers get handles of the size transforms give them.
+      const handle = hitTestCropHandle(this._cropRect, p, this._zoom, touch ? HANDLE_CONFIG_TOUCH.hitRadius : undefined);
       if (handle && handle !== 'move') {
         this._cropHandle = handle;
         this._cropDragOrigin = { x: p.x, y: p.y };
@@ -2700,6 +2782,7 @@ export class DrawingCanvas extends LitElement {
         return;
       }
     }
+    this._cropRectBeforeNew = this._cropRect;
     this._cropRect = { x: p.x, y: p.y, w: 0, h: 0 };
     this._cropDragging = true;
     this._cropDragOrigin = { x: p.x, y: p.y };
