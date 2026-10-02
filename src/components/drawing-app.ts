@@ -850,9 +850,10 @@ export class DrawingApp extends LitElement {
 
   /**
    * Asks the tab editing project `id` to save and let go, and waits until it
-   * has (or has closed). If it doesn't answer, it may be frozen in the
-   * background or just busy (a long save, a dialog): the user can take the
-   * lock from it (`_forceTakeOver`). Resolves false if its save failed: it
+   * has (or has closed). If it doesn't answer within 2 s, it may be frozen
+   * in the background or just busy (a long save, a dialog); if it answers
+   * but hasn't let go 15 s later, its save may be stuck: either way the
+   * user can take the lock from it (`_forceTakeOver`). Resolves false if its save failed: it
    * keeps the project, and that work.
    */
   private _takeOver(id: string): Promise<boolean> {
@@ -868,7 +869,12 @@ export class DrawingApp extends LitElement {
       };
       const onMessage = (e: MessageEvent) => {
         if (e.data?.id !== id) return;
-        if (e.data.type === 'releasing') answered();
+        if (e.data.type === 'releasing') {
+          answered();
+          // Saving to let go; if that seems stuck, taking over is offered
+          // again (a save it has under way still lands first).
+          timer = setTimeout(offerTakeOver, 15000);
+        }
         // Another tab asking at the same time got it.
         else if (e.data.type === 'taken') this._cancelLockRequests();
         // Ends the wait below.
@@ -888,7 +894,7 @@ export class DrawingApp extends LitElement {
         if (!stealing) done(got);
       });
       const request = this._lockRequest;
-      timer = setTimeout(() => {
+      const offerTakeOver = () => {
         // Unless something else was asked for since (which ended the wait).
         if (request !== this._lockRequest) return;
         this._otherTabSilent = true;
@@ -897,7 +903,8 @@ export class DrawingApp extends LitElement {
           answered();
           void this._lockProject(id, 'steal').then(done);
         };
-      }, 2000);
+      };
+      timer = setTimeout(offerTakeOver, 2000);
       tabs.postMessage({ type: 'release', id });
     });
   }
@@ -2755,11 +2762,14 @@ export class DrawingApp extends LitElement {
     void backend.dispose();
   }
 
+  /** A file dropped on the read-only overlay isn't opened by the browser in place of the app. */
+  private _ignoreDrop = (e: DragEvent) => e.preventDefault();
+
   /** The read-only overlay's "Use here" (as `label`), and what follows a press. */
   private _renderClaim(label: string) {
     if (this._waitingForTab) {
       return this._otherTabSilent ? html`
-        <p>The other tab isn't answering. It may be busy (a dialog, a long save) or frozen in the background. Taking over keeps any changes it hasn't saved there, to keep as a new project.</p>
+        <p>The other tab hasn't let go yet. It may be busy (a dialog, a long save) or frozen in the background. Taking over keeps any changes it hasn't saved there, to keep as a new project.</p>
         <button @click=${() => this._forceTakeOver?.()}>Use here anyway</button>
       ` : html`<p>Waiting for the other tab to save…</p>`;
     }
@@ -2781,7 +2791,7 @@ export class DrawingApp extends LitElement {
       ${!this._isMobile ? html`<tool-settings ?inert=${this._stranded}></tool-settings>` : ''}
       <div class="main-area">
         ${this._readOnly ? html`
-          <div class="read-only" role="alert">
+          <div class="read-only" role="alert" @dragover=${this._ignoreDrop} @drop=${this._ignoreDrop}>
             ${this._handingOver ? html`<p>Saving, for the tab that asked to edit this project…</p>` : this._stranded ? html`
               <p>Another tab took this project over before this tab saved its latest changes. They are still here.</p>
               ${this._waitingForTab || this._claiming ? this._renderClaim('') : html`

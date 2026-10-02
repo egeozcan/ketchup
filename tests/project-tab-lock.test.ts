@@ -198,6 +198,30 @@ describe('one tab edits a project at a time', () => {
     expect(locks.held.has('ketchup-project:p')).toBe(true);
   });
 
+  it('offers to take over again when the editing tab answers but has not let go after a while', async () => {
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    fakeLocks();
+    const { app: editing } = makeApp();
+    await (editing as any)._enterProject(meta('p'), async () => {});
+    (editing as any)._dirty = true;
+    (editing as any)._flushPendingSaveAndWait = vi.fn(() => new Promise(() => {}));
+    const { app: shown } = makeApp();
+    await (shown as any)._enterProject(meta('p'), async () => {});
+    const load = vi.fn(async () => {});
+    (shown as any)._loadProject = load;
+
+    vi.useFakeTimers();
+    const done = (shown as any)._editHere(true);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((shown as any)._otherTabSilent).toBe(false);
+    await vi.advanceTimersByTimeAsync(12000);
+    expect((shown as any)._otherTabSilent).toBe(true);
+    (shown as any)._forceTakeOver();
+    await vi.advanceTimersByTimeAsync(100);
+    await done;
+    expect(load).toHaveBeenCalled();
+  });
+
   it('when two tabs ask at once, the one that does not get the project stops waiting', async () => {
     vi.stubGlobal('BroadcastChannel', FakeChannel);
     fakeLocks();
