@@ -81,3 +81,20 @@ describe('keyboard leaving panel fields', () => {
     }
   });
 });
+
+describe('focusEditor', () => {
+  it('stops at the editor: a focusable wrapper around it doesn\'t hear its shortcuts', () => {
+    const wrapper = document.createElement('div');
+    wrapper.tabIndex = 0;
+    document.body.append(wrapper);
+    const editor = document.createElement('drawing-app');
+    wrapper.attachShadow({ mode: 'open' }).append(editor);
+    const field = document.createElement('input');
+    editor.attachShadow({ mode: 'open' }).append(field);
+    field.focus();
+
+    expect(focusEditor(field)).toBe(false);
+    expect(wrapper.shadowRoot!.activeElement).toBe(editor);
+    wrapper.remove();
+  });
+});

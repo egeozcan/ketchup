@@ -570,25 +570,43 @@ describe('app shortcuts and layer changes with a float', () => {
     expect(canvas.clearSelection).not.toHaveBeenCalled();
   });
 
-  it('takes keys pressed with nothing focused, unless the user last clicked away from it', () => {
+  it('takes keys pressed with nothing focused, unless the user last clicked away from it or it can\'t take focus', () => {
     const { app } = makeApp();
     const handled = vi.fn();
     (app as any)._onKeyDown = handled;
+    let takesFocus = true;
+    vi.spyOn(app, 'focus').mockImplementation(() => {});
+    const active = vi.spyOn(document, 'activeElement', 'get').mockImplementation(() => (takesFocus ? app : document.body));
     const stray = { ...key('z'), target: document.body, defaultPrevented: false } as unknown as KeyboardEvent;
-    // Focus fell from something inside (a button disabled under it, say).
-    (app as any)._onFocusIn();
-    (app as any)._onStrayKeyDown(stray);
-    expect(handled).toHaveBeenCalledTimes(1);
+    try {
+      // Focus fell from something inside (a button disabled under it, say).
+      (app as any)._onDocumentFocusIn({ composedPath: () => [app] });
+      (app as any)._onStrayKeyDown(stray);
+      expect(handled).toHaveBeenCalledTimes(1);
+      // Tab goes on from where focus was.
+      (app as any)._onStrayKeyDown({ ...stray, key: 'Tab' });
+      expect(handled).toHaveBeenCalledTimes(1);
+      // Hidden or inert: the page's keys aren't its.
+      takesFocus = false;
+      (app as any)._onStrayKeyDown(stray);
+      expect(handled).toHaveBeenCalledTimes(1);
+      takesFocus = true;
 
-    (app as any)._onDocumentPointerDown({ composedPath: () => [document.body] });
-    (app as any)._onStrayKeyDown(stray);
-    expect(handled).toHaveBeenCalledTimes(1);
+      (app as any)._onDocumentPointerDown({ composedPath: () => [document.body] });
+      (app as any)._onStrayKeyDown(stray);
+      expect(handled).toHaveBeenCalledTimes(1);
 
-    (app as any)._onDocumentPointerDown({ composedPath: () => [app] });
-    (app as any)._onStrayKeyDown({ ...stray, target: document.createElement('input') });
-    expect(handled).toHaveBeenCalledTimes(1);
+      (app as any)._onDocumentPointerDown({ composedPath: () => [app] });
+      (app as any)._onStrayKeyDown({ ...stray, target: document.createElement('input') });
+      expect(handled).toHaveBeenCalledTimes(1);
+      // Focus moved into another editor by keyboard: not this one's either.
+      (app as any)._onDocumentFocusIn({ composedPath: () => [document.createElement('drawing-app')] });
+      (app as any)._onStrayKeyDown(stray);
+      expect(handled).toHaveBeenCalledTimes(1);
+    } finally {
+      active.mockRestore();
+    }
   });
-
   it('deletes an active float under any tool', () => {
     const { app, canvas } = makeApp({ isTransformActive: vi.fn(() => true) });
     (app as any)._state = { ...(app as any)._state, activeTool: 'pencil' };

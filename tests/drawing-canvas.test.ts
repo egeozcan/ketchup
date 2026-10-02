@@ -345,6 +345,24 @@ describe('DrawingCanvas', () => {
     expect((canvas as any)._beforeDrawCanvas).not.toBeNull();
   });
 
+  it('places a dropped image on the part of the document in view, but inside the document', async () => {
+    const { canvas } = setupCanvas({ width: 200, height: 200 });
+    const img = new Image();
+    Object.defineProperty(img, 'naturalWidth', { value: 40 });
+    Object.defineProperty(img, 'naturalHeight', { value: 30 });
+    Object.defineProperty(canvas, 'updateComplete', { value: Promise.resolve(true) });
+    (canvas as any)._ctx.value.addLayer = vi.fn();
+    // At 200%, only the document's last 5 columns and top half are on screen.
+    (canvas as any)._zoom = 2;
+    (canvas as any)._panX = -390;
+    (canvas as any)._panY = 0;
+
+    await (canvas as any)._handleExternalImage(img, 'Dropped Image');
+
+    const tm = (canvas as any)._transformManager;
+    expect([tm.x, tm.y]).toEqual([160, 35]);
+  });
+
   it('reports canUndo when a transform is active with empty history', () => {
     const { canvas } = setupCanvas();
     (canvas as any)._history = [];

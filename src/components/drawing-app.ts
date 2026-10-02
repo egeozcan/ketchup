@@ -2090,7 +2090,7 @@ export class DrawingApp extends LitElement {
     });
     this._mobileObserver.observe(this);
     this.addEventListener('keydown', this._onKeyDown);
-    this.addEventListener('focusin', this._onFocusIn);
+    document.addEventListener('focusin', this._onDocumentFocusIn);
     document.addEventListener('keydown', this._onStrayKeyDown);
     document.addEventListener('pointerdown', this._onDocumentPointerDown, true);
     window.addEventListener('beforeunload', this._onBeforeUnload);
@@ -2104,17 +2104,23 @@ export class DrawingApp extends LitElement {
    */
   private _strayKeysOurs = false;
 
-  private _onFocusIn = () => { this._strayKeysOurs = true; };
+  // Focus or a press anywhere says whose they are (another editor's, say).
+  private _onDocumentFocusIn = (e: FocusEvent) => {
+    this._strayKeysOurs = e.composedPath().includes(this);
+  };
 
   private _onDocumentPointerDown = (e: PointerEvent) => {
     this._strayKeysOurs = e.composedPath().includes(this);
   };
 
   private _onStrayKeyDown = (e: KeyboardEvent) => {
-    if (!this._strayKeysOurs || e.defaultPrevented) return;
+    // Tab moves on from where focus was, as the browser does.
+    if (!this._strayKeysOurs || e.defaultPrevented || e.key === 'Tab') return;
     if (e.target !== document.body && e.target !== document.documentElement) return;
-    // Take the keyboard back, so later keys come straight here.
+    // Take the keyboard back, so later keys come straight here; an editor
+    // that can't take it (hidden, inert, no tabindex) leaves keys alone.
     this.focus({ preventScroll: true });
+    if (document.activeElement !== this) return;
     this._onKeyDown(e);
   };
 
@@ -2177,7 +2183,7 @@ export class DrawingApp extends LitElement {
     this._mobileObserver?.disconnect();
     this._mobileObserver = null;
     this.removeEventListener('keydown', this._onKeyDown);
-    this.removeEventListener('focusin', this._onFocusIn);
+    document.removeEventListener('focusin', this._onDocumentFocusIn);
     document.removeEventListener('keydown', this._onStrayKeyDown);
     document.removeEventListener('pointerdown', this._onDocumentPointerDown, true);
     window.removeEventListener('beforeunload', this._onBeforeUnload);

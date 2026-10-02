@@ -254,6 +254,42 @@ describe('LayersPanel menus and rows', () => {
     expect((panel as any)._draggedLayerId).toBe('l1');
   });
 
+  it('keeps focus on the Move button pressed from the keyboard as its row moves', async () => {
+    const host = document.createElement('div');
+    const panel = new LayersPanel();
+    const a = makeLayer(10, 10, { id: 'a' }), b = makeLayer(10, 10, { id: 'b' }), c = makeLayer(10, 10, { id: 'c' });
+    let provider!: ContextProvider<typeof drawingContext>;
+    const context = {
+      state: makeState({ layers: [a, b, c], activeLayerId: 'a', layersPanelOpen: true }),
+      isMobile: false,
+      reorderLayer: (id: string, to: number) => {
+        const layers = context.state.layers.filter(l => l.id !== id);
+        layers.splice(to, 0, context.state.layers.find(l => l.id === id)!);
+        context.state = { ...context.state, layers };
+        provider.setValue({ ...context });
+        // A browser drops focus from a node that moves; jsdom doesn't.
+        (panel.shadowRoot!.activeElement as HTMLElement | null)?.blur();
+      },
+    } as unknown as DrawingContextValue;
+    provider = new ContextProvider(host, { context: drawingContext, initialValue: context });
+    host.append(panel);
+    document.body.append(host);
+    try {
+      await panel.updateComplete;
+      const button = (id: string, title: string) =>
+        panel.shadowRoot!.querySelector<HTMLButtonElement>(`[data-layer-id="${id}"] .reorder-btn[title="${title}"]`)!;
+      for (const title of ['Move up', 'Move up', 'Move down']) {
+        button('a', title).focus();
+        button('a', title).click();
+        await panel.updateComplete;
+        const focused = panel.shadowRoot!.activeElement as HTMLElement | null;
+        expect(focused?.closest('[data-layer-id]')?.getAttribute('data-layer-id'), title).toBe('a');
+      }
+    } finally {
+      host.remove();
+    }
+  });
+
   it('keeps each row with its layer when layers are reordered, so focus stays on the same layer', async () => {
     const host = document.createElement('div');
     const a = makeLayer(10, 10, { id: 'a' }), b = makeLayer(10, 10, { id: 'b' });

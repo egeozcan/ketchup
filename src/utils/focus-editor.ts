@@ -14,6 +14,8 @@ export function focusEditor(from: Node): boolean {
       host.focus({ preventScroll: true });
       return true;
     }
+    // Not past the editor: what wraps it doesn't hear its shortcuts.
+    if (host.localName === 'drawing-app') return false;
   }
   return false;
 }

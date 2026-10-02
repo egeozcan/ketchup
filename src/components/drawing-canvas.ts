@@ -3310,8 +3310,11 @@ export class DrawingCanvas extends LitElement {
     const vy0 = Math.max(0, -this._panY / this._zoom), vy1 = Math.min(this._docHeight, (this._vh - this._panY) / this._zoom);
     const cx = vx1 > vx0 ? (vx0 + vx1) / 2 : this._docWidth / 2;
     const cy = vy1 > vy0 ? (vy0 + vy1) / 2 : this._docHeight / 2;
-    const x = Math.round(cx - w / 2);
-    const y = Math.round(cy - h / 2);
+    // Inside the document where it fits (a sliver of it in view would
+    // hang it off the edge, where commit clips it).
+    const within = (v: number, size: number, doc: number) => (size <= doc ? Math.min(Math.max(v, 0), doc - size) : v);
+    const x = within(Math.round(cx - w / 2), w, this._docWidth);
+    const y = within(Math.round(cy - h / 2), h, this._docHeight);
 
     const src = document.createElement('canvas');
     src.width = w;

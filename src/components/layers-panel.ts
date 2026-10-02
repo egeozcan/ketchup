@@ -637,7 +637,7 @@ export class LayersPanel extends LitElement {
     const layers = this.ctx.state.layers;
     const idx = layers.findIndex(l => l.id === layer.id);
     if (idx < layers.length - 1) {
-      this.ctx.reorderLayer(layer.id, idx + 1);
+      this._reorderFrom(e, layer.id, idx + 1);
     }
   }
 
@@ -646,8 +646,29 @@ export class LayersPanel extends LitElement {
     const layers = this.ctx.state.layers;
     const idx = layers.findIndex(l => l.id === layer.id);
     if (idx > 0) {
-      this.ctx.reorderLayer(layer.id, idx - 1);
+      this._reorderFrom(e, layer.id, idx - 1);
     }
+  }
+
+  /** A Move up/down button's press, whose focus the row's move would drop. */
+  private _reorderFrom(e: Event, layerId: string, toIndex: number) {
+    const button = e.currentTarget as HTMLButtonElement | null;
+    if (button && this.shadowRoot?.activeElement === button) {
+      this._focusAfterReorder = { layerId, toIndex, title: button.title };
+    }
+    this.ctx.reorderLayer(layerId, toIndex);
+  }
+
+  private _focusAfterReorder: { layerId: string; toIndex: number; title: string } | null = null;
+
+  /** Once the moved row is drawn in its new place, focus its button again (the other one at the end of the list). */
+  private _restoreReorderFocus() {
+    const pending = this._focusAfterReorder;
+    if (!pending || this.ctx.state.layers[pending.toIndex]?.id !== pending.layerId) return;
+    this._focusAfterReorder = null;
+    const row = this.shadowRoot?.querySelector(`[data-layer-id="${pending.layerId}"]`);
+    const same = row?.querySelector<HTMLButtonElement>(`.reorder-btn[title="${pending.title}"]`);
+    (same && !same.disabled ? same : row?.querySelector<HTMLButtonElement>('.reorder-btn:not([disabled])'))?.focus();
   }
 
   // ── Pointer-based reorder ─────────────────
@@ -903,13 +924,16 @@ export class LayersPanel extends LitElement {
   private _fitContextMenu() {
     const menu = this.shadowRoot?.querySelector<HTMLElement>('.context-menu');
     if (!menu) return;
-    const { width, height } = menu.getBoundingClientRect();
-    const x = Math.max(0, Math.min(this._contextMenuX, window.innerWidth - width));
-    const y = Math.max(0, Math.min(this._contextMenuY, window.innerHeight - height));
+    const rect = menu.getBoundingClientRect();
+    // Where it is drawn against where it was put: inside the phone's sheet,
+    // which is transformed, `fixed` is relative to the sheet, not the window.
+    const ox = rect.left - this._contextMenuX, oy = rect.top - this._contextMenuY;
+    const x = Math.max(0, Math.min(this._contextMenuX, window.innerWidth - rect.width));
+    const y = Math.max(0, Math.min(this._contextMenuY, window.innerHeight - rect.height));
     // Straight onto the element: the menu is already drawn, and this needs no second render.
-    if (x !== this._contextMenuX || y !== this._contextMenuY) {
-      menu.style.left = `${x}px`;
-      menu.style.top = `${y}px`;
+    if (ox || oy || x !== this._contextMenuX || y !== this._contextMenuY) {
+      menu.style.left = `${x - ox}px`;
+      menu.style.top = `${y - oy}px`;
     }
   }
 
@@ -1212,6 +1236,7 @@ export class LayersPanel extends LitElement {
     if (this._contextMenuOpen && ['_contextMenuOpen', '_contextMenuX', '_contextMenuY'].some(k => changed.has(k))) {
       this._fitContextMenu();
     }
+    this._restoreReorderFocus();
 
     // Every viewport change (wheel zoom, pan, pinch) rebuilds the context value and
     // re-renders this panel, so painting thumbnails on every update would redraw
