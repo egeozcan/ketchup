@@ -218,7 +218,7 @@ describe('LayersPanel rename', () => {
       input.addEventListener('blur', e => (panel as any)._onRenameBlur('l1', e));
       (panel as any)._editingLayerId = 'l1';
 
-      (panel as any)._onRenameKeyDown('l1', { key: k, target: input, stopPropagation() {} });
+      (panel as any)._onRenameKeyDown('l1', { key: k, target: input, stopPropagation() {}, preventDefault() {} });
 
       // On the host itself, not still in the input (which would report it as active too).
       expect(document.activeElement, k).toBe(host);
@@ -233,12 +233,14 @@ describe('LayersPanel menus and rows', () => {
   it('keeps Escape that closes a menu from reaching the app, which would cancel a float', () => {
     const panel = new LayersPanel();
     (panel as any)._contextMenuOpen = true;
-    const open = { key: 'Escape', stopPropagation: vi.fn() };
+    const open = { key: 'Escape', stopPropagation: vi.fn(), preventDefault: vi.fn() };
     (panel as any)._onDocKeyDown(open);
     expect(open.stopPropagation).toHaveBeenCalled();
+    // Nor is it a host dialog's close request.
+    expect(open.preventDefault).toHaveBeenCalled();
     expect((panel as any)._contextMenuOpen).toBe(false);
 
-    const closed = { key: 'Escape', stopPropagation: vi.fn() };
+    const closed = { key: 'Escape', stopPropagation: vi.fn(), preventDefault: vi.fn() };
     (panel as any)._onDocKeyDown(closed);
     expect(closed.stopPropagation).not.toHaveBeenCalled();
   });
@@ -278,13 +280,16 @@ describe('LayersPanel menus and rows', () => {
       await panel.updateComplete;
       const button = (id: string, title: string) =>
         panel.shadowRoot!.querySelector<HTMLButtonElement>(`[data-layer-id="${id}"] .reorder-btn[title="${title}"]`)!;
-      for (const title of ['Move up', 'Move up', 'Move down']) {
-        button('a', title).focus();
-        button('a', title).click();
+      button('a', 'Move up').focus();
+      for (let i = 0; i < 3; i++) {
+        (panel.shadowRoot!.activeElement as HTMLElement).click();
         await panel.updateComplete;
         const focused = panel.shadowRoot!.activeElement as HTMLElement | null;
-        expect(focused?.closest('[data-layer-id]')?.getAttribute('data-layer-id'), title).toBe('a');
+        expect(focused?.closest('[data-layer-id]')?.getAttribute('data-layer-id')).toBe('a');
+        expect(focused?.getAttribute('title')).toBe('Move up');
       }
+      // At the top it stays put, and on the same button: a repeated key doesn't move it back.
+      expect(context.state.layers.map(l => l.id)).toEqual(['b', 'c', 'a']);
     } finally {
       host.remove();
     }

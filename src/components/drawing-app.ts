@@ -1065,9 +1065,12 @@ export class DrawingApp extends LitElement {
       e.preventDefault();
       this.canvas.commitCrop();
     } else if (e.key === 'Escape') {
+      // Used here, it isn't also a host dialog's close request.
       if (this._state.activeTool === 'crop' && this.canvas?.hasCropRect) {
+        e.preventDefault();
         this.canvas.cancelCrop();
       } else if (this.canvas?.hasExternalFloat) {
+        e.preventDefault();
         this.canvas.cancelExternalFloat();
       } else {
         this.canvas?.clearSelection();

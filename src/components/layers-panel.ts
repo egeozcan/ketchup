@@ -260,12 +260,14 @@ export class LayersPanel extends LitElement {
       line-height: 1;
     }
 
-    .reorder-btn:hover:not(:disabled) {
+    .reorder-btn:hover:not([aria-disabled="true"]) {
       background: #555;
       color: #fff;
     }
 
-    .reorder-btn:disabled {
+    /* Not :disabled: a button at the end of the list keeps keyboard focus
+       (it would jump to the other one, and a repeated key move it back). */
+    .reorder-btn[aria-disabled="true"] {
       opacity: 0.25;
       cursor: default;
     }
@@ -527,12 +529,15 @@ export class LayersPanel extends LitElement {
     if (e.key !== 'Escape' || this._editingLayerId || !keyIsForEditorOf(this, e)) return;
     // Seen first (capture) and kept from the app, which would take it to
     // cancel a float as well: a menu closes, or else the phone's sheet.
+    // Nor (preventDefault) a host dialog's close request.
     if (this._contextMenuOpen || this._dropdownOpen) {
       e.stopPropagation();
+      e.preventDefault();
       this._closeContextMenu();
       this._dropdownOpen = false;
     } else if (this._sheetOpen) {
       e.stopPropagation();
+      e.preventDefault();
       this.closeSheet();
     }
   };
@@ -627,6 +632,7 @@ export class LayersPanel extends LitElement {
       // The input goes; focus would fall to the page.
       focusEditor(this);
     } else if (e.key === 'Escape') {
+      e.preventDefault();
       this._editingLayerId = null;
       focusEditor(this);
     }
@@ -667,14 +673,13 @@ export class LayersPanel extends LitElement {
 
   private _focusAfterReorder: { layerId: string; toIndex: number; title: string } | null = null;
 
-  /** Once the moved row is drawn in its new place, focus its button again (the other one at the end of the list). */
+  /** Once the moved row is drawn in its new place, focus its button again. */
   private _restoreReorderFocus() {
     const pending = this._focusAfterReorder;
     if (!pending || this.ctx.state.layers[pending.toIndex]?.id !== pending.layerId) return;
     this._focusAfterReorder = null;
     const row = this.shadowRoot?.querySelector(`[data-layer-id="${pending.layerId}"]`);
-    const same = row?.querySelector<HTMLButtonElement>(`.reorder-btn[title="${pending.title}"]`);
-    (same && !same.disabled ? same : row?.querySelector<HTMLButtonElement>('.reorder-btn:not([disabled])'))?.focus();
+    row?.querySelector<HTMLButtonElement>(`.reorder-btn[title="${pending.title}"]`)?.focus();
   }
 
   // ── Pointer-based reorder ─────────────────
@@ -1161,13 +1166,13 @@ export class LayersPanel extends LitElement {
             <button
               class="reorder-btn"
               title="Move up"
-              ?disabled=${isTop}
+              aria-disabled=${isTop ? 'true' : 'false'}
               @click=${(e: Event) => this._moveUp(layer, e)}
             >&#9650;</button>
             <button
               class="reorder-btn"
               title="Move down"
-              ?disabled=${isBottom}
+              aria-disabled=${isBottom ? 'true' : 'false'}
               @click=${(e: Event) => this._moveDown(layer, e)}
             >&#9660;</button>
           </div>

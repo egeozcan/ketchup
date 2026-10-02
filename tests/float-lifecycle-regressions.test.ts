@@ -713,6 +713,15 @@ describe('app shortcuts and layer changes with a float', () => {
     expect(canvas.undo).toHaveBeenCalled();
   });
 
+  it('keeps an Escape it uses (cancelling a crop) from also closing a host dialog', () => {
+    const { app, canvas } = makeApp({ hasCropRect: true });
+    (app as any)._state = { ...(app as any)._state, activeTool: 'crop' };
+    const esc = { ...key('Escape'), ctrlKey: false };
+    (app as any)._onKeyDown(esc);
+    expect(canvas.cancelCrop).toHaveBeenCalled();
+    expect(esc.preventDefault).toHaveBeenCalled();
+  });
+
   it('deletes an active float under any tool', () => {
     const { app, canvas } = makeApp({ isTransformActive: vi.fn(() => true) });
     (app as any)._state = { ...(app as any)._state, activeTool: 'pencil' };

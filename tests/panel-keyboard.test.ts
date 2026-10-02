@@ -28,7 +28,7 @@ describe('keyboard in panels', () => {
     const input = document.createElement('input');
     for (const key of ['Escape', 'Enter']) {
       (panel as any)._editingZoom = true;
-      (panel as any)._onZoomInputKeydown({ key, target: input, stopPropagation() {} });
+      (panel as any)._onZoomInputKeydown({ key, target: input, stopPropagation() {}, preventDefault() {} });
       (panel as any)._onZoomInputBlur();
     }
     expect(commit).toHaveBeenCalledTimes(1);
@@ -37,12 +37,14 @@ describe('keyboard in panels', () => {
   it('lets Escape close an open dropdown without reaching the app, which would cancel a float', () => {
     const settings = new ToolSettings();
     (settings as any)._projectDropdownOpen = true;
-    const open = { key: 'Escape', stopPropagation: vi.fn() };
+    const open = { key: 'Escape', stopPropagation: vi.fn(), preventDefault: vi.fn() };
     (settings as any)._onDropdownEscape(open);
     expect(open.stopPropagation).toHaveBeenCalled();
+    // Nor is it a host dialog's close request.
+    expect(open.preventDefault).toHaveBeenCalled();
     expect((settings as any)._projectDropdownOpen).toBe(false);
 
-    const closed = { key: 'Escape', stopPropagation: vi.fn() };
+    const closed = { key: 'Escape', stopPropagation: vi.fn(), preventDefault: vi.fn() };
     (settings as any)._onDropdownEscape(closed);
     expect(closed.stopPropagation).not.toHaveBeenCalled();
   });
@@ -70,11 +72,11 @@ describe('keyboard leaving panel fields', () => {
       (settings as any)._projectDropdownOpen = true;
       (settings as any)._renamingProjectId = 'p1';
 
-      const esc = { key: 'Escape', stopPropagation: vi.fn() };
+      const esc = { key: 'Escape', stopPropagation: vi.fn(), preventDefault: vi.fn() };
       (settings as any)._onDropdownEscape(esc);
       expect(esc.stopPropagation, key).not.toHaveBeenCalled();
 
-      (settings as any)._onRenameKeydown({ key, target: input, stopPropagation() {} }, 'p1');
+      (settings as any)._onRenameKeydown({ key, target: input, stopPropagation() {}, preventDefault() {} }, 'p1');
       expect(document.activeElement, key).toBe(app);
       expect(root.activeElement, key).toBeNull();
       app.remove();
@@ -104,9 +106,10 @@ describe('Escape on the phone\'s popovers and sheet', () => {
     const { AppToolbar } = await import('../src/components/app-toolbar.ts');
     const toolbar = new AppToolbar();
     (toolbar as any)._popoverGroup = -1;
-    const esc = { key: 'Escape', stopPropagation: vi.fn() };
+    const esc = { key: 'Escape', stopPropagation: vi.fn(), preventDefault: vi.fn() };
     (toolbar as any)._onPopoverEscape(esc);
     expect(esc.stopPropagation).toHaveBeenCalled();
+    expect(esc.preventDefault).toHaveBeenCalled();
     expect((toolbar as any)._popoverGroup).toBeNull();
   });
 
@@ -116,15 +119,16 @@ describe('Escape on the phone\'s popovers and sheet', () => {
     Object.defineProperty(panel, 'ctx', { value: { state: { layersPanelOpen: false } } });
     (panel as any)._sheetOpen = true;
     (panel as any)._editingLayerId = 'l1';
-    const renaming = { key: 'Escape', stopPropagation: vi.fn() };
+    const renaming = { key: 'Escape', stopPropagation: vi.fn(), preventDefault: vi.fn() };
     (panel as any)._onDocKeyDown(renaming);
     expect(renaming.stopPropagation).not.toHaveBeenCalled();
     expect((panel as any)._sheetOpen).toBe(true);
 
     (panel as any)._editingLayerId = null;
-    const esc = { key: 'Escape', stopPropagation: vi.fn() };
+    const esc = { key: 'Escape', stopPropagation: vi.fn(), preventDefault: vi.fn() };
     (panel as any)._onDocKeyDown(esc);
     expect(esc.stopPropagation).toHaveBeenCalled();
+    expect(esc.preventDefault).toHaveBeenCalled();
     expect((panel as any)._sheetOpen).toBe(false);
   });
 });
@@ -153,5 +157,22 @@ describe('keys and the editor they are for', () => {
     } finally {
       host.remove();
     }
+  });
+});
+
+describe('panels moved with the editor', () => {
+  it('lets go of a scale question when moved, keeping the image\'s size, so the next drop can ask', async () => {
+    const { ResizeDialog } = await import('../src/components/resize-dialog.ts');
+    const dialog = new ResizeDialog();
+    const answer = dialog.show(600, 500, 400, 300);
+    dialog.disconnectedCallback();
+    await expect(answer).resolves.toBe(false);
+  });
+
+  it('loads its stamp thumbnails again when it comes back', () => {
+    const settings = new ToolSettings();
+    (settings as any)._lastProjectId = 'p1';
+    settings.disconnectedCallback();
+    expect((settings as any)._lastProjectId).toBeNull();
   });
 });

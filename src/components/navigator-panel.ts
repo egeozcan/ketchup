@@ -494,6 +494,8 @@ export class NavigatorPanel extends LitElement {
 
   private _onZoomInputKeydown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === 'Escape') {
+      // Escape here isn't also a host dialog's close request.
+      e.preventDefault();
       if (e.key === 'Enter') this._commitZoomInput();
       this._editingZoom = false;
       // To the app, whose shortcuts listen there, not the page.

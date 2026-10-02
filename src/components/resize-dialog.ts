@@ -60,6 +60,7 @@ export class ResizeDialog extends LitElement {
       this.requestUpdate();
       this.updateComplete.then(() => {
         this._dialog = this.renderRoot.querySelector('dialog');
+        if (this._dialog?.open) this._dialog.close();
         this._dialog?.showModal();
       });
     });
@@ -85,6 +86,13 @@ export class ResizeDialog extends LitElement {
   /** Closes an open dialog unanswered (its document went away); `show` resolves false. */
   dismiss() {
     this._onKeep();
+  }
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    // Moved with the editor, a modal would come back neither modal nor in
+    // view; an unanswered question keeps the image's size.
+    if (this._resolve) this.dismiss();
   }
 
   override render() {

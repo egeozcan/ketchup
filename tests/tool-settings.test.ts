@@ -36,11 +36,14 @@ describe('ToolSettings keyboard handling', () => {
     const event = {
       key: 'Escape',
       stopPropagation: vi.fn(),
+      preventDefault: vi.fn(),
     } as unknown as KeyboardEvent;
 
     (settings as any)._onRenameKeydown(event, 'project-1');
 
     expect((event.stopPropagation as any)).toHaveBeenCalledTimes(1);
+    // Nor is it a host dialog's close request.
+    expect((event.preventDefault as any)).toHaveBeenCalled();
     expect((settings as any)._renamingProjectId).toBeNull();
   });
 

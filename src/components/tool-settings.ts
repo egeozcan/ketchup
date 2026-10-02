@@ -1178,6 +1178,10 @@ export class ToolSettings extends LitElement {
     this._closePanel();
     this._stampLoadVersion++;
     this._thumbUrls.clear();
+    // Thumbnails load again if it comes back (moved in the DOM).
+    this._lastProjectId = null;
+    // A modal open as it leaves would come back neither modal nor in view.
+    this.shadowRoot?.querySelector<HTMLDialogElement>('.new-project-dialog')?.close();
   }
 
   private async _loadStamps(projectId: string) {
@@ -1394,7 +1398,9 @@ export class ToolSettings extends LitElement {
     if (e.key !== 'Escape' || (!this._projectDropdownOpen && !this._brushDropdownOpen) || !keyIsForEditorOf(this, e)) return;
     // A project name being edited in the dropdown takes its own Escape.
     if (this._renamingProjectId) return;
+    // Nor (preventDefault) a host dialog's close request.
     e.stopPropagation();
+    e.preventDefault();
     this._closeDropdown();
     this._closeBrushDropdown();
   };
@@ -1410,6 +1416,7 @@ export class ToolSettings extends LitElement {
     this._newProjectWidth = '800';
     this._newProjectHeight = '600';
     const dialog = this.shadowRoot?.querySelector('.new-project-dialog') as HTMLDialogElement | null;
+    if (dialog?.open) dialog.close();
     dialog?.showModal();
     this.updateComplete.then(() => {
       const input = this.shadowRoot?.querySelector('.new-project-name-input') as HTMLInputElement | null;
@@ -1471,6 +1478,7 @@ export class ToolSettings extends LitElement {
       // The input goes; focus would fall to the page.
       focusEditor(this);
     } else if (e.key === 'Escape') {
+      e.preventDefault();
       this._renamingProjectId = null;
       focusEditor(this);
     }
@@ -1666,6 +1674,7 @@ export class ToolSettings extends LitElement {
   private _onPanelEscape = (e: KeyboardEvent) => {
     if (e.key !== 'Escape' || this._openPanel === null) return;
     e.stopPropagation();
+    e.preventDefault();
     const wrap = this._openPanelWrap();
     const focusInside = !!wrap && e.composedPath().includes(wrap);
     this._closePanel();

@@ -443,7 +443,9 @@ export class AppToolbar extends LitElement {
   /** Escape closes an open popover, and only that (the app would also cancel a float). */
   private _onPopoverEscape = (e: KeyboardEvent) => {
     if (e.key !== 'Escape' || this._popoverGroup === null || !keyIsForEditorOf(this, e)) return;
+    // Nor (preventDefault) a host dialog's close request.
     e.stopPropagation();
+    e.preventDefault();
     this._closePopover();
   };
 
