@@ -523,12 +523,18 @@ export class LayersPanel extends LitElement {
   };
 
   private _onDocKeyDown = (e: KeyboardEvent) => {
-    if (e.key !== 'Escape' || (!this._contextMenuOpen && !this._dropdownOpen)) return;
+    // A layer name being edited takes its own Escape.
+    if (e.key !== 'Escape' || this._editingLayerId) return;
     // Seen first (capture) and kept from the app, which would take it to
-    // cancel a float as well.
-    e.stopPropagation();
-    this._closeContextMenu();
-    this._dropdownOpen = false;
+    // cancel a float as well: a menu closes, or else the phone's sheet.
+    if (this._contextMenuOpen || this._dropdownOpen) {
+      e.stopPropagation();
+      this._closeContextMenu();
+      this._dropdownOpen = false;
+    } else if (this._sheetOpen) {
+      e.stopPropagation();
+      this.closeSheet();
+    }
   };
 
   override connectedCallback() {

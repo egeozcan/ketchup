@@ -137,6 +137,14 @@ describe('DrawingCanvas.restoreViewport', () => {
     expect(Number.isInteger(panX) && Number.isInteger(panY)).toBe(true);
   });
 
+  it('measures the canvas before restoring, so a layout just changed (the phone\'s) isn\'t taken for another screen', () => {
+    // Still sized for the desktop layout when the phone layout has been chosen.
+    const canvas = setupCanvas(800, 600, 129, 698);
+    (canvas as any).getBoundingClientRect = () => ({ left: 0, top: 0, width: 390, height: 796 });
+    canvas.restoreViewport(1, 5, 100, { width: 390, height: 796 });
+    expect(canvas.getViewport()).toEqual({ zoom: 1, panX: 5, panY: 100 });
+  });
+
   it('keeps a view reloaded at window sizes an odd pixel apart where it was', () => {
     let saved = { zoom: 1, panX: 101, panY: 61, size: { width: 1200, height: 800 } };
     for (let i = 0; i < 4; i++) {

@@ -984,6 +984,13 @@ export class DrawingApp extends LitElement {
     if (this._isTextEntryTarget(e)) {
       return;
     }
+    // Typing meant for text being edited, after a click on Bold or a colour
+    // took the keyboard: back into the text, where the key lands (a focus
+    // moved during keydown takes the typed character), not a shortcut.
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key !== 'Tab' && !['Shift', 'Control', 'Meta', 'Alt', 'CapsLock'].includes(e.key)
+      && this.canvas?.focusText?.()) {
+      return;
+    }
     if (e.key === 'Escape' && this.canvas?.hasExternalFloat) {
       e.preventDefault();
       this.canvas.cancelExternalFloat();
@@ -1266,6 +1273,10 @@ export class DrawingApp extends LitElement {
         eyedropperSampleAll: ts.eyedropperSampleAll ?? true,
         childMode: ts.childMode ?? false,
       };
+      // The layout the view is restored into: the size observer may not have
+      // reported yet, and a phone restored in the desktop layout gets reset.
+      const width = this.getBoundingClientRect().width;
+      if (width > 0) this._updateMobileLayout(width);
       if (this._isMobile) this._desktopLayersPanelOpen = record.layersPanelOpen;
       await this.updateComplete;
       this.canvas?.setHistory(history, record.historyIndex ?? (history.length - 1));
@@ -2097,6 +2108,8 @@ export class DrawingApp extends LitElement {
 
   override connectedCallback() {
     super.connectedCallback();
+    // Standalone, the page is the editor: keys typed before any click are its.
+    if (!this.embedded) this._strayKeysOurs = true;
     this._initStorage();
     // Back after a while away (a cached view, say): reopen what leaving closed.
     if (this._backendClosed && this._backend) {

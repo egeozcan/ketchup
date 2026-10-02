@@ -430,12 +430,21 @@ export class AppToolbar extends LitElement {
   override connectedCallback() {
     super.connectedCallback();
     document.addEventListener('fullscreenchange', this._onFullscreenChange);
+    document.addEventListener('keydown', this._onPopoverEscape, true);
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
     document.removeEventListener('fullscreenchange', this._onFullscreenChange);
+    document.removeEventListener('keydown', this._onPopoverEscape, true);
   }
+
+  /** Escape closes an open popover, and only that (the app would also cancel a float). */
+  private _onPopoverEscape = (e: KeyboardEvent) => {
+    if (e.key !== 'Escape' || this._popoverGroup === null) return;
+    e.stopPropagation();
+    this._closePopover();
+  };
 
   override willUpdate() {
     this.toggleAttribute('mobile', this.ctx?.isMobile ?? false);
@@ -727,12 +736,13 @@ export class AppToolbar extends LitElement {
   }
 
   private _dispatchCropShortcut(key: 'Enter' | 'Escape') {
+    // Closed first: an open popover would take the Escape for itself.
+    this._closePopover();
     this.dispatchEvent(new KeyboardEvent('keydown', {
       key,
       bubbles: true,
       composed: true,
     }));
-    this._closePopover();
   }
 
   private _renderPopoverContent(activeTool: ToolType) {

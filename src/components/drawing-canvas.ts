@@ -304,6 +304,16 @@ export class DrawingCanvas extends LitElement {
     return this._transformManager !== null;
   }
 
+  /**
+   * While text is being edited, puts the keyboard back in it (a click on a
+   * font control took it away). Returns whether text is being edited.
+   */
+  focusText(): boolean {
+    if (!this._textEditing || !this._textAreaEl) return false;
+    this._textAreaEl.focus({ preventScroll: true });
+    return true;
+  }
+
   /** True while the text tool holds typed text that is not on a layer yet. */
   hasPendingText(): boolean {
     return this._textEditing && !!this._textAreaEl?.value;
@@ -1692,6 +1702,9 @@ export class DrawingCanvas extends LitElement {
     panY: number,
     savedSize?: { width: number; height: number },
   ) {
+    // Measured now, not when the size observer next reports: the layout may
+    // have just changed (the phone layout chosen as the document loads).
+    this._resizeToFit();
     if (savedSize && this._laidOut) {
       if (!DrawingCanvas._similarSize(savedSize, { width: this._vw, height: this._vh })) {
         this.resetView();

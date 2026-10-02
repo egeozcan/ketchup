@@ -2326,6 +2326,7 @@ export class ToolSettings extends LitElement {
                 max="200"
                 .value=${String(this.ctx.state.fontSize)}
                 @change=${(e: Event) => this.ctx.setFontSize(Number((e.target as HTMLInputElement).value))}
+                @keydown=${this._blurOnEnter}
               />
             </div>
             <div class="section">

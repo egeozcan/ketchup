@@ -657,6 +657,20 @@ describe('app shortcuts and layer changes with a float', () => {
     expect((app as any)._isTextEntryTarget(keyIn(document.createElement('input'), app))).toBe(true);
   });
 
+  it('sends typing back into text being edited when a font control took the keyboard', () => {
+    const focusText = vi.fn(() => true);
+    const { app, canvas } = makeApp({ focusText });
+    (app as any)._state = { ...(app as any)._state, activeTool: 'text' };
+    (app as any)._onKeyDown({ ...key('b'), ctrlKey: false });
+    expect(focusText).toHaveBeenCalled();
+    expect((app as any)._state.activeTool).toBe('text');
+    // Shortcuts with a modifier still are.
+    focusText.mockClear();
+    (app as any)._onKeyDown(key('z'));
+    expect(focusText).not.toHaveBeenCalled();
+    expect(canvas.undo).toHaveBeenCalled();
+  });
+
   it('deletes an active float under any tool', () => {
     const { app, canvas } = makeApp({ isTransformActive: vi.fn(() => true) });
     (app as any)._state = { ...(app as any)._state, activeTool: 'pencil' };

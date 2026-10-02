@@ -98,3 +98,33 @@ describe('focusEditor', () => {
     wrapper.remove();
   });
 });
+
+describe('Escape on the phone\'s popovers and sheet', () => {
+  it('closes the toolbar\'s popover without reaching the app, which would cancel a float', async () => {
+    const { AppToolbar } = await import('../src/components/app-toolbar.ts');
+    const toolbar = new AppToolbar();
+    (toolbar as any)._popoverGroup = -1;
+    const esc = { key: 'Escape', stopPropagation: vi.fn() };
+    (toolbar as any)._onPopoverEscape(esc);
+    expect(esc.stopPropagation).toHaveBeenCalled();
+    expect((toolbar as any)._popoverGroup).toBeNull();
+  });
+
+  it('closes the layers sheet, unless a layer name is being edited in it', async () => {
+    const { LayersPanel } = await import('../src/components/layers-panel.ts');
+    const panel = new LayersPanel();
+    Object.defineProperty(panel, 'ctx', { value: { state: { layersPanelOpen: false } } });
+    (panel as any)._sheetOpen = true;
+    (panel as any)._editingLayerId = 'l1';
+    const renaming = { key: 'Escape', stopPropagation: vi.fn() };
+    (panel as any)._onDocKeyDown(renaming);
+    expect(renaming.stopPropagation).not.toHaveBeenCalled();
+    expect((panel as any)._sheetOpen).toBe(true);
+
+    (panel as any)._editingLayerId = null;
+    const esc = { key: 'Escape', stopPropagation: vi.fn() };
+    (panel as any)._onDocKeyDown(esc);
+    expect(esc.stopPropagation).toHaveBeenCalled();
+    expect((panel as any)._sheetOpen).toBe(false);
+  });
+});
