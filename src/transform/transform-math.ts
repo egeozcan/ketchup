@@ -221,9 +221,13 @@ export function warpPerspective(
         const len = Math.hypot(nearest.ex, nearest.ey);
         if ((!inside || dist < 0.25) && len > 0) {
           const nx = -0.25 * nearest.ey / len, ny = 0.25 * nearest.ex / len;
-          const side = quadWinding(dst, nearest.x + nx, nearest.y + ny) !== 0 ? 1 : -1;
-          hx = nearest.x + side * nx - a.x;
-          hy = nearest.y + side * ny - a.y;
+          // Neither side is inside where a sliver is under a quarter pixel thick.
+          const side = quadWinding(dst, nearest.x + nx, nearest.y + ny) !== 0 ? 1
+            : quadWinding(dst, nearest.x - nx, nearest.y - ny) !== 0 ? -1 : 0;
+          if (side !== 0) {
+            hx = nearest.x + side * nx - a.x;
+            hy = nearest.y + side * ny - a.y;
+          }
         }
       }
 
