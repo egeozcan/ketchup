@@ -140,7 +140,7 @@ export function detectContentBounds(imageData: ImageData): TransformRect | null 
   return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
 }
 
-// --- Perspective mesh warp ---
+// --- Perspective warp ---
 
 /**
  * Compute the 4 destination corners for perspective warp.
@@ -160,89 +160,236 @@ export function getPerspectiveDestCorners(
 }
 
 /**
- * Draw a perspective-warped image using triangle mesh subdivision.
- * Subdivides the source image into a grid of triangles and draws each
- * with an affine approximation.
+ * Warp `src` onto the quad `dst` (top-left, top-right, bottom-right,
+ * bottom-left), returning the pixels of `region` in document space.
+ *
+ * Every pixel is mapped back through the inverse of the bilinear map from the
+ * source rectangle onto the quad and sampled bilinearly with premultiplied
+ * alpha, so there is no triangle mesh to leave seams at its edges. The quad's
+ * outline is anti-aliased from each pixel's distance to it, and the source is
+ * clamped at its border, so an enlarged edge stays crisp. A concave or
+ * self-intersecting quad is filled up to its outline (nonzero winding), where
+ * the map folds past it. Each pixel depends only on its own position, so a
+ * region is exactly that crop of the whole warp.
  */
-export function drawPerspectiveMesh(
-  ctx: CanvasRenderingContext2D,
-  sourceCanvas: HTMLCanvasElement,
-  srcCorners: [Point, Point, Point, Point],
-  dstCorners: [Point, Point, Point, Point],
-  gridSize: number,
-): void {
-  const [sTL, sTR, sBR, sBL] = srcCorners;
-  const [dTL, dTR, dBR, dBL] = dstCorners;
+export function warpPerspective(
+  src: ImageData,
+  dst: [Point, Point, Point, Point],
+  region: TransformRect,
+): ImageData {
+  const { x: rx, y: ry, w: rw, h: rh } = region;
+  const out = new ImageData(rw, rh);
+  const o = out.data, s = src.data, W = src.width, H = src.height;
+  const [a, b, c, d] = dst;
+  // P(u, v) = a + e·u + f·v + g·u·v
+  const ex = b.x - a.x, ey = b.y - a.y;
+  const fx = d.x - a.x, fy = d.y - a.y;
+  const gx = a.x - b.x + c.x - d.x, gy = a.y - b.y + c.y - d.y;
+  // Solving P(u, v) = p for v gives k2·v² + k1·v + k0 = 0.
+  const k2 = gx * fy - gy * fx;
+  const ef = ex * fy - ey * fx;
+  const linear = Math.abs(k2) <= 1e-9 * Math.abs(ef);
+  const ik2 = 0.5 / k2;
+  const uAt = (hx: number, hy: number, v: number) => {
+    const dx = ex + gx * v, dy = ey + gy * v;
+    return Math.abs(dx) > Math.abs(dy) ? (hx - fx * v) / dx : (hy - fy * v) / dy;
+  };
+  // A convex quad is exactly the image of the source rectangle. Past a concave
+  // corner the map folds outside the outline, so there the outline itself
+  // decides what is inside (the source rectangle still covers all of it).
+  const convex = isConvex(dst);
 
-  for (let row = 0; row < gridSize; row++) {
-    for (let col = 0; col < gridSize; col++) {
-      const u0 = col / gridSize;
-      const u1 = (col + 1) / gridSize;
-      const v0 = row / gridSize;
-      const v1 = (row + 1) / gridSize;
+  const nearest = { x: 0, y: 0, ex: 0, ey: 0 };
 
-      const sP00 = bilinear(sTL, sTR, sBR, sBL, u0, v0);
-      const sP10 = bilinear(sTL, sTR, sBR, sBL, u1, v0);
-      const sP01 = bilinear(sTL, sTR, sBR, sBL, u0, v1);
-      const sP11 = bilinear(sTL, sTR, sBR, sBL, u1, v1);
+  for (let py = 0; py < rh; py++) {
+    const [spanStart, spanEnd] = quadRowSpan(dst, ry + py, rx, rw);
+    const cy = ry + py + 0.5;
+    for (let px = spanStart; px < spanEnd; px++) {
+      const cx = rx + px + 0.5;
+      let hx = cx - a.x, hy = cy - a.y;
+      // A quad that isn't convex is covered by its outline alone, anti-aliased
+      // from the distance to it. On and just outside the outline, the map shows
+      // folded-away parts of the source if anything, so a pixel there takes its
+      // colour from a quarter pixel inside the nearest outline point.
+      let coverage = 1;
+      if (!convex) {
+        const dist = Math.sqrt(nearestOnQuad(dst, cx, cy, nearest));
+        const inside = quadWinding(dst, cx, cy) !== 0;
+        coverage = inside ? 0.5 + dist : 0.5 - dist;
+        if (coverage <= 0) continue;
+        if (coverage > 1) coverage = 1;
+        const len = Math.hypot(nearest.ex, nearest.ey);
+        if ((!inside || dist < 0.25) && len > 0) {
+          const nx = -0.25 * nearest.ey / len, ny = 0.25 * nearest.ex / len;
+          // Neither side is inside where a sliver is under a quarter pixel thick.
+          const side = quadWinding(dst, nearest.x + nx, nearest.y + ny) !== 0 ? 1
+            : quadWinding(dst, nearest.x - nx, nearest.y - ny) !== 0 ? -1 : 0;
+          if (side !== 0) {
+            hx = nearest.x + side * nx - a.x;
+            hy = nearest.y + side * ny - a.y;
+          }
+        }
+      }
 
-      const dP00 = bilinear(dTL, dTR, dBR, dBL, u0, v0);
-      const dP10 = bilinear(dTL, dTR, dBR, dBL, u1, v0);
-      const dP01 = bilinear(dTL, dTR, dBR, dBL, u0, v1);
-      const dP11 = bilinear(dTL, dTR, dBR, dBL, u1, v1);
+      const k1 = ef + hx * gy - hy * gx;
+      const k0 = hx * ey - hy * ex;
+      let u: number, v: number;
+      if (linear) {
+        v = -k0 / k1;
+        u = uAt(hx, hy, v);
+      } else {
+        let disc = k1 * k1 - 4 * k0 * k2;
+        if (disc < 0) {
+          // Unmapped. Within a non-convex quad's anti-aliased fringe, take
+          // the nearest real solution.
+          if (convex) continue;
+          disc = 0;
+        }
+        const w = Math.sqrt(disc);
+        v = (-k1 - w) * ik2;
+        u = uAt(hx, hy, v);
+        // Of the two roots, keep the one inside (or nearest) the source.
+        if (!(u >= 0 && u <= 1 && v >= 0 && v <= 1)) {
+          const v2 = (-k1 + w) * ik2;
+          const u2 = uAt(hx, hy, v2);
+          if (outside(u2, v2) < outside(u, v)) { u = u2; v = v2; }
+        }
+      }
+      if (!(u > -1 && u < 2 && v > -1 && v < 2)) continue;
 
-      drawTexturedTriangle(ctx, sourceCanvas, sP00, sP10, sP01, dP00, dP10, dP01);
-      drawTexturedTriangle(ctx, sourceCanvas, sP10, sP11, sP01, dP10, dP11, dP01);
+      if (convex) {
+        // Only pixels within half a pixel of the outline are partially covered.
+        // Inside, (distance in u or v) × |Jacobian| / |other partial derivative|
+        // estimates the distance to the nearest edge cheaply (squared, sparing
+        // the square roots); near or outside the outline, where that estimate
+        // breaks down, the distance to the edges is measured directly.
+        const inside = u >= 0 && u <= 1 && v >= 0 && v <= 1;
+        const mu = u < 1 - u ? u : 1 - u, mv = v < 1 - v ? v : 1 - v;
+        const pux = ex + gx * v, puy = ey + gy * v;
+        const pvx = fx + gx * u, pvy = fy + gy * u;
+        const jac = pux * pvy - puy * pvx;
+        const du = mu * jac, dv = mv * jac;
+        if (!inside || du * du < 0.25 * (pvx * pvx + pvy * pvy) || dv * dv < 0.25 * (pux * pux + puy * puy)) {
+          const dist = Math.sqrt(nearestOnQuad(dst, cx, cy, nearest));
+          coverage = inside ? 0.5 + dist : 0.5 - dist;
+          if (coverage <= 0) continue;
+          if (coverage > 1) coverage = 1;
+        }
+      }
+
+      let sx = u * W - 0.5, sy = v * H - 0.5;
+      if (sx < 0) sx = 0; else if (sx > W - 1) sx = W - 1;
+      if (sy < 0) sy = 0; else if (sy > H - 1) sy = H - 1;
+      const x0 = sx | 0, y0 = sy | 0;
+      const x1 = x0 + 1 < W ? x0 + 1 : x0, y1 = y0 + 1 < H ? y0 + 1 : y0;
+      const tx = sx - x0, ty = sy - y0;
+      const i00 = (y0 * W + x0) * 4, i10 = (y0 * W + x1) * 4;
+      const i01 = (y1 * W + x0) * 4, i11 = (y1 * W + x1) * 4;
+      // Weight each tap by its alpha: interpolating premultiplied colour keeps
+      // transparent texels from darkening the edges of what they surround.
+      const a00 = s[i00 + 3] * (1 - tx) * (1 - ty), a10 = s[i10 + 3] * tx * (1 - ty);
+      const a01 = s[i01 + 3] * (1 - tx) * ty, a11 = s[i11 + 3] * tx * ty;
+      const alpha = a00 + a10 + a01 + a11;
+      if (alpha <= 0) continue;
+      const inv = 1 / alpha;
+      const i = (py * rw + px) * 4;
+      // Uint8ClampedArray rounds to nearest on store.
+      o[i] = (s[i00] * a00 + s[i10] * a10 + s[i01] * a01 + s[i11] * a11) * inv;
+      o[i + 1] = (s[i00 + 1] * a00 + s[i10 + 1] * a10 + s[i01 + 1] * a01 + s[i11 + 1] * a11) * inv;
+      o[i + 2] = (s[i00 + 2] * a00 + s[i10 + 2] * a10 + s[i01 + 2] * a01 + s[i11 + 2] * a11) * inv;
+      o[i + 3] = alpha * coverage;
     }
   }
-}
-
-/** Bilinear interpolation across a quad. */
-function bilinear(tl: Point, tr: Point, br: Point, bl: Point, u: number, v: number): Point {
-  const top = { x: tl.x + (tr.x - tl.x) * u, y: tl.y + (tr.y - tl.y) * u };
-  const bot = { x: bl.x + (br.x - bl.x) * u, y: bl.y + (br.y - bl.y) * u };
-  return { x: top.x + (bot.x - top.x) * v, y: top.y + (bot.y - top.y) * v };
+  return out;
 }
 
 /**
- * Draw a single textured triangle using affine transform.
- * Maps source triangle (s0,s1,s2) onto destination triangle (d0,d1,d2).
+ * Squared distance from (x, y) to the quad's outline. The nearest point of the
+ * outline, and the vector along its edge, are written to `out`.
  */
-function drawTexturedTriangle(
-  ctx: CanvasRenderingContext2D,
-  img: HTMLCanvasElement,
-  s0: Point, s1: Point, s2: Point,
-  d0: Point, d1: Point, d2: Point,
-): void {
-  const sx0 = s1.x - s0.x, sy0 = s1.y - s0.y;
-  const sx1 = s2.x - s0.x, sy1 = s2.y - s0.y;
-  const dx0 = d1.x - d0.x, dy0 = d1.y - d0.y;
-  const dx1 = d2.x - d0.x, dy1 = d2.y - d0.y;
+function nearestOnQuad(
+  q: [Point, Point, Point, Point], x: number, y: number, out: { x: number; y: number; ex: number; ey: number },
+): number {
+  let best = Infinity;
+  for (let i = 0; i < 4; i++) {
+    const p = q[i], n = q[(i + 1) % 4];
+    const qx = n.x - p.x, qy = n.y - p.y, wx = x - p.x, wy = y - p.y;
+    const len2 = qx * qx + qy * qy;
+    let t = len2 > 0 ? (wx * qx + wy * qy) / len2 : 0;
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    const dx = wx - qx * t, dy = wy - qy * t;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < best) {
+      best = d2;
+      out.x = p.x + qx * t;
+      out.y = p.y + qy * t;
+      out.ex = qx;
+      out.ey = qy;
+    }
+  }
+  return best;
+}
 
-  const det = sx0 * sy1 - sx1 * sy0;
-  if (Math.abs(det) < 1e-10) return;
+/** How far (u, v) lies outside the unit square, in u/v units; 0 inside, Infinity if undefined. */
+function outside(u: number, v: number): number {
+  if (u !== u || v !== v) return Infinity;
+  const du = u < 0 ? -u : u > 1 ? u - 1 : 0;
+  const dv = v < 0 ? -v : v > 1 ? v - 1 : 0;
+  return du > dv ? du : dv;
+}
 
-  const idet = 1 / det;
-  const a = sy1 * idet, b = -sx1 * idet;
-  const c = -sy0 * idet, d = sx0 * idet;
+/** Whether every corner of the quad turns the same way (or not at all). */
+function isConvex(q: [Point, Point, Point, Point]): boolean {
+  let left = false, right = false;
+  for (let i = 0; i < 4; i++) {
+    const p = q[i], n = q[(i + 1) % 4], m = q[(i + 2) % 4];
+    const turn = (n.x - p.x) * (m.y - n.y) - (n.y - p.y) * (m.x - n.x);
+    if (turn > 0) left = true;
+    else if (turn < 0) right = true;
+  }
+  return !(left && right);
+}
 
-  const ma = a * dx0 + c * dx1;
-  const mb = b * dx0 + d * dx1;
-  const mc = a * dy0 + c * dy1;
-  const md = b * dy0 + d * dy1;
-  const me = d0.x - ma * s0.x - mb * s0.y;
-  const mf = d0.y - mc * s0.x - md * s0.y;
+/** The quad outline's winding number around (x, y): nonzero inside. */
+function quadWinding(q: [Point, Point, Point, Point], x: number, y: number): number {
+  let winding = 0;
+  for (let i = 0; i < 4; i++) {
+    const p = q[i], n = q[(i + 1) % 4];
+    const side = (n.x - p.x) * (y - p.y) - (x - p.x) * (n.y - p.y);
+    if (p.y <= y) {
+      if (n.y > y && side > 0) winding++;
+    } else if (n.y <= y && side < 0) {
+      winding--;
+    }
+  }
+  return winding;
+}
 
-  ctx.save();
-  ctx.beginPath();
-  ctx.moveTo(d0.x, d0.y);
-  ctx.lineTo(d1.x, d1.y);
-  ctx.lineTo(d2.x, d2.y);
-  ctx.closePath();
-  ctx.clip();
-  // Compose with, not replace, the caller's transform: the preview renders
-  // into an offscreen canvas translated to the warped bounds' origin.
-  ctx.transform(ma, mc, mb, md, me, mf);
-  ctx.drawImage(img, 0, 0);
-  ctx.restore();
+/**
+ * The columns of row `y` (relative to `rx`, clamped to `[0, rw)`) that the
+ * quad's outline comes within a pixel and a half of: everything a warp row
+ * can touch, so the rest of the bounding box is skipped.
+ */
+function quadRowSpan(q: [Point, Point, Point, Point], y: number, rx: number, rw: number): [number, number] {
+  const top = y - 1, bottom = y + 2;
+  let min = Infinity, max = -Infinity;
+  for (let i = 0; i < 4; i++) {
+    const p = q[i], n = q[(i + 1) % 4];
+    const lo = Math.max(top, Math.min(p.y, n.y)), hi = Math.min(bottom, Math.max(p.y, n.y));
+    if (lo > hi) continue;
+    // The edge's x at both ends of its part within the band (all of a
+    // horizontal edge).
+    let x0 = p.x, x1 = n.x;
+    if (n.y !== p.y) {
+      x0 = p.x + (n.x - p.x) * (lo - p.y) / (n.y - p.y);
+      x1 = p.x + (n.x - p.x) * (hi - p.y) / (n.y - p.y);
+    }
+    min = Math.min(min, x0, x1);
+    max = Math.max(max, x0, x1);
+  }
+  if (min > max) return [0, 0];
+  return [
+    Math.max(0, Math.floor(min - 1.5) - rx),
+    Math.min(rw, Math.ceil(max + 1.5) - rx),
+  ];
 }

@@ -162,6 +162,8 @@ export class DrawingCanvas extends LitElement {
 
   private _engine = new StampStrokeEngine();
   private _tintPreviewCanvas: HTMLCanvasElement | null = null;
+  /** Viewport-size scratch for compositing the active layer with its float merged in. */
+  private _transformViewCanvas: HTMLCanvasElement | null = null;
   private _strokeTintCanvas: HTMLCanvasElement | null = null;
   private _samplingDirty = true;
   /** Coalesces gesture-driven composites into at most one per animation frame. */
@@ -473,6 +475,11 @@ export class DrawingCanvas extends LitElement {
     this._compositeContentPending = false;
     const displayCtx = this.mainCanvas.getContext('2d')!;
     const vw = this._vw;
+    if (!this._transformManager && this._transformViewCanvas) {
+      // Free the scratch canvas once the transform has ended.
+      this._transformViewCanvas.width = this._transformViewCanvas.height = 0;
+      this._transformViewCanvas = null;
+    }
     const vh = this._vh;
 
     // Clear entire viewport with workspace background
@@ -501,6 +508,12 @@ export class DrawingCanvas extends LitElement {
     for (const layer of layers) {
       if (!layer.visible) continue;
       displayCtx.globalAlpha = layer.opacity;
+      const transform = this._transformManager && layer.id === activeLayerId ? this._transformManager : null;
+      // Commit merges the float onto its layer with source-over. Source-over is
+      // associative, so on a normal, opaque layer the float can follow the layer
+      // straight onto the display; otherwise the layer's blend mode and opacity
+      // must apply to the merged result, so they are merged first.
+      const mergeTransform = transform !== null && (layer.blendMode !== 'normal' || layer.opacity < 1);
       if (hasBlend) {
         displayCtx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
       }
@@ -512,7 +525,9 @@ export class DrawingCanvas extends LitElement {
         : null;
       const b = preview?.bounds ?? null;
 
-      if (preview && b) {
+      if (mergeTransform) {
+        this._drawLayerWithTransformInView(displayCtx, layer, transform);
+      } else if (preview && b) {
         // Source-over is associative, so a plain stroke on an opaque, normally
         // blended layer can go straight to the display. Erasing cannot: its
         // destination-out would punch through the checkerboard and workspace
@@ -574,9 +589,24 @@ export class DrawingCanvas extends LitElement {
         displayCtx.drawImage(layer.canvas, 0, 0);
       }
 
-      // Draw transform manager content after its owning layer
-      if (this._transformManager && layer.id === activeLayerId) {
-        this._transformManager.renderTransformed(displayCtx);
+      if (transform) {
+        if (mergeTransform) {
+          // The merged copy stops at the document edge; still show the float
+          // beyond it while it is being positioned, as on a normal layer.
+          const fb = transform.getBounds();
+          const inside = fb.x >= 0 && fb.y >= 0 && fb.x + fb.w <= this._docWidth && fb.y + fb.h <= this._docHeight;
+          if (!inside) {
+            displayCtx.save();
+            displayCtx.beginPath();
+            displayCtx.rect(-1e6, -1e6, 2e6, 2e6);
+            displayCtx.rect(0, 0, this._docWidth, this._docHeight);
+            displayCtx.clip('evenodd');
+            transform.renderTransformed(displayCtx);
+            displayCtx.restore();
+          }
+        } else {
+          transform.renderTransformed(displayCtx);
+        }
       }
       if (hasBlend) {
         displayCtx.globalCompositeOperation = 'source-over';
@@ -1292,6 +1322,65 @@ export class DrawingCanvas extends LitElement {
   }
 
   /**
+   * Draws `layer` with the floating transform merged in by source-over, as
+   * commit will, through `ctx`'s current blend mode and alpha. The merge
+   * happens at viewport resolution in a scratch canvas sharing `ctx`'s
+   * transform, so a drag costs no more than drawing the two separately, and
+   * the merged result is clipped to the document, as the layer is.
+   */
+  private _drawLayerWithTransformInView(ctx: CanvasRenderingContext2D, layer: Layer, tm: TransformManager): void {
+    const { width, height } = ctx.canvas;
+    let scratch = this._transformViewCanvas;
+    if (!scratch) scratch = this._transformViewCanvas = document.createElement('canvas');
+    if (scratch.width !== width || scratch.height !== height) {
+      scratch.width = width;
+      scratch.height = height;
+    }
+    // Only the document's on-screen rectangle is ever drawn in, so only it is
+    // cleared and copied.
+    const m = ctx.getTransform();
+    const lw = layer.canvas.width, lh = layer.canvas.height;
+    const xs = [m.e, m.a * lw + m.e, m.c * lh + m.e, m.a * lw + m.c * lh + m.e];
+    const ys = [m.f, m.b * lw + m.f, m.d * lh + m.f, m.b * lw + m.d * lh + m.f];
+    const rx = Math.max(0, Math.floor(Math.min(...xs))), ry = Math.max(0, Math.floor(Math.min(...ys)));
+    const rw = Math.min(width, Math.ceil(Math.max(...xs))) - rx;
+    const rh = Math.min(height, Math.ceil(Math.max(...ys))) - ry;
+    if (rw <= 0 || rh <= 0) return;
+    const sctx = scratch.getContext('2d')!;
+    sctx.setTransform(1, 0, 0, 1, 0, 0);
+    sctx.clearRect(rx, ry, rw, rh);
+    sctx.setTransform(m);
+    sctx.save();
+    sctx.beginPath();
+    sctx.rect(0, 0, lw, lh);
+    sctx.clip();
+    sctx.drawImage(layer.canvas, 0, 0);
+    tm.renderTransformed(sctx);
+    sctx.restore();
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(scratch, rx, ry, rw, rh, rx, ry, rw, rh);
+    ctx.restore();
+  }
+
+  /**
+   * The layer as it will be once the active transform commits: a new canvas
+   * with the floating content merged in by source-over, as
+   * `TransformManager.commit` does, for flattening and sampling at document
+   * resolution. Other layers, and every layer with no transform, come back as is.
+   */
+  private _layerWithTransform(layer: Layer, activeLayerId: string | null): HTMLCanvasElement {
+    if (!this._transformManager || layer.id !== activeLayerId) return layer.canvas;
+    const merged = document.createElement('canvas');
+    merged.width = layer.canvas.width;
+    merged.height = layer.canvas.height;
+    const ctx = merged.getContext('2d')!;
+    ctx.drawImage(layer.canvas, 0, 0);
+    this._transformManager.renderTransformed(ctx, { x: 0, y: 0, w: merged.width, h: merged.height });
+    return merged;
+  }
+
+  /**
    * Flattens every visible layer (plus any active transform at its layer's
    * z-position) onto a new canvas at document size, without the checkerboard.
    * `background` fills the canvas first; `null` keeps transparency.
@@ -1312,11 +1401,8 @@ export class DrawingCanvas extends LitElement {
       if (!layer.visible) continue;
       exportCtx.globalAlpha = layer.opacity;
       exportCtx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
-      exportCtx.drawImage(layer.canvas, 0, 0);
-      // Include active transform content at its z-position
-      if (this._transformManager && layer.id === activeLayerId) {
-        this._transformManager.renderTransformed(exportCtx);
-      }
+      // Includes active transform content at its z-position
+      exportCtx.drawImage(this._layerWithTransform(layer, activeLayerId), 0, 0);
       exportCtx.globalCompositeOperation = 'source-over';
       exportCtx.globalAlpha = 1.0;
     }
@@ -1629,12 +1715,9 @@ export class DrawingCanvas extends LitElement {
         if (!layer.visible) continue;
         ctx.globalAlpha = layer.opacity;
         ctx.globalCompositeOperation = blendModeToCompositeOp(layer.blendMode);
-        ctx.drawImage(layer.canvas, 0, 0);
+        // Includes active transform content at its z-position
+        ctx.drawImage(this._layerWithTransform(layer, activeLayerId), 0, 0);
         ctx.globalCompositeOperation = 'source-over';
-        // Include active transform content at its z-position
-        if (this._transformManager && layer.id === activeLayerId) {
-          this._transformManager.renderTransformed(ctx);
-        }
       }
       ctx.globalAlpha = 1;
       this._samplingDirty = false;
@@ -2394,6 +2477,12 @@ export class DrawingCanvas extends LitElement {
     // Cancel panning
     if (this._panning) {
       this._endPan();
+    }
+
+    // End a transform gesture where it is, so a finger left on the screen
+    // stops driving it and a drafted preview warp is redone in full.
+    if (this._transformManager?.cancelInteraction()) {
+      this.composite();
     }
 
     // Cancel move tool drag
@@ -3332,8 +3421,13 @@ export class DrawingCanvas extends LitElement {
     if (!this._transformManager) return null;
     const layerId = this._ctx.value?.state.activeLayerId;
     if (!layerId) return null;
-    const snapshot = this._transformManager.snapshot();
-    return { layerId, tempCanvas: snapshot.canvas, x: snapshot.x, y: snapshot.y };
+    // Only the part on the document survives a commit, so only that is kept;
+    // a corner dragged far outside could otherwise ask for too large a canvas.
+    const snapshot = this._transformManager.snapshot({ x: 0, y: 0, w: this._docWidth, h: this._docHeight });
+    // A float moved wholly off the document still leaves its layer changed
+    // (lifted content leaves a hole), so report it, with nothing to draw.
+    const tempCanvas = snapshot?.canvas ?? document.createElement('canvas');
+    return { layerId, tempCanvas, x: snapshot?.x ?? 0, y: snapshot?.y ?? 0 };
   }
 
   private _onDragOver = (e: DragEvent) => {
@@ -3438,6 +3532,10 @@ export class DrawingCanvas extends LitElement {
       this._transformManager = null;
       this._transformContentMode = 'lifted';
       this._floatIsExternalImage = false;
+    }
+    if (this._transformViewCanvas) {
+      this._transformViewCanvas.width = this._transformViewCanvas.height = 0;
+      this._transformViewCanvas = null;
     }
     this._pointers.clear();
     this._pinching = false;
