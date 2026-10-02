@@ -139,8 +139,10 @@ describe('warpPerspective', () => {
 
   it('fills a concave quad up to its outline, without seams and nothing past it', () => {
     // The bilinear map folds past a concave quad's outline; the result must
-    // still be exactly the outline, anti-aliased, as the handles show it.
-    const src = solid(30, 30, [9, 8, 7, 255]);
+    // still be exactly the outline, anti-aliased, as the handles show it, and
+    // its edge pixels must continue what is inside rather than show the fold.
+    const src = new ImageData(256, 256);
+    for (let i = 0; i < 256 * 256; i++) src.data.set([i % 256, i >> 8, 128, 255], i * 4);
     const quads: Quad[] = [
       [{ x: 0.5, y: 0.5 }, { x: 120.5, y: 0.5 }, { x: 20.5, y: 20.5 }, { x: 0.5, y: 120.5 }],
       [{ x: 2, y: 2 }, { x: 300, y: 100 }, { x: 2, y: 200 }, { x: 100, y: 100 }],
@@ -160,6 +162,17 @@ describe('warpPerspective', () => {
           } else if (d <= -0.75) {
             outside++;
             expect(alpha, `outside (${x}, ${y})`).toBe(0);
+          } else if (d <= 0 && alpha > 0) {
+            // Close in colour to a neighbour inside: adjacent pixels inside
+            // differ by up to 13 levels on this gradient, the fold by over 100.
+            let nearest = Infinity;
+            for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+              if (x + dx < 0 || y + dy < 0 || x + dx >= w || y + dy >= h) continue;
+              if (signedOutlineDistance(q, x + dx + 0.5, y + dy + 0.5) <= 0) continue;
+              const [r, g] = pixel(out, x, y), [nr, ng] = pixel(out, x + dx, y + dy);
+              nearest = Math.min(nearest, Math.max(Math.abs(r - nr), Math.abs(g - ng)));
+            }
+            if (nearest < Infinity) expect(nearest, `edge (${x}, ${y})`).toBeLessThanOrEqual(20);
           }
         }
       }

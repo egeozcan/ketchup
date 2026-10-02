@@ -199,11 +199,34 @@ export function warpPerspective(
   // decides what is inside (the source rectangle still covers all of it).
   const convex = isConvex(dst);
 
+  const nearest = { x: 0, y: 0, ex: 0, ey: 0 };
+
   for (let py = 0; py < rh; py++) {
     const [spanStart, spanEnd] = quadRowSpan(dst, ry + py, rx, rw);
-    const cy = ry + py + 0.5, hy = cy - a.y;
+    const cy = ry + py + 0.5;
     for (let px = spanStart; px < spanEnd; px++) {
-      const cx = rx + px + 0.5, hx = cx - a.x;
+      const cx = rx + px + 0.5;
+      let hx = cx - a.x, hy = cy - a.y;
+      // A quad that isn't convex is covered by its outline alone, anti-aliased
+      // from the distance to it. On and just outside the outline, the map shows
+      // folded-away parts of the source if anything, so a pixel there takes its
+      // colour from a quarter pixel inside the nearest outline point.
+      let coverage = 1;
+      if (!convex) {
+        const dist = Math.sqrt(nearestOnQuad(dst, cx, cy, nearest));
+        const inside = quadWinding(dst, cx, cy) !== 0;
+        coverage = inside ? 0.5 + dist : 0.5 - dist;
+        if (coverage <= 0) continue;
+        if (coverage > 1) coverage = 1;
+        const len = Math.hypot(nearest.ex, nearest.ey);
+        if ((!inside || dist < 0.25) && len > 0) {
+          const nx = -0.25 * nearest.ey / len, ny = 0.25 * nearest.ex / len;
+          const side = quadWinding(dst, nearest.x + nx, nearest.y + ny) !== 0 ? 1 : -1;
+          hx = nearest.x + side * nx - a.x;
+          hy = nearest.y + side * ny - a.y;
+        }
+      }
+
       const k1 = ef + hx * gy - hy * gx;
       const k0 = hx * ey - hy * ex;
       let u: number, v: number;
@@ -213,8 +236,8 @@ export function warpPerspective(
       } else {
         let disc = k1 * k1 - 4 * k0 * k2;
         if (disc < 0) {
-          // Unmapped. Next to a concave quad's outline that can still be within
-          // its anti-aliased fringe, sampled at the nearest real solution.
+          // Unmapped. Within a non-convex quad's anti-aliased fringe, take
+          // the nearest real solution.
           if (convex) continue;
           disc = 0;
         }
@@ -230,28 +253,24 @@ export function warpPerspective(
       }
       if (!(u > -1 && u < 2 && v > -1 && v < 2)) continue;
 
-      // Only pixels within half a pixel of the outline are partially covered.
-      // Inside, (distance in u or v) × |Jacobian| / |other partial derivative|
-      // estimates the distance to the nearest edge cheaply (squared, sparing the
-      // square roots); near or outside the outline, where that estimate breaks
-      // down as the map folds, and throughout a quad that isn't convex, the
-      // distance to the edges is measured directly.
-      const inside = convex ? u >= 0 && u <= 1 && v >= 0 && v <= 1 : quadWinding(dst, cx, cy) !== 0;
-      let coverage = 1;
-      const mu = u < 1 - u ? u : 1 - u, mv = v < 1 - v ? v : 1 - v;
-      const pux = ex + gx * v, puy = ey + gy * v;
-      const pvx = fx + gx * u, pvy = fy + gy * u;
-      const jac = pux * pvy - puy * pvx;
-      const du = mu * jac, dv = mv * jac;
-      if (!convex || !inside
-        || du * du < 0.25 * (pvx * pvx + pvy * pvy) || dv * dv < 0.25 * (pux * pux + puy * puy)) {
-        const dist = Math.sqrt(Math.min(
-          segmentDist2(cx, cy, a, b), segmentDist2(cx, cy, b, c),
-          segmentDist2(cx, cy, c, d), segmentDist2(cx, cy, d, a),
-        ));
-        coverage = inside ? 0.5 + dist : 0.5 - dist;
-        if (coverage <= 0) continue;
-        if (coverage > 1) coverage = 1;
+      if (convex) {
+        // Only pixels within half a pixel of the outline are partially covered.
+        // Inside, (distance in u or v) × |Jacobian| / |other partial derivative|
+        // estimates the distance to the nearest edge cheaply (squared, sparing
+        // the square roots); near or outside the outline, where that estimate
+        // breaks down, the distance to the edges is measured directly.
+        const inside = u >= 0 && u <= 1 && v >= 0 && v <= 1;
+        const mu = u < 1 - u ? u : 1 - u, mv = v < 1 - v ? v : 1 - v;
+        const pux = ex + gx * v, puy = ey + gy * v;
+        const pvx = fx + gx * u, pvy = fy + gy * u;
+        const jac = pux * pvy - puy * pvx;
+        const du = mu * jac, dv = mv * jac;
+        if (!inside || du * du < 0.25 * (pvx * pvx + pvy * pvy) || dv * dv < 0.25 * (pux * pux + puy * puy)) {
+          const dist = Math.sqrt(nearestOnQuad(dst, cx, cy, nearest));
+          coverage = inside ? 0.5 + dist : 0.5 - dist;
+          if (coverage <= 0) continue;
+          if (coverage > 1) coverage = 1;
+        }
       }
 
       let sx = u * W - 0.5, sy = v * H - 0.5;
@@ -280,14 +299,31 @@ export function warpPerspective(
   return out;
 }
 
-/** Squared distance from (x, y) to the segment p–q. */
-function segmentDist2(x: number, y: number, p: Point, q: Point): number {
-  const qx = q.x - p.x, qy = q.y - p.y, wx = x - p.x, wy = y - p.y;
-  const len2 = qx * qx + qy * qy;
-  let t = len2 > 0 ? (wx * qx + wy * qy) / len2 : 0;
-  if (t < 0) t = 0; else if (t > 1) t = 1;
-  const dx = wx - qx * t, dy = wy - qy * t;
-  return dx * dx + dy * dy;
+/**
+ * Squared distance from (x, y) to the quad's outline. The nearest point of the
+ * outline, and the vector along its edge, are written to `out`.
+ */
+function nearestOnQuad(
+  q: [Point, Point, Point, Point], x: number, y: number, out: { x: number; y: number; ex: number; ey: number },
+): number {
+  let best = Infinity;
+  for (let i = 0; i < 4; i++) {
+    const p = q[i], n = q[(i + 1) % 4];
+    const qx = n.x - p.x, qy = n.y - p.y, wx = x - p.x, wy = y - p.y;
+    const len2 = qx * qx + qy * qy;
+    let t = len2 > 0 ? (wx * qx + wy * qy) / len2 : 0;
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    const dx = wx - qx * t, dy = wy - qy * t;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < best) {
+      best = d2;
+      out.x = p.x + qx * t;
+      out.y = p.y + qy * t;
+      out.ex = qx;
+      out.ey = qy;
+    }
+  }
+  return best;
 }
 
 /** How far (u, v) lies outside the unit square, in u/v units; 0 inside, Infinity if undefined. */
