@@ -34,6 +34,29 @@ describe('perspective corners', () => {
     expect((tm as any)._perspectiveCorners.se).toEqual({ x: 25, y: 30 });
   });
 
+  it('turns, flips and scales a warp with the rest of the transform', () => {
+    const tm = makeManager();
+    // Narrow the top: corners in, as a Ctrl-drag would.
+    drag(tm, { x: 0, y: 0 }, { x: 20, y: 0 });
+    drag(tm, { x: 100, y: 0 }, { x: 80, y: 0 });
+    const round = (ps: { x: number; y: number }[]) => ps.map(p => [Math.round(p.x * 1e6) / 1e6 || 0, Math.round(p.y * 1e6) / 1e6 || 0]);
+    expect(round((tm as any)._getCorners())).toEqual([[20, 0], [80, 0], [100, 80], [0, 80]]);
+
+    // Mirrored about the centre: still narrow at the top.
+    tm.flipH = true;
+    expect(round((tm as any)._getCorners())).toEqual([[80, 0], [20, 0], [0, 80], [100, 80]]);
+    tm.flipH = false;
+
+    // Upside down: narrow at the bottom.
+    tm.rotation = 180;
+    expect(round((tm as any)._getCorners())).toEqual([[80, 80], [20, 80], [0, 0], [100, 0]]);
+    tm.rotation = 0;
+
+    // Twice as wide: the taper doubles with it.
+    tm.width = 200;
+    expect(round((tm as any)._getCorners())).toEqual([[-10, 0], [110, 0], [150, 80], [-50, 80]]);
+  });
+
   it('puts the handles on the warped corners and halfway along the warped edges', () => {
     const tm = makeManager();
     drag(tm, { x: 100, y: 80 }, { x: 130, y: 100 });

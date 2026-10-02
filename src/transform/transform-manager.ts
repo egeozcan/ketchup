@@ -349,10 +349,12 @@ export class TransformManager {
   private _handlePerspective(docPoint: Point): void {
     const inter = this._interaction;
     if (inter.type !== 'perspective') return;
-    // From where the corner was when grabbed, not where it started out.
+    // From where the corner was when grabbed, not where it started out; the
+    // offset is in the float's own space, so the corner follows the pointer.
+    const from = docToLocal(inter.startPoint, this._state), to = docToLocal(docPoint, this._state);
     this._perspectiveCorners[inter.corner] = {
-      x: inter.startOffset.x + docPoint.x - inter.startPoint.x,
-      y: inter.startOffset.y + docPoint.y - inter.startPoint.y,
+      x: inter.startOffset.x + to.x - from.x,
+      y: inter.startOffset.y + to.y - from.y,
     };
     this._onChange();
   }
@@ -447,7 +449,8 @@ export class TransformManager {
    */
   private _getWarp(clip: TransformRect | null, maxPixels: number): WarpCache | null {
     const dstCorners = getPerspectiveDestCorners(this._state, this._perspectiveCorners);
-    let { x, y, w, h } = this._getSnapshotBounds();
+    const bounds = this._getSnapshotBounds();
+    let { x, y, w, h } = bounds;
     if (clip) {
       const right = Math.min(x + w, clip.x + clip.w), bottom = Math.min(y + h, clip.y + clip.h);
       x = Math.max(x, clip.x);
@@ -492,8 +495,19 @@ export class TransformManager {
       ctx.putImageData(warpPerspective(this._sourceImageData, scaled, region), 0, 0);
     }
     const warp = { key, canvas, x: sx / scale, y: sy / scale, w: sw / scale, h: sh / scale, scale };
-    if (scale === 1) this._warpCache = warp;
-    else this._draftWarpCache = warp;
+    if (scale === 1) {
+      this._warpCache = warp;
+      // A draft (always of the whole float) is no longer needed once this
+      // covers the whole float too, as when a drag ends.
+      const draft = this._draftWarpCache;
+      if (draft && draft.key === key && warp.x <= bounds.x && warp.y <= bounds.y
+        && warp.x + warp.w >= bounds.x + bounds.w && warp.y + warp.h >= bounds.y + bounds.h) {
+        draft.canvas.width = draft.canvas.height = 0;
+        this._draftWarpCache = null;
+      }
+    } else {
+      this._draftWarpCache = warp;
+    }
     return warp;
   }
 

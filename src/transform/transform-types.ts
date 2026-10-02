@@ -41,7 +41,10 @@ export interface TransformState {
   scaleY: number;
 }
 
-/** Per-corner offsets for perspective warp (relative to affine-transformed corners) */
+/**
+ * Per-corner offsets for perspective warp, in the float's own (untransformed)
+ * space, so the warp turns, flips and scales with the rest of the transform.
+ */
 export interface PerspectiveCorners {
   nw: Point;
   ne: Point;

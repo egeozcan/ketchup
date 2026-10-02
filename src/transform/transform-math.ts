@@ -143,19 +143,22 @@ export function detectContentBounds(imageData: ImageData): TransformRect | null 
 // --- Perspective warp ---
 
 /**
- * Compute the 4 destination corners for perspective warp.
- * Each corner is the affine-transformed position plus a per-corner offset.
+ * Compute the 4 destination corners for perspective warp: each corner of the
+ * float moved by its offset in the float's own (untransformed) space, then
+ * transformed, so the warp turns, flips and scales with the float.
  */
 export function getPerspectiveDestCorners(
   state: TransformState,
   offsets: PerspectiveCorners,
 ): [Point, Point, Point, Point] {
-  const [tl, tr, br, bl] = getTransformedCorners(state);
+  const m = composeMatrix(state);
+  const at = (x: number, y: number): Point => ({ x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f });
+  const { width: w, height: h } = state;
   return [
-    { x: tl.x + offsets.nw.x, y: tl.y + offsets.nw.y },
-    { x: tr.x + offsets.ne.x, y: tr.y + offsets.ne.y },
-    { x: br.x + offsets.se.x, y: br.y + offsets.se.y },
-    { x: bl.x + offsets.sw.x, y: bl.y + offsets.sw.y },
+    at(offsets.nw.x, offsets.nw.y),
+    at(w + offsets.ne.x, offsets.ne.y),
+    at(w + offsets.se.x, h + offsets.se.y),
+    at(offsets.sw.x, h + offsets.sw.y),
   ];
 }
 
