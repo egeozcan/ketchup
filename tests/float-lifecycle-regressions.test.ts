@@ -336,6 +336,17 @@ describe('touches, missed releases and context menus', () => {
     expect(cancel).toHaveBeenCalled();
   });
 
+  it('gives a float the touch layout when a finger lands under the hand tool, and still pans', () => {
+    const { canvas } = setupTool('hand');
+    const tm = new TransformManager(new ImageData(100, 80), { x: 0, y: 0, w: 100, h: 80 }, makeCanvas(400, 400), 1, { x: 100, y: 100 });
+    (canvas as any)._transformManager = tm;
+    (canvas as any)._panX = 100;
+    (canvas as any)._panY = 100;
+    (canvas as any)._onPointerDown({ ...touch(1, 150, 140), isPrimary: true });
+    expect(tm.touchMode).toBe(true);
+    expect((canvas as any)._panning).toBe(true);
+  });
+
   it('only applies a value typed in the panel on a press off the float, so it shows before a commit', () => {
     const { canvas } = setupTool('select');
     const tm = new TransformManager(new ImageData(100, 80), { x: 0, y: 0, w: 100, h: 80 }, makeCanvas(100, 100), 1, { x: 100, y: 100 });

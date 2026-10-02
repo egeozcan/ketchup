@@ -2086,29 +2086,33 @@ export class DrawingCanvas extends LitElement {
       return;
     }
 
+    const tm = this._transformManager;
+    const hand = this.ctx.state.activeTool === 'hand';
+    // Touch gets bigger handles and buttons, laid out differently; a first
+    // tap on the ✓/✗ drawn for the mouse still means them.
+    if (tm && e.pointerType === 'touch' && !tm.touchMode && !tm.hitTestButton(this._getDocPoint(e))) {
+      const p = this._getDocPoint(e);
+      const drawn = tm.hitKind(p);
+      tm.setTouchMode(true);
+      // The bigger touch layout puts something else under the finger than
+      // what was on screen: this tap only switches layouts. (Under the hand
+      // tool, which pans everywhere else, only a button counts.)
+      if (hand ? tm.hitTestButton(p) : tm.hitKind(p) !== drawn) return;
+    }
+
     // The hand tool pans, a float or not; only the float's ✓/✗ still take a
     // press (a pasted or dropped float can be active under it).
-    if (this._transformManager && this.ctx.state.activeTool === 'hand' && !this._transformManager.hitTestButton(this._getDocPoint(e))) {
+    if (tm && hand && !tm.hitTestButton(this._getDocPoint(e))) {
       this._startPan(e);
       return;
     }
 
     // TransformManager intercepts all pointer events when active
-    if (this._transformManager) {
+    if (tm) {
       const p = this._getDocPoint(e);
-      // Touch gets bigger handles and buttons, laid out differently; a first
-      // tap on the ✓/✗ drawn for the mouse still means them.
-      const tm = this._transformManager;
-      if (e.pointerType === 'touch' && !tm.touchMode && !tm.hitTestButton(p)) {
-        const drawn = tm.hitKind(p);
-        tm.setTouchMode(true);
-        // The bigger touch layout puts something else under the finger than
-        // what was on screen: this tap only switches layouts.
-        if (tm.hitKind(p) !== drawn) return;
-      }
       const modifiers = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey };
       // A pen tap drifts more than a click.
-      this._transformManager.onPointerDown(p, modifiers, e.pointerType === 'pen' ? HANDLE_CONFIG_TOUCH.outsideDragThreshold : undefined);
+      tm.onPointerDown(p, modifiers, e.pointerType === 'pen' ? HANDLE_CONFIG_TOUCH.outsideDragThreshold : undefined);
       if (!this._replayingTap) this.mainCanvas.setPointerCapture(e.pointerId);
       return;
     }
