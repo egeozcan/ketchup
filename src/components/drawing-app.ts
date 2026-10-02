@@ -607,6 +607,7 @@ export class DrawingApp extends LitElement {
    */
   private async _enterProject(meta: StorageProjectMeta, load: () => Promise<void>) {
     this._projectLoads++;
+    this._keptElsewhere = false;
     try {
       this._currentProject = meta;
       // One tab edits a project at a time: in another's, it's only shown.
@@ -642,7 +643,10 @@ export class DrawingApp extends LitElement {
   private _lockWait: AbortController | null = null;
   /** Tabs of the app asking each other to hand a project over. */
   private _tabs: BroadcastChannel | null = null;
-  private _handingOver = false;
+  /** Saving to hand the project to the tab that asked for it. */
+  @state() private _handingOver = false;
+  /** The tab editing the project couldn't save, so it kept the project. */
+  @state() private _keptElsewhere = false;
   private _claiming = false;
   /** The last save failed, so its work is only here. */
   private _saveFailed = false;
@@ -768,6 +772,7 @@ export class DrawingApp extends LitElement {
     const meta = this._currentProject;
     if (!meta || !this._readOnly || this._projectLock || this._claiming) return;
     this._claiming = true;
+    if (takeOver) this._keptElsewhere = false;
     try {
       let got = await this._lockProject(meta.id);
       if (!got && takeOver && this._currentProject === meta) {
@@ -800,7 +805,10 @@ export class DrawingApp extends LitElement {
         if (e.data?.id !== id) return;
         if (e.data.type === 'releasing') clearTimeout(timer);
         // Ends the wait below.
-        else if (e.data.type === 'kept') this._cancelLockRequests();
+        else if (e.data.type === 'kept') {
+          this._keptElsewhere = true;
+          this._cancelLockRequests();
+        }
       };
       const done = (got: boolean) => {
         clearTimeout(timer);
@@ -2612,14 +2620,19 @@ export class DrawingApp extends LitElement {
       <div class="main-area">
         ${this._readOnly ? html`
           <div class="read-only" role="alert">
-            <p>This project is open in another tab. Changes made there are saved; this tab only shows it.</p>
-            ${this._waitingForTab
-              ? html`<p>Waiting for the other tab to save…</p>`
-              : html`<button @click=${() => this._editHere(true)}>Use here</button>`}
+            ${this._handingOver ? html`<p>Saving, for the tab that asked to edit this project…</p>` : html`
+              <p>This project is open in another tab. Changes made there are saved; this tab only shows it.</p>
+              ${this._keptElsewhere
+                ? html`<p>That tab couldn't save its changes, so it keeps the project for now.</p>` : ''}
+              ${this._waitingForTab
+                ? html`<p>Waiting for the other tab to save…</p>`
+                : html`<button @click=${() => this._editHere(true)}>Use here</button>`}
+            `}
           </div>
         ` : ''}
-        <app-toolbar></app-toolbar>
+        <app-toolbar ?inert=${this._readOnly}></app-toolbar>
         <drawing-canvas
+          ?inert=${this._readOnly}
           @history-change=${this._onHistoryChange}
           @layer-undo=${this._onLayerUndo}
           @crop-commit=${this._onCropCommit}
@@ -2628,7 +2641,7 @@ export class DrawingApp extends LitElement {
           @viewport-change=${this._onViewportChange}
         ></drawing-canvas>
         ${!this._isMobile ? html`
-          <div class="right-sidebar ${this._state.layersPanelOpen ? '' : 'collapsed'}">
+          <div class="right-sidebar ${this._state.layersPanelOpen ? '' : 'collapsed'}" ?inert=${this._readOnly}>
             <navigator-panel
               @navigator-pan=${this._onNavigatorPan}
               @navigator-zoom=${this._onNavigatorZoom}

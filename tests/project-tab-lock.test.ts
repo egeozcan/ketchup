@@ -140,6 +140,7 @@ describe('one tab edits a project at a time', () => {
     (editing as any)._dirty = true;
     (editing as any)._flushPendingSaveAndWait = vi.fn(async () => {
       expect((editing as any)._readOnly).toBe(true);
+      expect((editing as any)._handingOver).toBe(true);
       await new Promise(r => setTimeout(r, 3000));
       (editing as any)._dirty = false;
       order.push('saved');
@@ -209,6 +210,7 @@ describe('one tab edits a project at a time', () => {
     expect(load).not.toHaveBeenCalled();
     expect((shown as any)._readOnly).toBe(true);
     expect((shown as any)._waitingForTab).toBe(false);
+    expect((shown as any)._keptElsewhere).toBe(true);
     expect((editing as any)._readOnly).toBe(false);
     expect((editing as any)._projectLock?.id).toBe('p');
   });
@@ -306,6 +308,25 @@ describe('one tab edits a project at a time', () => {
     await settle();
     expect((app as any)._projectLock?.id).toBe(id);
     expect((app as any)._readOnly).toBe(false);
+  });
+
+  it('keeps the keyboard out of what the read-only overlay covers', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    fakeLocks();
+    const { app } = makeApp();
+    app.storageBackend = new MockBackend();
+    document.body.append(app);
+    await app.whenReady();
+    (app as any)._readOnly = true;
+    await app.updateComplete;
+    const root = app.shadowRoot!;
+    for (const sel of ['app-toolbar', 'drawing-canvas', '.right-sidebar']) {
+      expect(root.querySelector(sel)!.hasAttribute('inert')).toBe(true);
+    }
+    expect(root.querySelector('.read-only button')!.closest('[inert]')).toBeNull();
+    (app as any)._readOnly = false;
+    await app.updateComplete;
+    expect(root.querySelector('[inert]')).toBeNull();
   });
 
 });
