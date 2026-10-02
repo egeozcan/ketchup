@@ -59,14 +59,50 @@ describe('DrawingCanvas transformed selection clipboard operations', () => {
     expect((canvas as any)._clipboardOrigin).toEqual({ x: 2, y: 9 });
   });
 
-  it('cutSelection clears the transformed region, not the original source rect', () => {
+  it('cutSelection copies the transformed float, then deletes it without touching anything around it', () => {
     const { canvas, layer } = setupTransformedCanvas();
     const layerCtx = layer.canvas.getContext('2d')!;
     const clearRectSpy = vi.spyOn(layerCtx, 'clearRect');
+    const commit = vi.spyOn(canvas, 'commitTransform');
+    const pushHistory = vi.spyOn(canvas as any, '_pushDrawHistory').mockImplementation(() => {});
 
     canvas.cutSelection();
 
-    expect(clearRectSpy).toHaveBeenCalledWith(2, 9, 16, 6);
+    // Committing and then clearing the float's bounds would also clear what
+    // else is in them (a rotated or warped float covers less) and what it
+    // was moved over.
+    expect(commit).not.toHaveBeenCalled();
+    expect(clearRectSpy).not.toHaveBeenCalled();
+    expect((canvas as any)._clipboard.width).toBe(16);
+    expect((canvas as any)._clipboardOrigin).toEqual({ x: 2, y: 9 });
+    expect(canvas.isTransformActive()).toBe(false);
+    // The lift's hole is what stays: one undo step back to before it.
+    expect(pushHistory).toHaveBeenCalledWith(true);
+  });
+
+  it('cutSelection of a pasted image removes the layer it came on', () => {
+    const { canvas } = setupTransformedCanvas();
+    (canvas as any)._floatIsExternalImage = true;
+    const cancelExternal = vi.spyOn(canvas, 'cancelExternalFloat');
+
+    canvas.cutSelection();
+
+    expect(cancelExternal).toHaveBeenCalled();
+    expect((canvas as any)._clipboard.width).toBe(16);
+  });
+
+  it('deleting a pasted image leaves the next float an ordinary one', () => {
+    const { canvas } = setupTransformedCanvas();
+    (canvas as any)._floatIsExternalImage = true;
+    (canvas as any)._transformContentMode = 'inserted';
+
+    canvas.deleteSelection();
+    (canvas as any)._transformManager = new TransformManager(
+      new ImageData(4, 4), { x: 0, y: 0, w: 4, h: 4 }, makeCanvas(100, 100), 1, { x: 0, y: 0 },
+    );
+
+    // Otherwise Escape would discard this float's pixels as if pasted.
+    expect(canvas.hasExternalFloat).toBe(false);
   });
 
   it('duplicateInPlace duplicates the current transformed result', () => {

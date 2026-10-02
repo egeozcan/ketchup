@@ -11,7 +11,9 @@ export type TransformInteraction =
   | { type: 'rotating'; startAngle: number; startRotation: number }
   | { type: 'skewing'; edge: 'n' | 'e' | 's' | 'w'; startPoint: Point; startSkewX: number; startSkewY: number }
   | { type: 'perspective'; corner: 'nw' | 'ne' | 'se' | 'sw'; startPoint: Point; startOffset: Point }
-  | { type: 'outside-pending'; startPoint: Point };
+  | { type: 'outside-pending'; startPoint: Point }
+  /** Pressed on the commit or cancel button, which acts only if released on it too. */
+  | { type: 'button'; button: 'commit' | 'cancel' };
 
 /** Bounding rect in document space */
 export interface TransformRect {

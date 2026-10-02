@@ -168,11 +168,11 @@ export class TransformManager {
   // --- Pointer event handlers ---
 
   onPointerDown(docPoint: Point, modifiers: { shift: boolean; ctrl: boolean; alt: boolean }): boolean {
-    const buttons = getCommitCancelPositions(this._getCorners(), this._handleConfig, this._zoom);
-    const commitDist = Math.hypot(docPoint.x - buttons.commitCenter.x, docPoint.y - buttons.commitCenter.y);
-    if (commitDist <= buttons.buttonRadius) return true;
-    const cancelDist = Math.hypot(docPoint.x - buttons.cancelCenter.x, docPoint.y - buttons.cancelCenter.y);
-    if (cancelDist <= buttons.buttonRadius) return true;
+    const button = this._hitTestButton(docPoint);
+    if (button) {
+      this._interaction = { type: 'button', button };
+      return true;
+    }
 
     if (hitTestRotationHandle(docPoint, this._getCorners(), this._handleConfig, this._zoom)) {
       const center = getTransformCenter(this._state);
@@ -244,20 +244,24 @@ export class TransformManager {
   }
 
   onPointerUp(docPoint: Point): 'commit' | 'cancel-button' | 'commit-button' | null {
+    const inter = this._interaction;
+    this._interaction = { type: 'idle' };
+    // A button acts only when both pressed and released on it: a drag that
+    // merely ends over one (they follow the corners) must not commit or
+    // throw away the transform.
+    if (inter.type === 'button') {
+      return this._hitTestButton(docPoint) === inter.button ? `${inter.button}-button` : null;
+    }
+    return inter.type === 'outside-pending' ? 'commit' : null;
+  }
+
+  private _hitTestButton(docPoint: Point): 'commit' | 'cancel' | null {
     const buttons = getCommitCancelPositions(this._getCorners(), this._handleConfig, this._zoom);
     const commitDist = Math.hypot(docPoint.x - buttons.commitCenter.x, docPoint.y - buttons.commitCenter.y);
-    if (commitDist <= buttons.buttonRadius) {
-      this._interaction = { type: 'idle' };
-      return 'commit-button';
-    }
+    if (commitDist <= buttons.buttonRadius) return 'commit';
     const cancelDist = Math.hypot(docPoint.x - buttons.cancelCenter.x, docPoint.y - buttons.cancelCenter.y);
-    if (cancelDist <= buttons.buttonRadius) {
-      this._interaction = { type: 'idle' };
-      return 'cancel-button';
-    }
-    const result: 'commit' | null = this._interaction.type === 'outside-pending' ? 'commit' : null;
-    this._interaction = { type: 'idle' };
-    return result;
+    if (cancelDist <= buttons.buttonRadius) return 'cancel';
+    return null;
   }
 
   /**
@@ -431,7 +435,8 @@ export class TransformManager {
 
   /** Most pixels the preview warp may compute right now (see WARP_PREVIEW_PIXELS). */
   private _warpPixelBudget(): number {
-    if (this._interaction.type === 'idle') return WARP_PREVIEW_PIXELS;
+    const { type } = this._interaction;
+    if (type === 'idle' || type === 'button' || type === 'outside-pending') return WARP_PREVIEW_PIXELS;
     return canWarpOnGpu(this._sourceImageData) ? WARP_GPU_DRAG_PIXELS : WARP_DRAG_PIXELS;
   }
 
@@ -569,11 +574,7 @@ export class TransformManager {
   }
 
   getCursor(docPoint: Point): string {
-    const buttons = getCommitCancelPositions(this._getCorners(), this._handleConfig, this._zoom);
-    const commitDist = Math.hypot(docPoint.x - buttons.commitCenter.x, docPoint.y - buttons.commitCenter.y);
-    if (commitDist <= buttons.buttonRadius) return 'pointer';
-    const cancelDist = Math.hypot(docPoint.x - buttons.cancelCenter.x, docPoint.y - buttons.cancelCenter.y);
-    if (cancelDist <= buttons.buttonRadius) return 'pointer';
+    if (this._hitTestButton(docPoint)) return 'pointer';
     return getCursorForPoint(docPoint, this._getCorners(), this._handleConfig, this._zoom);
   }
 

@@ -2159,7 +2159,9 @@ export class DrawingCanvas extends LitElement {
       const modifiers = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey };
       const before = this.getTransformValues();
       const changed = this._transformManager.onPointerMove(p, modifiers);
-      this.style.cursor = this._transformManager.getCursor(p);
+      // On the canvas itself, whose own cursor would hide the host's. The
+      // next update resets it once the transform ends.
+      this.mainCanvas.style.cursor = this._transformManager.getCursor(p);
       if (changed) {
         // The float isn't on its layer until commit, so layer pixels (and the
         // thumbnails drawn from them) stay as they are; only the sampling
@@ -3067,18 +3069,20 @@ export class DrawingCanvas extends LitElement {
 
   public copySelection() {
     if (!this._transformManager) return;
-    const snapshot = this._transformManager.snapshot();
-    const snapCtx = snapshot.canvas.getContext('2d')!;
-
-    // Commit first so the document matches what the user copied and the
-    // transform remains undoable through the normal history entry.
+    this._copyFloatToClipboard();
+    // Commit so the document matches what the user copied and the transform
+    // remains undoable through the normal history entry.
     this.commitTransform();
+    this._notifyHistory();
+  }
 
-    this._clipboard = snapCtx.getImageData(0, 0, snapshot.w, snapshot.h);
+  /** Puts the float, as shown, on the clipboards. */
+  private _copyFloatToClipboard() {
+    const snapshot = this._transformManager!.snapshot();
+    this._clipboard = snapshot.canvas.getContext('2d')!.getImageData(0, 0, snapshot.w, snapshot.h);
     this._clipboardOrigin = { x: snapshot.x, y: snapshot.y };
     this._clipboardRotation = 0;
     this._writeToSystemClipboard(snapshot.canvas);
-    this._notifyHistory();
   }
 
   private _writeToSystemClipboard(canvas: HTMLCanvasElement) {
@@ -3097,24 +3101,12 @@ export class DrawingCanvas extends LitElement {
 
   public cutSelection() {
     if (!this._transformManager) return;
-    // Copy stores the source data and cancels the transform (restoring the region).
-    // After copy, the region is restored, so we need to re-capture and delete it.
-    this.copySelection();
-    // copySelection() restored the layer — now capture and clear the region
-    // that was just restored so "cut" actually removes it.
-    const origin = this._clipboardOrigin;
-    const data = this._clipboard;
-    if (origin && data) {
-      this._captureBeforeDraw();
-      const layerCtx = this._getActiveLayerCtx();
-      if (layerCtx) {
-        layerCtx.clearRect(origin.x, origin.y, data.width, data.height);
-        this._pushDrawHistory(true, { x: origin.x, y: origin.y, w: data.width, h: data.height });
-        this.composite();
-      } else {
-        this._beforeDrawCanvas = null;
-      }
-    }
+    // Copy, then delete the float rather than commit it: clearing what it
+    // covers after a commit would also clear everything else in its bounds
+    // (it may be rotated or warped) and whatever it was moved over.
+    this._copyFloatToClipboard();
+    if (this._floatIsExternalImage) this.cancelExternalFloat();
+    else this.deleteSelection();
   }
 
   public pasteSelection() {
@@ -3311,6 +3303,9 @@ export class DrawingCanvas extends LitElement {
     this._transformManager.dispose();
     this._transformManager = null;
     this._transformContentMode = 'lifted';
+    // Otherwise the next float would be taken for this one, and cancelling it
+    // would drop its pixels as if they had been pasted.
+    this._floatIsExternalImage = false;
     // Push history so the deletion is undoable.
     this._pushDrawHistory(true);
     this.previewCanvas.getContext('2d')!.clearRect(0, 0, this._vw, this._vh);

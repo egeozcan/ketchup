@@ -38,10 +38,16 @@ export function getRotationHandlePos(
   let dy = topCenter.y - center.y;
   let len = Math.sqrt(dx * dx + dy * dy);
   if (len < 1) {
-    // The top edge's middle is the centre (a symmetric bow-tie): go out
-    // square to the top edge instead, clear of the handles there.
+    // The top edge's middle is (nearly) the centre, as on a symmetric bow-tie
+    // or a float under 2 px tall: go out square to the top edge instead, on
+    // the side away from the bottom edge, clear of the handles there.
     dx = corners[1].y - corners[0].y;
     dy = corners[0].x - corners[1].x;
+    const bottom = mid(corners[2], corners[3]);
+    if (dx * (topCenter.x - bottom.x) + dy * (topCenter.y - bottom.y) < 0) {
+      dx = -dx;
+      dy = -dy;
+    }
     len = Math.sqrt(dx * dx + dy * dy);
     if (len < 1) return topCenter;
   }

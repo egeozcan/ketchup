@@ -218,10 +218,14 @@ interface Gpu {
 
 /** undefined: not tried yet (or lost, to try again); null: unavailable. */
 let gpu: Gpu | null | undefined;
-/** Sources that failed to upload (out of GPU memory), left to the CPU. */
-let failed = new WeakSet<ImageData>();
+/**
+ * Sources that failed to upload (out of GPU memory), left to the CPU. Kept
+ * across a lost context, which such an upload may itself have caused.
+ */
+const failed = new WeakSet<ImageData>();
 
-function createGpu(): Gpu | null {
+/** null if there is no usable GPU; undefined if the context was lost while setting up, to try again. */
+function createGpu(): Gpu | null | undefined {
   if (typeof WebGL2RenderingContext === 'undefined') return null;
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 1;
@@ -248,6 +252,7 @@ function createGpu(): Gpu | null {
     gl.attachShader(program, shader);
   }
   gl.linkProgram(program);
+  if (gl.isContextLost()) return undefined;
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
     const logs = gl.getAttachedShaders(program)?.map(s => gl.getShaderInfoLog(s)).filter(Boolean) ?? [];
     console.warn('Perspective warp shader failed; warping on the CPU.', gl.getProgramInfoLog(program), ...logs);
@@ -279,13 +284,15 @@ function createGpu(): Gpu | null {
   canvas.addEventListener('webglcontextlost', () => {
     // Try a new context next time; until then the CPU warps.
     if (gpu?.canvas === canvas) gpu = undefined;
-    failed = new WeakSet();
   });
   return { canvas, gl, uniforms, texture, maxTexture: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number, tile, source: null };
 }
 
 function getGpu(): Gpu | null {
-  if (gpu === undefined) gpu = createGpu();
+  if (gpu === undefined) {
+    gpu = createGpu();
+    if (gpu === undefined) return null;
+  }
   if (gpu?.gl.isContextLost()) gpu = undefined;
   return gpu ?? null;
 }
@@ -314,15 +321,16 @@ export function warpPerspectiveGpu(
 
   if (g.source !== src) {
     g.source = null;
-    gl.getError();
+    // Several errors may be pending; each call clears one.
+    while (gl.getError() !== gl.NO_ERROR && !gl.isContextLost());
+    // Failed until known otherwise, in case the upload loses the context.
+    failed.add(src);
     gl.texImage2D(
       gl.TEXTURE_2D, 0, gl.RGBA8, src.width, src.height, 0, gl.RGBA, gl.UNSIGNED_BYTE,
       new Uint8Array(src.data.buffer, src.data.byteOffset, src.data.byteLength),
     );
-    if (gl.getError() !== gl.NO_ERROR) {
-      failed.add(src);
-      return false;
-    }
+    if (gl.getError() !== gl.NO_ERROR || gl.isContextLost()) return false;
+    failed.delete(src);
     g.source = src;
   }
 
