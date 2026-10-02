@@ -329,6 +329,29 @@ describe('one tab edits a project at a time', () => {
     expect((app as any)._stranded).toBe(true);
   });
 
+  it('commits a float moved since the last save when the project is taken, and keeps it as work', async () => {
+    const locks = fakeLocks();
+    const { app, canvas, project } = await makeSavingApp();
+    // Committing the float lands it in history, which marks work.
+    canvas.clearSelection.mockImplementation(() => { (app as any)._markDirty(); });
+    await stealElsewhere(locks, project.id);
+    expect(canvas.clearSelection).toHaveBeenCalled();
+    expect((app as any)._stranded).toBe(true);
+  });
+
+  it('never reloads unstored work away when coming back into view', async () => {
+    fakeLocks();
+    const { app, project } = await makeSavingApp();
+    const load = vi.spyOn(app as any, '_loadProject');
+    (app as any)._releaseProjectLock();
+    Object.assign(app as any, { _readOnly: true, _dirty: true });
+    (app as any)._contentVersion++;
+    await (app as any)._editHere(false);
+    expect(load).not.toHaveBeenCalled();
+    expect((app as any)._stranded).toBe(true);
+    expect((app as any)._currentProject.id).toBe(project.id);
+  });
+
   it('counts text still being typed as work not stored', async () => {
     const locks = fakeLocks();
     const { app, canvas, project } = await makeSavingApp();

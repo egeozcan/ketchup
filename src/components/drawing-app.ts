@@ -772,6 +772,8 @@ export class DrawingApp extends LitElement {
         if (!held || this._projectLock !== held) return;
         this._projectLock = null;
         this._readOnly = true;
+        // A float moved since the last save is work too: onto its layer.
+        this.canvas?.clearSelection({ keepCrop: true });
         this._stranded = this._hasUnsavedWork();
       });
     });
@@ -845,8 +847,12 @@ export class DrawingApp extends LitElement {
   private async _editHere(takeOver: boolean) {
     const meta = this._currentProject;
     if (!meta || !this._readOnly || this._projectLock || this._claiming) return;
-    // Work kept from a take-over goes only by the user's choice.
-    if (this._stranded && !takeOver) return;
+    // Work kept from a take-over goes only by the user's choice (and work
+    // not stored is kept, not reloaded away).
+    if (!takeOver && (this._stranded || this._hasUnsavedWork())) {
+      this._stranded = true;
+      return;
+    }
     this._claiming = true;
     if (takeOver) this._keptElsewhere = false;
     try {
