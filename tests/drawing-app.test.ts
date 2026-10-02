@@ -388,6 +388,24 @@ describe('DrawingApp', () => {
     (app as any)._backend.state.save = put;
     await (app as any)._save();
     expect(put).not.toHaveBeenCalled();
+
+    // Once it does load, it is saved again.
+    const serMod = await import('../src/utils/storage-serialization.js');
+    const deserSpy = vi.spyOn(serMod, 'deserializeLayer').mockResolvedValue({
+      id: 'l1', name: 'Layer 1', visible: true, opacity: 1, blendMode: 'normal',
+      canvas: document.createElement('canvas'),
+    });
+    (app as any)._backend.state.get = vi.fn(async () => ({
+      toolSettings: { activeTool: 'pencil', strokeColor: '#000000', fillColor: '#ff0000', useFill: false, brushSize: 4 },
+      canvasWidth: 100, canvasHeight: 100,
+      layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, imageBlobRef: 'ref1' }],
+      activeLayerId: 'l1', layersPanelOpen: true, historyIndex: -1,
+    }));
+    (app as any)._backend.history = { getEntries: vi.fn(async () => []) };
+    (app as any)._backend.blobs = { get: vi.fn(async () => new Blob([new Uint8Array(4)], { type: 'image/png' })) };
+    await (app as any)._loadProject('broken');
+    expect((app as any)._unsavableProjectId).toBeNull();
+    deserSpy.mockRestore();
   });
 
   it('falls back to the first layer if saved activeLayerId is invalid on load', async () => {

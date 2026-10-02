@@ -416,8 +416,8 @@ export class DrawingApp extends LitElement {
   private _onBeforeUnload = (e: BeforeUnloadEvent) => {
     // Embedded, the working copy is in memory and the host owns the document;
     // the host decides whether leaving needs a prompt (from `modified`). Shown
-    // read-only, another tab has the work.
-    if (this.embedded || this._readOnly) return;
+    // read-only, another tab has the work (one handing it over still saves).
+    if (this.embedded || !this._ownsProject(this._currentProject?.id ?? '')) return;
     // Commit any active float so the layer canvas includes the selection content.
     // A crop being set up isn't work to commit; it stays (Stay on the prompt).
     this.canvas?.clearSelection({ keepCrop: true });
@@ -610,12 +610,17 @@ export class DrawingApp extends LitElement {
     try {
       this._currentProject = meta;
       // One tab edits a project at a time: in another's, it's only shown.
-      this._readOnly = !(await this._lockProject(meta.id));
+      if (!(await this._lockProject(meta.id))) this._readOnly = true;
+      // A tab that had it (and didn't answer in time to hand it over) may
+      // still be writing a save.
+      else await this._saveSettled(meta.id);
       await load();
       // A load that failed carries on in a new project, which is ours.
-      if (this._currentProject && this._currentProject.id !== meta.id) {
-        this._readOnly = !(await this._lockProject(this._currentProject.id));
-      }
+      const current = this._currentProject ?? meta;
+      if (current.id !== meta.id) await this._lockProject(current.id);
+      // Editable once its own content is in, if still ours (another tab may
+      // have asked for it meanwhile).
+      this._readOnly = !this._ownsProject(current.id);
     } finally {
       this._projectLoads--;
     }
@@ -627,10 +632,20 @@ export class DrawingApp extends LitElement {
 
   /** Shown while another tab of the standalone app has this project open for editing. */
   @state() private _readOnly = false;
+  /** "Use here" asked the tab editing the project to let go, and it is saving first. */
+  @state() private _waitingForTab = false;
   /** The project this tab holds the edit lock for, and how to let it go. */
   private _projectLock: { id: string; release: () => void } | null = null;
+  /** Counts lock requests: one granted after another was made is let go at once. */
+  private _lockRequest = 0;
+  /** Ends a lock request queued behind the tab holding the lock. */
+  private _lockWait: AbortController | null = null;
   /** Tabs of the app asking each other to hand a project over. */
   private _tabs: BroadcastChannel | null = null;
+  private _handingOver = false;
+  private _claiming = false;
+  /** The last save failed, so its work is only here. */
+  private _saveFailed = false;
 
   private get _locks(): LockManager | null {
     // Embedded editors keep their own documents; without Web Locks every tab
@@ -638,37 +653,74 @@ export class DrawingApp extends LitElement {
     return this.embedded ? null : (navigator as Navigator & { locks?: LockManager }).locks ?? null;
   }
 
+  /** Whether this tab may write project `id`: it holds its lock, or nothing is locked. */
+  private _ownsProject(id: string) {
+    return !this._locks || this._projectLock?.id === id;
+  }
+
   /**
    * Takes the edit lock for a project, letting go of any other; resolves
-   * whether this tab has it (`steal`: from the tab that does).
+   * whether this tab has it. `try` takes it only if free, `wait` queues
+   * behind the tab holding it, `steal` takes it from that tab.
    */
-  private _lockProject(id: string, steal = false): Promise<boolean> {
-    if (this._projectLock?.id === id) return Promise.resolve(true);
+  private _lockProject(id: string, mode: 'try' | 'wait' | 'steal' = 'try'): Promise<boolean> {
+    if (this._projectLock?.id === id) {
+      this._cancelLockRequests();
+      return Promise.resolve(true);
+    }
     this._releaseProjectLock();
     const locks = this._locks;
     if (!locks) return Promise.resolve(true);
     this._listenToTabs();
+    const request = this._lockRequest;
+    let options: LockOptions = { ifAvailable: true };
+    if (mode === 'steal') {
+      options = { steal: true };
+    } else if (mode === 'wait') {
+      this._lockWait = new AbortController();
+      options = { signal: this._lockWait.signal };
+    }
+    let held: { id: string; release: () => void } | null = null;
     return new Promise<boolean>(resolve => {
-      void locks.request(`ketchup-project:${id}`, steal ? { steal: true } : { ifAvailable: true }, lock => {
-        if (!lock) {
+      void locks.request(`ketchup-project:${id}`, options, lock => {
+        // Not free, or another project was asked for since.
+        if (!lock || request !== this._lockRequest) {
           resolve(false);
           return undefined;
         }
         resolve(true);
         // Held until let go (another project, or handed over).
-        return new Promise<void>(release => { this._projectLock = { id, release }; });
+        return new Promise<void>(release => {
+          held = { id, release };
+          this._projectLock = held;
+        });
       }).catch(() => {
-        // Taken over by another tab ("Use here" there): show it, don't save.
-        if (this._projectLock?.id !== id) return;
+        // No longer waited for; or taken by another tab whose "Use here"
+        // this one didn't answer: show it, don't save.
+        resolve(false);
+        if (!held || this._projectLock !== held) return;
         this._projectLock = null;
         this._readOnly = true;
       });
     });
   }
 
+  /** Makes lock requests still pending moot: a grant is let go at once, a wait ends. */
+  private _cancelLockRequests() {
+    this._lockRequest++;
+    this._lockWait?.abort();
+    this._lockWait = null;
+  }
+
   private _releaseProjectLock() {
+    this._cancelLockRequests();
     this._projectLock?.release();
     this._projectLock = null;
+  }
+
+  /** Waits for a save of project `id` that another tab still has under way. */
+  private async _saveSettled(id: string) {
+    await this._locks?.request(`ketchup-save:${id}`, {}, () => undefined);
   }
 
   private _listenToTabs() {
@@ -676,47 +728,105 @@ export class DrawingApp extends LitElement {
     this._tabs = new BroadcastChannel('ketchup-projects');
     this._tabs.addEventListener('message', (e: MessageEvent) => {
       const { type, id } = e.data ?? {};
-      // Another tab wants to edit what this one is editing: save, let go,
-      // and only show it from now on.
+      // Another tab wants to edit what this one is editing.
       if (type === 'release' && this._projectLock?.id === id) void this._handOver(id);
     });
   }
 
+  /**
+   * Hands the project to the tab that asked: answers at once (that tab then
+   * waits however long the save takes), stops edits here, saves, and lets
+   * go. A save that fails keeps the project here, with its work.
+   */
   private async _handOver(id: string) {
-    this.canvas?.clearSelection({ keepCrop: true });
-    if (this._dirty || this._savePromise) await this._flushPendingSaveAndWait();
-    if (this._projectLock?.id !== id) return;
-    this._releaseProjectLock();
-    this._readOnly = true;
-    this._tabs?.postMessage({ type: 'released', id });
+    this._tabs?.postMessage({ type: 'releasing', id });
+    if (this._handingOver) return;
+    this._handingOver = true;
+    try {
+      const held = this._projectLock;
+      this._readOnly = true;
+      this.canvas?.clearSelection({ keepCrop: true });
+      if (this._dirty || this._savePromise) await this._flushPendingSaveAndWait();
+      if (!held || this._projectLock !== held) return;
+      if (this._dirty && this._saveFailed) {
+        this._readOnly = false;
+        this._tabs?.postMessage({ type: 'kept', id });
+        return;
+      }
+      this._releaseProjectLock();
+    } finally {
+      this._handingOver = false;
+    }
   }
 
   /**
    * Edits the project shown read-only here, from what was last saved: if
    * free (the other tab closed, when this one comes back into view), or
-   * (`takeOver`, "Use here") once the other tab has saved and let go, or
-   * taken from it if it doesn't answer.
+   * (`takeOver`, "Use here") once the other tab has saved and let go.
    */
   private async _editHere(takeOver: boolean) {
     const meta = this._currentProject;
-    if (!meta || !this._readOnly || this._projectLock) return;
-    let got = await this._lockProject(meta.id);
-    if (!got && takeOver) {
-      const released = new Promise<void>(resolve => {
-        const onMessage = (e: MessageEvent) => {
-          if (e.data?.type !== 'released' || e.data.id !== meta.id) return;
-          this._tabs?.removeEventListener('message', onMessage);
-          resolve();
-        };
-        this._tabs?.addEventListener('message', onMessage);
-        setTimeout(() => { this._tabs?.removeEventListener('message', onMessage); resolve(); }, 2000);
-      });
-      this._tabs?.postMessage({ type: 'release', id: meta.id });
-      await released;
-      got = await this._lockProject(meta.id) || await this._lockProject(meta.id, true);
+    if (!meta || !this._readOnly || this._projectLock || this._claiming) return;
+    this._claiming = true;
+    try {
+      let got = await this._lockProject(meta.id);
+      if (!got && takeOver && this._currentProject === meta) {
+        this._waitingForTab = true;
+        try {
+          got = await this._takeOver(meta.id);
+        } finally {
+          this._waitingForTab = false;
+        }
+      }
+      if (!got || this._currentProject !== meta) return;
+      await this._enterProject(meta, () => this._loadProject(meta.id));
+    } finally {
+      this._claiming = false;
     }
-    if (!got || this._currentProject !== meta) return;
-    await this._enterProject(meta, () => this._loadProject(meta.id));
+  }
+
+  /**
+   * Asks the tab editing project `id` to save and let go, and waits until it
+   * has (or has closed); takes the lock if it doesn't answer (frozen, say).
+   * Resolves false if its save failed: it keeps the project, and that work.
+   */
+  private _takeOver(id: string): Promise<boolean> {
+    const tabs = this._tabs;
+    if (!tabs) return this._lockProject(id, 'steal');
+    return new Promise<boolean>(resolve => {
+      let stealing = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const onMessage = (e: MessageEvent) => {
+        if (e.data?.id !== id) return;
+        if (e.data.type === 'releasing') clearTimeout(timer);
+        // Ends the wait below.
+        else if (e.data.type === 'kept') this._cancelLockRequests();
+      };
+      const done = (got: boolean) => {
+        clearTimeout(timer);
+        tabs.removeEventListener('message', onMessage);
+        resolve(got);
+      };
+      tabs.addEventListener('message', onMessage);
+      // Granted once the other tab lets go, or closes.
+      void this._lockProject(id, 'wait').then(got => {
+        if (!stealing) done(got);
+      });
+      const request = this._lockRequest;
+      timer = setTimeout(() => {
+        // Unless something else was asked for since (which ended the wait).
+        if (request !== this._lockRequest) return;
+        stealing = true;
+        void this._lockProject(id, 'steal').then(done);
+      }, 2000);
+      tabs.postMessage({ type: 'release', id });
+    });
+  }
+
+  /** Runs a save of project `id` holding its save lock (when there are locks). */
+  private _holdingSaveLock(id: string, save: () => Promise<void>): Promise<void> {
+    const locks = this._locks;
+    return locks ? locks.request(`ketchup-save:${id}`, {}, save).then(() => {}) : save();
   }
 
   /** Downscale the display canvas to a project thumbnail; encoding the full viewport each save is wasted work. */
@@ -736,15 +846,21 @@ export class DrawingApp extends LitElement {
       return this._savePromise;
     }
     if (!this._currentProject || !this._dirty || this._projectLoads > 0) return;
-    if (!this._backend || this._currentProject.id === this._unsavableProjectId || this._readOnly) return;
+    const savingId = this._currentProject.id;
+    if (!this._backend || savingId === this._unsavableProjectId || !this._ownsProject(savingId)) return;
 
-    this._savePromise = (async () => {
+    // A tab taking the project over waits for this before it loads.
+    this._savePromise = this._holdingSaveLock(savingId, async () => {
       this._saveInProgress = true;
+      this._saveFailed = false;
       if (this._backendReopen) await this._backendReopen;
       let flushingThisRun = flushing;
       try {
-        while (this._currentProject && this._dirty && this._projectLoads === 0) {
-          const projectId = this._currentProject.id;
+        // Only while this tab still has the project: one that didn't answer
+        // "Use here" in time has lost it.
+        while (this._currentProject?.id === savingId && this._dirty && this._projectLoads === 0
+          && this._ownsProject(savingId)) {
+          const projectId = savingId;
           const dirtyVersionAtSnapshot = this._dirtyVersion;
           const contentVersionAtSnapshot = this._contentVersion;
           // A gesture can leave layers mid-change (a move drag shifts the layer
@@ -936,6 +1052,11 @@ export class DrawingApp extends LitElement {
             try { thumbnail = await canvasToBlob(this._renderThumbnail(this.canvas.mainCanvas)); } catch { /* non-critical */ }
           }
 
+          if (!this._ownsProject(projectId)) {
+            blobs.deleteMany(pendingBlobRefs).catch(() => {});
+            break;
+          }
+
           // Save state + history atomically: if either fails, restore the
           // previous state record (so the project doesn't point at deleted
           // blob refs) and clean up the new blobs.
@@ -1055,6 +1176,7 @@ export class DrawingApp extends LitElement {
           flushingThisRun = false;
         }
       } catch (err) {
+        this._saveFailed = true;
         if (err instanceof StorageQuotaError) {
           console.error('Storage quota exceeded. Consider deleting old projects to free space.');
         } else {
@@ -1064,7 +1186,7 @@ export class DrawingApp extends LitElement {
         this._saving = false;
         this._saveInProgress = false;
       }
-    })();
+    });
 
     try {
       await this._savePromise;
@@ -1433,6 +1555,8 @@ export class DrawingApp extends LitElement {
       this.canvas?.setHistory(history, record.historyIndex ?? (history.length - 1));
       this._dirty = false;
       this._trackLoadedProject(projectId, history, historyRecords, layerBlobs);
+      // Loaded after all: what is stored is in, and saves go on over it.
+      if (this._unsavableProjectId === projectId) this._unsavableProjectId = null;
       // Restore saved viewport or fall back to centering for legacy records
       if (record.zoom != null && record.panX != null && record.panY != null) {
         const savedSize = record.viewportWidth != null && record.viewportHeight != null
@@ -2291,6 +2415,17 @@ export class DrawingApp extends LitElement {
         .finally(() => { if (this._backendReopen === reopen) this._backendReopen = null; });
       this._backendReopen = reopen;
     }
+    // Back after letting go of its project: edit it again if still free.
+    const project = this._currentProject;
+    if (project && this._locks && !this._projectLock && this._projectLoads === 0) {
+      if (this._readOnly) {
+        void this._editHere(false);
+      } else {
+        void this._lockProject(project.id).then(ours => {
+          if (!ours && this._currentProject === project) this._readOnly = true;
+        });
+      }
+    }
     this._mobileObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
         this._updateMobileLayout(entry.contentRect.width);
@@ -2381,21 +2516,19 @@ export class DrawingApp extends LitElement {
       await this._enterProject(first, () => this._loadProject(first.id));
     } else {
       const meta = await this._backend!.projects.create({ name: 'Untitled', thumbnailRef: null });
-      this._currentProject = meta;
       this._projectList = [meta];
+      await this._enterProject(meta, async () => {
+        // The first render may have measured a pre-mobile layout; fit to the real one.
+        await this.updateComplete;
+        await this.canvas?.updateComplete;
+        this.canvas?.resetView();
+      });
       this._markDirty();
-      // The first render may have measured a pre-mobile layout; fit to the real one.
-      await this.updateComplete;
-      await this.canvas?.updateComplete;
-      this.canvas?.resetView();
     }
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    this._releaseProjectLock();
-    this._tabs?.close();
-    this._tabs = null;
     // Work in progress goes onto its layer while the canvas can still put it
     // there (it lets go of a float, a text box and a stroke as it leaves), and
     // in time for the save below. A crop being set up stays for a return.
@@ -2422,19 +2555,31 @@ export class DrawingApp extends LitElement {
       const savePromise = this._dirty
         ? this._flushPendingSaveAndWait()
         : this._savePromise!;
-      savePromise.finally(() => this._closeBackend(backendToDispose));
+      savePromise.finally(() => {
+        this._leaveProject();
+        this._closeBackend(backendToDispose);
+      });
     } else {
       if (this._saveTimer) {
         clearTimeout(this._saveTimer);
         this._saveTimer = null;
       }
+      // A move in the DOM reconnects at once; only an editor still out of
+      // the document closes its storage and lets go of its project.
+      setTimeout(() => this._leaveProject(), 0);
       if (this._ownsBackend) {
         const backend = this._backend;
-        // A move in the DOM reconnects at once; only an editor still out of
-        // the document closes its storage.
         setTimeout(() => this._closeBackend(backend), 0);
       }
     }
+  }
+
+  /** Lets another tab edit the project, once out of the document with the last save in. */
+  private _leaveProject() {
+    if (this.isConnected) return;
+    this._releaseProjectLock();
+    this._tabs?.close();
+    this._tabs = null;
   }
 
   /** Whether leaving the document closed our backend, which a return reopens. */
@@ -2468,7 +2613,9 @@ export class DrawingApp extends LitElement {
         ${this._readOnly ? html`
           <div class="read-only" role="alert">
             <p>This project is open in another tab. Changes made there are saved; this tab only shows it.</p>
-            <button @click=${() => this._editHere(true)}>Use here</button>
+            ${this._waitingForTab
+              ? html`<p>Waiting for the other tab to save…</p>`
+              : html`<button @click=${() => this._editHere(true)}>Use here</button>`}
           </div>
         ` : ''}
         <app-toolbar></app-toolbar>
@@ -2490,7 +2637,8 @@ export class DrawingApp extends LitElement {
           </div>
         ` : ''}
       </div>
-      ${this._isMobile && !this._state.childMode ? html`<layers-panel @commit-opacity=${this._onCommitOpacity}></layers-panel>` : ''}
+      ${this._isMobile && !this._state.childMode && !this._readOnly
+        ? html`<layers-panel @commit-opacity=${this._onCommitOpacity}></layers-panel>` : ''}
     </div>`;
   }
 }
