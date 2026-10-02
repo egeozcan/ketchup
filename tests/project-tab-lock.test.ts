@@ -170,6 +170,27 @@ describe('one tab edits a project at a time', () => {
     expect(locks.held.has('ketchup-project:p')).toBe(true);
   });
 
+  it('when two tabs ask at once, the one that does not get the project stops waiting', async () => {
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    fakeLocks();
+    const { app: editing } = makeApp();
+    await (editing as any)._enterProject(meta('p'), async () => {});
+    const asking = [makeApp().app, makeApp().app];
+    for (const app of asking) {
+      await (app as any)._enterProject(meta('p'), async () => {});
+      (app as any)._loadProject = vi.fn(async () => {});
+    }
+
+    vi.useFakeTimers();
+    const done = asking.map(app => (app as any)._editHere(true));
+    await vi.advanceTimersByTimeAsync(5000);
+    await Promise.all(done);
+
+    const states = asking.map(app => ({ ro: (app as any)._readOnly, waiting: (app as any)._waitingForTab }));
+    expect(states).toContainEqual({ ro: false, waiting: false });
+    expect(states).toContainEqual({ ro: true, waiting: false });
+  });
+
   it('asks before taking the project from a tab that does not answer, and takes it if told to', async () => {
     vi.stubGlobal('BroadcastChannel', FakeChannel);
     const locks = fakeLocks();
@@ -286,7 +307,7 @@ describe('one tab edits a project at a time', () => {
     expect((editing as any)._projectLock?.id).toBe('p');
   });
 
-  it('stops a save under way once another tab has taken the project', async () => {
+  it('lets a save under way when another tab takes the project land, and starts no other', async () => {
     const locks = fakeLocks();
     const backend = new MockBackend();
     await backend.init();
@@ -309,16 +330,38 @@ describe('one tab edits a project at a time', () => {
       return get(id);
     });
     const write = vi.spyOn(backend.state, 'save');
+    (app as any)._contentVersion++;
     (app as any)._dirty = true;
     const saving = (app as any)._save(true);
     await settle();
     void locks.request(`ketchup-project:${project.id}`, { steal: true }, () => new Promise(() => {}));
     await settle();
+    expect((app as any)._readOnly).toBe(true);
+    expect((app as any)._stranded).toBe(true);
     resume();
     await saving;
 
-    expect(write).not.toHaveBeenCalled();
-    expect((app as any)._readOnly).toBe(true);
+    // The tab that took it waits for this save before loading.
+    expect(write).toHaveBeenCalledTimes(1);
+    expect((app as any)._stranded).toBe(false);
+    (app as any)._contentVersion++;
+    (app as any)._dirty = true;
+    await (app as any)._save(true);
+    expect(write).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens a project only once storage has reopened', async () => {
+    fakeLocks();
+    const { app } = makeApp();
+    let reopened!: () => void;
+    (app as any)._backendReopen = new Promise<void>(r => { reopened = r; });
+    const load = vi.fn(async () => {});
+    const entering = (app as any)._enterProject(meta('p'), load);
+    await settle();
+    expect(load).not.toHaveBeenCalled();
+    reopened();
+    await entering;
+    expect(load).toHaveBeenCalled();
   });
 
   it('a tab taking a project over waits for a save the other tab still has under way', async () => {

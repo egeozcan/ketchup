@@ -626,6 +626,8 @@ export class DrawingApp extends LitElement {
     this._keptElsewhere = false;
     this._stranded = false;
     try {
+      // Back in the page, storage may still be reopening.
+      if (this._backendReopen) await this._backendReopen;
       this._currentProject = meta;
       // One tab edits a project at a time: in another's, it's only shown.
       if (!(await this._lockProject(meta.id))) this._readOnly = true;
@@ -688,7 +690,8 @@ export class DrawingApp extends LitElement {
   private _forceTakeOver: (() => void) | null = null;
   /** Another tab took the project before this one stored its latest work, which is still here. */
   @state() private _stranded = false;
-  private _claiming = false;
+  /** Taking the project up here: getting its lock, then loading it. */
+  @state() private _claiming = false;
   /** The last save failed, so its work is only here. */
   private _saveFailed = false;
 
@@ -739,6 +742,8 @@ export class DrawingApp extends LitElement {
           return undefined;
         }
         resolve(true);
+        // Other tabs still waiting for it ask this one now.
+        this._tabs?.postMessage({ type: 'taken', id });
         // Held until let go (another project, or handed over).
         return new Promise<void>(release => {
           held = { id, release };
@@ -859,6 +864,8 @@ export class DrawingApp extends LitElement {
       const onMessage = (e: MessageEvent) => {
         if (e.data?.id !== id) return;
         if (e.data.type === 'releasing') answered();
+        // Another tab asking at the same time got it.
+        else if (e.data.type === 'taken') this._cancelLockRequests();
         // Ends the wait below.
         else if (e.data.type === 'kept') {
           this._keptElsewhere = true;
@@ -958,8 +965,9 @@ export class DrawingApp extends LitElement {
       if (this._backendReopen) await this._backendReopen;
       let flushingThisRun = flushing;
       try {
-        // Only while this tab still has the project: one that didn't answer
-        // "Use here" in time has lost it.
+        // Only while this tab still has the project ("Use here anyway" in
+        // another tab takes it). A run already under way finishes: the tab
+        // that took it waits for this run's save lock before it loads.
         while (this._currentProject?.id === savingId && this._dirty && this._projectLoads === 0
           && this._ownsProject(savingId)) {
           const projectId = savingId;
@@ -1154,11 +1162,6 @@ export class DrawingApp extends LitElement {
             try { thumbnail = await canvasToBlob(this._renderThumbnail(this.canvas.mainCanvas)); } catch { /* non-critical */ }
           }
 
-          if (!this._ownsProject(projectId)) {
-            blobs.deleteMany(pendingBlobRefs).catch(() => {});
-            break;
-          }
-
           // Save state + history atomically: if either fails, restore the
           // previous state record (so the project doesn't point at deleted
           // blob refs) and clean up the new blobs.
@@ -1288,6 +1291,8 @@ export class DrawingApp extends LitElement {
       } finally {
         this._saving = false;
         this._saveInProgress = false;
+        // Taken mid-save, but the save got the work in after all.
+        if (this._stranded && !this._hasUnsavedWork()) this._stranded = false;
       }
     });
 
@@ -2726,7 +2731,9 @@ export class DrawingApp extends LitElement {
               ${this._keptElsewhere
                 ? html`<p>That tab couldn't save its changes, so it keeps the project for now.</p>` : ''}
               ${!this._waitingForTab
-                ? html`<button @click=${() => this._editHere(true)}>Use here</button>`
+                ? this._claiming
+                  ? html`<p>Opening the project…</p>`
+                  : html`<button @click=${() => this._editHere(true)}>Use here</button>`
                 : this._otherTabSilent ? html`
                   <p>The other tab isn't answering. It may be busy (a dialog, a long save) or frozen in the background. Taking over keeps any changes it hasn't saved there, to keep as a new project.</p>
                   <button @click=${() => this._forceTakeOver?.()}>Use here anyway</button>
