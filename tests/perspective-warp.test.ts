@@ -102,6 +102,28 @@ describe('warpPerspective', () => {
     }
   });
 
+  it('maps each part of the source to its own corner, mirrored when the quad is', () => {
+    // Quadrants: red top-left, green top-right, blue bottom-right, white bottom-left.
+    const src = new ImageData(20, 20);
+    for (let y = 0; y < 20; y++) {
+      for (let x = 0; x < 20; x++) {
+        const c = y < 10 ? (x < 10 ? [255, 0, 0] : [0, 255, 0]) : (x < 10 ? [255, 255, 255] : [0, 0, 255]);
+        src.data.set([...c, 255], (y * 20 + x) * 4);
+      }
+    }
+    const trapezoid: Quad = [{ x: 20, y: 5 }, { x: 60, y: 5 }, { x: 75, y: 60 }, { x: 5, y: 60 }];
+    const out = warpPerspective(src, trapezoid, { x: 0, y: 0, w: 80, h: 65 });
+    expect(pixel(out, 24, 9)).toEqual([255, 0, 0, 255]);
+    expect(pixel(out, 55, 9)).toEqual([0, 255, 0, 255]);
+    expect(pixel(out, 68, 55)).toEqual([0, 0, 255, 255]);
+    expect(pixel(out, 12, 55)).toEqual([255, 255, 255, 255]);
+
+    const mirrored: Quad = [trapezoid[1], trapezoid[0], trapezoid[3], trapezoid[2]];
+    const flipped = warpPerspective(src, mirrored, { x: 0, y: 0, w: 80, h: 65 });
+    expect(pixel(flipped, 24, 9)).toEqual([0, 255, 0, 255]);
+    expect(pixel(flipped, 68, 55)).toEqual([255, 255, 255, 255]);
+  });
+
   it('handles concave and folded quads without throwing', () => {
     const src = solid(10, 10, [1, 2, 3, 255]);
     const concave: Quad = [{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 15, y: 15 }, { x: 0, y: 40 }];

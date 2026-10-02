@@ -38,17 +38,46 @@ describe('perspective preview and commit', () => {
     expect(warp.height).toBeLessThanOrEqual(100);
   });
 
-  it('previews a huge warp only where the target can show it', () => {
+  it('previews a huge warp at reduced resolution but commits it at full resolution', () => {
     const tm = makePerspectiveManager();
     (tm as any)._perspectiveCorners.se = { x: 20000, y: 20000 };
-    const ctx = makeCanvas(300, 200).getContext('2d')!;
-    ctx.setTransform(2, 0, 0, 2, -40, -20);
+    tm.renderTransformed(makeCanvas(300, 200).getContext('2d')!);
+    const preview = (tm as any)._warpCache;
+    expect(preview.scale).toBeLessThan(1);
+    expect(preview.canvas.width * preview.canvas.height).toBeLessThanOrEqual(4096 * 4096);
+
+    const layer = makeCanvas(100, 100);
+    tm.commit(layer);
+    const committed = (tm as any)._warpCache;
+    expect(committed.scale).toBe(1);
+    expect([committed.x, committed.y, committed.w, committed.h]).toEqual([0, 0, 100, 100]);
+  });
+
+  it('drafts a large warp while a handle is dragged, and redoes it in full on release', () => {
+    const tm = new TransformManager(
+      new ImageData(1500, 1500), { x: 0, y: 0, w: 1500, h: 1500 }, makeCanvas(100, 100), 1, { x: 0, y: 0 },
+    );
+    (tm as any)._perspectiveActive = true;
+    (tm as any)._perspectiveCorners.se = { x: 30, y: 20 };
+    const ctx = makeCanvas(100, 100).getContext('2d')!;
+
+    (tm as any)._interaction = { type: 'perspective', corner: 'se', startPoint: { x: 1500, y: 1500 } };
     tm.renderTransformed(ctx);
-    const cache = (tm as any)._warpCache;
-    expect(cache.x).toBe(20);
-    expect(cache.y).toBe(10);
-    expect(cache.canvas.width).toBe(150);
-    expect(cache.canvas.height).toBe(100);
+    expect((tm as any)._warpCache.scale).toBeLessThan(1);
+
+    tm.onPointerUp({ x: 1500, y: 1500 });
+    tm.renderTransformed(ctx);
+    expect((tm as any)._warpCache.scale).toBe(1);
+  });
+
+  it('snapshots only the part on the document, at full resolution, when clipped', () => {
+    const tm = makePerspectiveManager();
+    (tm as any)._perspectiveCorners.se = { x: 20000, y: 20000 };
+    (tm as any)._interaction = { type: 'perspective', corner: 'se', startPoint: { x: 10, y: 10 } };
+    const snap = tm.snapshot({ x: 0, y: 0, w: 100, h: 80 })!;
+    expect([snap.x, snap.y, snap.w, snap.h]).toEqual([0, 0, 100, 80]);
+    expect((tm as any)._warpCache.scale).toBe(1);
+    expect(tm.snapshot({ x: 500, y: -500, w: 10, h: 10 })).toBeNull();
   });
 
   it('frees the warp when disposed', () => {
@@ -78,13 +107,8 @@ describe('transform preview under a layer blend mode', () => {
       }
       ctx.drawImage(float, 10, 10);
     });
-    const tm = makeTransformManagerStub({
-      renderTransformed,
-      renderKey: 'a',
-      getBounds: vi.fn(() => ({ x: 10, y: 10, w: 20, h: 20 })),
-    });
-    (canvas as any)._transformManager = tm;
-    return { canvas, layer, displayCtx, tm, merges, renderTransformed };
+    (canvas as any)._transformManager = makeTransformManagerStub({ renderTransformed });
+    return { canvas, layer, displayCtx, merges, renderTransformed };
   }
 
   function recordDraws(ctx: CanvasRenderingContext2D) {
@@ -102,8 +126,9 @@ describe('transform preview under a layer blend mode', () => {
     canvas.composite();
 
     expect(merges).toHaveLength(1);
-    const merged = merges[0].canvas;
-    expect(blended).toContainEqual({ src: merged, op: 'multiply', alpha: 0.5 });
+    const scratch = merges[0].canvas;
+    expect(scratch).not.toBe(layer.canvas);
+    expect(blended).toContainEqual({ src: scratch, op: 'multiply', alpha: 0.5 });
     expect(blended.some(d => d.src === layer.canvas)).toBe(false);
   });
 
@@ -118,45 +143,31 @@ describe('transform preview under a layer blend mode', () => {
     expect(drawn.some(d => d.src === layer.canvas)).toBe(true);
   });
 
-  it('reuses the merged layer until the transform changes, then redoes only the float\'s area', () => {
-    const { canvas, layer, tm, merges } = setup();
-    canvas.composite();
-    const mergeCtx = merges[0];
-    const calls: string[] = [];
-    vi.spyOn(mergeCtx, 'clearRect').mockImplementation((...args) => { calls.push(`clear ${args.join(',')}`); });
-    vi.spyOn(mergeCtx, 'drawImage').mockImplementation(((src: unknown, ...args: number[]) => {
-      calls.push(src === layer.canvas ? `layer ${args.slice(0, 4).join(',')}` : 'float');
-    }) as typeof mergeCtx.drawImage);
-
-    // Pan, zoom and hover frames keep the transform as it was.
-    canvas.composite();
-    expect(merges).toHaveLength(1);
-
-    tm.renderKey = 'b';
-    tm.getBounds.mockReturnValue({ x: 40, y: 10, w: 20, h: 20 });
-    canvas.composite();
-
-    expect(merges).toHaveLength(2);
-    // The union of the old and new bounds, with a pixel of margin.
-    expect(calls).toEqual(['clear 9,9,52,22', 'layer 9,9,52,22', 'float']);
-  });
-
-  it('still shows the float outside the document on a blended layer', () => {
+  it('still shows the float outside the document, and only there, on a blended layer', () => {
     const { canvas, displayCtx, renderTransformed } = setup();
-    const clip = vi.spyOn(displayCtx, 'clip');
+    const path: string[] = [];
+    vi.spyOn(displayCtx, 'beginPath').mockImplementation(() => { path.length = 0; });
+    vi.spyOn(displayCtx, 'rect').mockImplementation((...args) => { path.push(args.join(',')); });
+    let clipped: string[] | null = null;
+    vi.spyOn(displayCtx, 'clip').mockImplementation(((rule?: string) => {
+      if (rule === 'evenodd') clipped = [...path];
+    }) as typeof displayCtx.clip);
+
     canvas.composite();
+
     expect(renderTransformed).toHaveBeenCalledWith(displayCtx);
-    expect(clip).toHaveBeenCalledWith('evenodd');
+    // Everything except the document, which the merged layer already covers.
+    expect(clipped).toContain('0,0,100,100');
+    expect(clipped).toHaveLength(2);
   });
 
-  it('frees the merged layer once the transform ends', () => {
+  it('frees the scratch canvas once the transform ends', () => {
     const { canvas, merges } = setup();
     canvas.composite();
-    const merged = merges[0].canvas;
+    const scratch = merges[0].canvas;
     (canvas as any)._transformManager = null;
     canvas.composite();
-    expect(merged.width).toBe(0);
-    expect((canvas as any)._transformMerge).toBeNull();
+    expect(scratch.width).toBe(0);
   });
 
   it('flattens the merged layer for export', () => {

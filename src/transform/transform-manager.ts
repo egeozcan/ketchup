@@ -15,10 +15,13 @@ import {
 } from './transform-handles.js';
 
 /**
- * A preview warp larger than this (4096², about the most iOS Safari allows a
- * canvas) is only rendered where the target context can show it.
+ * The most pixels a preview warp computes, at rest and while a handle is being
+ * dragged. Larger warps are previewed at reduced resolution: while dragging,
+ * to keep frames fast; at rest, only past 4096² (about the most iOS Safari
+ * allows a canvas). Commit always warps at full resolution.
  */
-const MAX_WARP_PIXELS = 4096 * 4096;
+const WARP_PREVIEW_PIXELS = 4096 * 4096;
+const WARP_DRAG_PIXELS = 1024 * 1024;
 
 export class TransformManager {
   // --- Source data ---
@@ -44,7 +47,7 @@ export class TransformManager {
    * what was previewed is what lands on the layer.
    */
   private _warpCache: {
-    key: string; canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number;
+    key: string; canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number; scale: number;
   } | null = null;
 
   // --- Interaction ---
@@ -145,13 +148,6 @@ export class TransformManager {
   }
 
   get perspectiveActive(): boolean { return this._perspectiveActive; }
-
-  /** Changes whenever `renderTransformed` would draw something different. */
-  get renderKey(): string {
-    const s = this._state;
-    const p = this._perspectiveActive ? this._perspectiveCorners : null;
-    return JSON.stringify([s.x, s.y, s.width, s.height, s.rotation, s.skewX, s.skewY, s.scaleX, s.scaleY, p]);
-  }
 
   setTouchMode(touch: boolean): void {
     this._handleConfig = touch ? HANDLE_CONFIG_TOUCH : HANDLE_CONFIG_DESKTOP;
@@ -375,9 +371,26 @@ export class TransformManager {
   }
 
   renderTransformed(ctx: CanvasRenderingContext2D): void {
+    this._render(ctx, null, this._warpPixelBudget());
+  }
+
+  /** Draws the transformed content; a perspective warp limited as in `_getWarp`. */
+  private _render(ctx: CanvasRenderingContext2D, clip: TransformRect | null, maxWarpPixels: number): void {
     if (this._perspectiveActive) {
-      const warp = this._getWarp(this._visibleRegion(ctx));
-      if (warp) ctx.drawImage(warp.canvas, warp.x, warp.y);
+      const warp = this._getWarp(clip, maxWarpPixels);
+      if (!warp) return;
+      if (warp.canvas.width === warp.w) {
+        ctx.drawImage(warp.canvas, warp.x, warp.y);
+      } else {
+        // Scaled back up, a reduced-resolution warp's edge pixels reach past the quad's bounds.
+        const b = this._getSnapshotBounds();
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(b.x, b.y, b.w, b.h);
+        ctx.clip();
+        ctx.drawImage(warp.canvas, warp.x, warp.y, warp.w, warp.h);
+        ctx.restore();
+      }
     } else {
       const matrix = composeMatrix(this._state);
       ctx.save();
@@ -387,38 +400,21 @@ export class TransformManager {
     }
   }
 
-  /**
-   * Where `ctx` can draw, in document space, if the whole warp would be too
-   * large a canvas; otherwise null, so the whole warp is rendered and cached.
-   */
-  private _visibleRegion(ctx: CanvasRenderingContext2D): TransformRect | null {
-    const bounds = this._getSnapshotBounds();
-    if (bounds.w * bounds.h <= MAX_WARP_PIXELS) return null;
-    const { a, b, c, d, e, f } = ctx.getTransform();
-    const det = a * d - b * c;
-    if (!det) return bounds;
-    const { width, height } = ctx.canvas;
-    const pts = [[0, 0], [width, 0], [width, height], [0, height]].map(([px, py]) => ({
-      x: (d * (px - e) - c * (py - f)) / det,
-      y: (a * (py - f) - b * (px - e)) / det,
-    }));
-    const x = Math.floor(Math.min(...pts.map(p => p.x)));
-    const y = Math.floor(Math.min(...pts.map(p => p.y)));
-    return {
-      x, y,
-      w: Math.ceil(Math.max(...pts.map(p => p.x))) - x,
-      h: Math.ceil(Math.max(...pts.map(p => p.y))) - y,
-    };
+  /** Most pixels the preview warp may compute right now (see WARP_PREVIEW_PIXELS). */
+  private _warpPixelBudget(): number {
+    return this._interaction.type === 'idle' ? WARP_PREVIEW_PIXELS : WARP_DRAG_PIXELS;
   }
 
   /**
-   * The perspective-warped source on a canvas at its document position,
-   * covering at least the part of the warp inside `clip` (all of it if null).
+   * The perspective-warped source on a canvas, with the document rectangle it
+   * covers: at least the part of the warp inside `clip` (all of it if null),
+   * at full resolution unless that would take more than `maxPixels`.
    */
-  private _getWarp(clip: TransformRect | null): { canvas: HTMLCanvasElement; x: number; y: number } | null {
+  private _getWarp(
+    clip: TransformRect | null, maxPixels: number,
+  ): { canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number } | null {
     const dstCorners = getPerspectiveDestCorners(this._state, this._perspectiveCorners);
-    const bounds = this._getSnapshotBounds();
-    let { x, y, w, h } = bounds;
+    let { x, y, w, h } = this._getSnapshotBounds();
     if (clip) {
       const right = Math.min(x + w, clip.x + clip.w), bottom = Math.min(y + h, clip.y + clip.h);
       x = Math.max(x, clip.x);
@@ -427,34 +423,58 @@ export class TransformManager {
       h = bottom - y;
     }
     if (w <= 0 || h <= 0) return null;
+    const scale = Math.min(1, Math.sqrt(maxPixels / (w * h)));
     const key = dstCorners.map(c => `${c.x},${c.y}`).join(';');
     const cache = this._warpCache;
-    if (cache && cache.key === key && cache.x <= x && cache.y <= y
+    if (cache && cache.key === key && cache.scale >= scale && cache.x <= x && cache.y <= y
       && cache.x + cache.w >= x + w && cache.y + cache.h >= y + h) {
       return cache;
     }
+    // A reduced-resolution warp is the same warp of a quad scaled down, drawn
+    // scaled back up.
+    const sx = Math.floor(x * scale), sy = Math.floor(y * scale);
+    const sw = Math.ceil((x + w) * scale) - sx, sh = Math.ceil((y + h) * scale) - sy;
+    const scaled = scale === 1
+      ? dstCorners
+      : dstCorners.map(c => ({ x: c.x * scale, y: c.y * scale })) as typeof dstCorners;
     // Reuse the canvas; its backing store is reallocated only on a size change.
     const canvas = cache?.canvas ?? document.createElement('canvas');
-    if (canvas.width !== w || canvas.height !== h) {
-      canvas.width = w;
-      canvas.height = h;
+    if (canvas.width !== sw || canvas.height !== sh) {
+      canvas.width = sw;
+      canvas.height = sh;
     }
     canvas.getContext('2d')!.putImageData(
-      warpPerspective(this._sourceImageData, dstCorners, { x, y, w, h }), 0, 0,
+      warpPerspective(this._sourceImageData, scaled, { x: sx, y: sy, w: sw, h: sh }), 0, 0,
     );
-    this._warpCache = { key, canvas, x, y, w, h };
+    this._warpCache = { key, canvas, x: sx / scale, y: sy / scale, w: sw / scale, h: sh / scale, scale };
     return this._warpCache;
   }
 
-  snapshot(): { canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number } {
+  /**
+   * The transformed content on a canvas of its own bounds — only the part
+   * inside `clip` if given, null if none of it is (a perspective warp then at
+   * full resolution).
+   */
+  snapshot(): { canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number };
+  snapshot(clip: TransformRect): { canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number } | null;
+  snapshot(clip?: TransformRect): { canvas: HTMLCanvasElement; x: number; y: number; w: number; h: number } | null {
     const bounds = this._getSnapshotBounds();
+    if (clip) {
+      const right = Math.min(bounds.x + bounds.w, clip.x + clip.w);
+      const bottom = Math.min(bounds.y + bounds.h, clip.y + clip.h);
+      bounds.x = Math.max(bounds.x, clip.x);
+      bounds.y = Math.max(bounds.y, clip.y);
+      bounds.w = right - bounds.x;
+      bounds.h = bottom - bounds.y;
+      if (bounds.w <= 0 || bounds.h <= 0) return null;
+    }
     const canvas = document.createElement('canvas');
     canvas.width = bounds.w;
     canvas.height = bounds.h;
     const ctx = canvas.getContext('2d')!;
     ctx.save();
     ctx.translate(-bounds.x, -bounds.y);
-    this.renderTransformed(ctx);
+    this._render(ctx, clip ?? null, clip ? Infinity : WARP_PREVIEW_PIXELS);
     ctx.restore();
     return { canvas, ...bounds };
   }
@@ -466,7 +486,7 @@ export class TransformManager {
     if (this._perspectiveActive) {
       // Only what lands on the layer: the full warp of a corner dragged far
       // outside the document could be too large a canvas to allocate.
-      const warp = this._getWarp({ x: 0, y: 0, w: layerCanvas.width, h: layerCanvas.height });
+      const warp = this._getWarp({ x: 0, y: 0, w: layerCanvas.width, h: layerCanvas.height }, Infinity);
       if (warp) {
         ctx.save();
         ctx.setTransform(1, 0, 0, 1, 0, 0);

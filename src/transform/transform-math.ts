@@ -167,7 +167,8 @@ export function getPerspectiveDestCorners(
  * source rectangle onto the quad and sampled bilinearly with premultiplied
  * alpha, so there is no triangle mesh to leave seams at its edges. The quad's
  * outline is anti-aliased from each pixel's distance to it, and the source is
- * clamped at its border, so an enlarged edge stays crisp.
+ * clamped at its border, so an enlarged edge stays crisp. Each pixel depends
+ * only on its own position, so a region is exactly that crop of the whole warp.
  */
 export function warpPerspective(
   src: ImageData,
@@ -194,11 +195,11 @@ export function warpPerspective(
 
   for (let py = 0; py < rh; py++) {
     const [spanStart, spanEnd] = quadRowSpan(dst, ry + py, rx, rw);
-    const hy = ry + py + 0.5 - a.y;
-    let hx = rx + spanStart + 0.5 - a.x;
-    let k1 = ef + hx * gy - hy * gx;
-    let k0 = hx * ey - hy * ex;
-    for (let px = spanStart; px < spanEnd; px++, hx += 1, k1 += gy, k0 += ey) {
+    const cy = ry + py + 0.5, hy = cy - a.y;
+    for (let px = spanStart; px < spanEnd; px++) {
+      const cx = rx + px + 0.5, hx = cx - a.x;
+      const k1 = ef + hx * gy - hy * gx;
+      const k0 = hx * ey - hy * ex;
       let u: number, v: number;
       if (linear) {
         v = -k0 / k1;
@@ -218,22 +219,26 @@ export function warpPerspective(
       }
       if (!(u > -1 && u < 2 && v > -1 && v < 2)) continue;
 
-      // Distance in pixels to the nearest edge is (distance in u or v) times
-      // |Jacobian| over the length of the other partial derivative. Only
-      // pixels within half a pixel of an edge are partially covered.
+      // Only pixels within half a pixel of the outline are partially covered.
+      // Inside, (distance in u or v) × |Jacobian| / |other partial derivative|
+      // estimates the distance to the nearest edge cheaply (squared, sparing the
+      // square roots); near or outside the outline, where that estimate breaks
+      // down as the map folds, the distance to the edges is measured directly.
+      const inside = u >= 0 && u <= 1 && v >= 0 && v <= 1;
+      let coverage = 1;
       const mu = u < 1 - u ? u : 1 - u, mv = v < 1 - v ? v : 1 - v;
       const pux = ex + gx * v, puy = ey + gy * v;
       const pvx = fx + gx * u, pvy = fy + gy * u;
-      let jac = pux * pvy - puy * pvx;
-      if (jac < 0) jac = -jac;
+      const jac = pux * pvy - puy * pvx;
       const du = mu * jac, dv = mv * jac;
-      let coverage = 1;
-      // Squared comparisons spare the square roots for the pixels well inside.
-      const lu2 = pvx * pvx + pvy * pvy, lv2 = pux * pux + puy * puy;
-      if (du < 0 || dv < 0 || du * du < 0.25 * lu2 || dv * dv < 0.25 * lv2) {
-        const dist = Math.min(du / Math.sqrt(lu2), dv / Math.sqrt(lv2));
-        if (!(dist > -0.5)) continue;
-        if (dist < 0.5) coverage = dist + 0.5;
+      if (!inside || du * du < 0.25 * (pvx * pvx + pvy * pvy) || dv * dv < 0.25 * (pux * pux + puy * puy)) {
+        const dist = Math.sqrt(Math.min(
+          segmentDist2(cx, cy, a, b), segmentDist2(cx, cy, b, c),
+          segmentDist2(cx, cy, c, d), segmentDist2(cx, cy, d, a),
+        ));
+        coverage = inside ? 0.5 + dist : 0.5 - dist;
+        if (coverage <= 0) continue;
+        if (coverage > 1) coverage = 1;
       }
 
       let sx = u * W - 0.5, sy = v * H - 0.5;
@@ -262,6 +267,16 @@ export function warpPerspective(
   return out;
 }
 
+/** Squared distance from (x, y) to the segment p–q. */
+function segmentDist2(x: number, y: number, p: Point, q: Point): number {
+  const qx = q.x - p.x, qy = q.y - p.y, wx = x - p.x, wy = y - p.y;
+  const len2 = qx * qx + qy * qy;
+  let t = len2 > 0 ? (wx * qx + wy * qy) / len2 : 0;
+  if (t < 0) t = 0; else if (t > 1) t = 1;
+  const dx = wx - qx * t, dy = wy - qy * t;
+  return dx * dx + dy * dy;
+}
+
 /** How far (u, v) lies outside the unit square, in u/v units; 0 inside. */
 function outside(u: number, v: number): number {
   const du = u < 0 ? -u : u > 1 ? u - 1 : 0;
@@ -281,16 +296,15 @@ function quadRowSpan(q: [Point, Point, Point, Point], y: number, rx: number, rw:
     const p = q[i], n = q[(i + 1) % 4];
     const lo = Math.max(top, Math.min(p.y, n.y)), hi = Math.min(bottom, Math.max(p.y, n.y));
     if (lo > hi) continue;
-    // The edge's x at both ends of its part within the band.
-    for (const yy of [lo, hi]) {
-      const x = n.y === p.y ? p.x : p.x + (n.x - p.x) * (yy - p.y) / (n.y - p.y);
-      if (x < min) min = x;
-      if (x > max) max = x;
+    // The edge's x at both ends of its part within the band (all of a
+    // horizontal edge).
+    let x0 = p.x, x1 = n.x;
+    if (n.y !== p.y) {
+      x0 = p.x + (n.x - p.x) * (lo - p.y) / (n.y - p.y);
+      x1 = p.x + (n.x - p.x) * (hi - p.y) / (n.y - p.y);
     }
-    if (n.y === p.y) {
-      min = Math.min(min, p.x, n.x);
-      max = Math.max(max, p.x, n.x);
-    }
+    min = Math.min(min, x0, x1);
+    max = Math.max(max, x0, x1);
   }
   if (min > max) return [0, 0];
   return [
