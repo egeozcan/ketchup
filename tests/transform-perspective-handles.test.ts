@@ -52,9 +52,15 @@ describe('perspective corners', () => {
     expect(round((tm as any)._getCorners())).toEqual([[80, 80], [20, 80], [0, 0], [100, 0]]);
     tm.rotation = 0;
 
-    // Twice as wide: the taper doubles with it.
+    // Twice as wide: the taper doubles with it, typed in or dragged.
     tm.width = 200;
     expect(round((tm as any)._getCorners())).toEqual([[-10, 0], [110, 0], [150, 80], [-50, 80]]);
+    const dragged = makeManager();
+    drag(dragged, { x: 0, y: 0 }, { x: 20, y: 0 });
+    drag(dragged, { x: 100, y: 0 }, { x: 80, y: 0 });
+    // The right edge's handle, halfway down the warped right edge, out by 100.
+    drag(dragged, { x: 90, y: 40 }, { x: 190, y: 40 }, none);
+    expect(round((dragged as any)._getCorners())).toEqual([[40, 0], [160, 0], [200, 80], [0, 80]]);
   });
 
   it('puts the handles on the warped corners and halfway along the warped edges', () => {

@@ -7,7 +7,7 @@ export type HandleType = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 export type TransformInteraction =
   | { type: 'idle' }
   | { type: 'moving'; startPoint: Point; startX: number; startY: number }
-  | { type: 'resizing'; handle: HandleType; origin: { rect: TransformRect; point: Point } }
+  | { type: 'resizing'; handle: HandleType; origin: { rect: TransformRect; point: Point; perspective: PerspectiveCorners } }
   | { type: 'rotating'; startAngle: number; startRotation: number }
   | { type: 'skewing'; edge: 'n' | 'e' | 's' | 'w'; startPoint: Point; startSkewX: number; startSkewY: number }
   | { type: 'perspective'; corner: 'nw' | 'ne' | 'se' | 'sw'; startPoint: Point; startOffset: Point }

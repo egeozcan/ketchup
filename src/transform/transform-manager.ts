@@ -203,6 +203,7 @@ export class TransformManager {
           origin: {
             rect: { x: this._state.x, y: this._state.y, w: this._state.width, h: this._state.height },
             point: docPoint,
+            perspective: structuredClone(this._perspectiveCorners),
           },
         };
       }
@@ -324,6 +325,12 @@ export class TransformManager {
     this._state.y = newY;
     this._state.width = Math.abs(newW);
     this._state.height = Math.abs(newH);
+    // A warp stretches with the float, as it does under a numeric resize.
+    const sx = Math.abs(newW) / rect.w, sy = Math.abs(newH) / rect.h;
+    for (const corner of ['nw', 'ne', 'se', 'sw'] as const) {
+      const start = origin.perspective[corner];
+      this._perspectiveCorners[corner] = { x: start.x * sx, y: start.y * sy };
+    }
     if (newW < 0) this._state.scaleX = -Math.abs(this._state.scaleX);
     if (newH < 0) this._state.scaleY = -Math.abs(this._state.scaleY);
     this._onChange();
