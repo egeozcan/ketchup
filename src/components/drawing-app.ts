@@ -1430,6 +1430,7 @@ export class DrawingApp extends LitElement {
     }
     this._claiming = true;
     this._keeping = true;
+    this._keepError = '';
     // Puts the kept work back on screen, as it was, when the copy fails.
     let rollback: (() => void) | null = null;
     let kept = false;
@@ -1438,7 +1439,15 @@ export class DrawingApp extends LitElement {
       // may store the work after all.
       if (this._savePromise) await this._savePromise;
       if (!this._stranded) return;
-      const meta = await this._backend.projects.create({ name: `${from.name} (copy)`, thumbnailRef: null });
+      let meta: StorageProjectMeta;
+      try {
+        meta = await this._backend.projects.create({ name: `${from.name} (copy)`, thumbnailRef: null });
+      } catch (err) {
+        this._keepError = err instanceof StorageQuotaError
+          ? 'Storage is full, so the copy could not be saved.'
+          : 'The copy could not be saved.';
+        throw err;
+      }
       // Back to showing the kept work if the copy can't be saved: nothing is
       // given up (stranded, read-only) until its content is stored.
       const priorGone = this._projectGone;
@@ -1571,7 +1580,11 @@ export class DrawingApp extends LitElement {
     this._savePromise = (async () => {
       this._saveInProgress = true;
       this._saveFailed = false;
-      if (this._backendReopen) await this._backendReopen;
+      if (this._backendReopen) {
+        await this._backendReopen;
+        // Nothing can retry a save the project is no longer this tab's for.
+        if (this._saveError && !this._canSaveProject(savingId)) this._clearSaveError();
+      }
       let flushingThisRun = flushing;
       // Hands the write to a save-lock request made before encoding (a flush);
       // settled with null if the run ends without reaching the write.
@@ -1636,17 +1649,22 @@ export class DrawingApp extends LitElement {
 
           // If a floating selection is active, composite it into the owning
           // layer's snapshot so persisted data never has a hole from the lift.
-          const floatSnap = this.canvas?.getFloatSnapshot() ?? null;
+          const floatKey = this.canvas?.getFloatKey() ?? null;
+          let floatSnapshot: ReturnType<DrawingCanvas['getFloatSnapshot']> | undefined;
           // Only the viewport moved since the last save and every layer still has
           // its stored blob: skip the full-canvas readback and hashing.
-          const reuseSaved = !floatSnap
+          const reuseSaved = !floatKey
             && contentVersionAtSnapshot === this._savedContentVersion
             && this._trackedProjectId === projectId
             && this._state.layers.every(l => this._savedLayerBlobs.has(l.id));
-          // Per layer, the revision its pixels have now (null: can't be told, the
-          // float's layer, whose lift leaves a hole history doesn't know of).
-          const layerRevs = this._state.layers.map(l =>
-            floatSnap && l.id === floatSnap.layerId ? null : this.canvas?.getLayerRevision(l.id) ?? null);
+          // Per layer, the revision its pixels have now. The float's layer, whose
+          // lift leaves a hole history doesn't know of, adds the float's key: the
+          // same layer revision under the same float is the same stored pixels,
+          // so an autosave of an unmoved huge float reads nothing back.
+          const layerRevs = this._state.layers.map(l => {
+            const rev = this.canvas?.getLayerRevision(l.id) ?? null;
+            return floatKey && l.id === floatKey.layerId && rev !== null ? `${rev}|float:${floatKey.key}` : rev;
+          });
           // A layer whose revision is the one it was stored under, on the same
           // canvas, still holds the stored pixels: it needn't be read back, so
           // only the layers an edit touched are read and hashed.
@@ -1656,18 +1674,26 @@ export class DrawingApp extends LitElement {
             return layerRevs[i] !== null && !!saved && saved.rev === layerRevs[i] && saved.canvas === l.canvas
               && this._trackedProjectId === projectId;
           });
+          // The layer with the float merged in, on a copy so the live canvas is
+          // untouched; null when the float can't be had (stored but not trusted).
+          const readLayerWithFloat = (canvas: HTMLCanvasElement): ImageData | null => {
+            const floatSnap = (floatSnapshot ??= this.canvas?.getFloatSnapshot() ?? null);
+            if (!floatSnap) return null;
+            const tmp = document.createElement('canvas');
+            tmp.width = canvas.width;
+            tmp.height = canvas.height;
+            const tmpCtx = tmp.getContext('2d')!;
+            tmpCtx.drawImage(canvas, 0, 0);
+            tmpCtx.drawImage(floatSnap.tempCanvas, floatSnap.x, floatSnap.y);
+            return tmpCtx.getImageData(0, 0, tmp.width, tmp.height);
+          };
           const layerSnapshots = this._state.layers.map((l, i) => {
             const meta = { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode };
             if (reuseSaved || layerUnchanged[i]) return { ...meta, imageData: null as ImageData | null };
-            if (floatSnap && l.id === floatSnap.layerId) {
-              // Draw the float onto a temp canvas copy so the live canvas is untouched.
-              const tmp = document.createElement('canvas');
-              tmp.width = l.canvas.width;
-              tmp.height = l.canvas.height;
-              const tmpCtx = tmp.getContext('2d')!;
-              tmpCtx.drawImage(l.canvas, 0, 0);
-              tmpCtx.drawImage(floatSnap.tempCanvas, floatSnap.x, floatSnap.y);
-              return { ...meta, imageData: tmpCtx.getImageData(0, 0, tmp.width, tmp.height) as ImageData | null };
+            if (floatKey && l.id === floatKey.layerId) {
+              const imageData = readLayerWithFloat(l.canvas);
+              if (!imageData) snapshotTrusted = false;
+              return { ...meta, imageData: imageData ?? l.canvas.getContext('2d')!.getImageData(0, 0, l.canvas.width, l.canvas.height) as ImageData | null };
             }
             const ctx = l.canvas.getContext('2d')!;
             const imageData = ctx.getImageData(0, 0, l.canvas.width, l.canvas.height);
@@ -1711,6 +1737,8 @@ export class DrawingApp extends LitElement {
           // Abort if the project was deleted (e.g. by another tab or a custom backend).
           // Writing state/history for a missing project creates orphaned data.
           if (!oldProject) {
+            // Nothing can retry it now: the banner would stay up for good.
+            this._clearSaveError();
             void this._onProjectGone(projectId);
             break;
           }
@@ -1755,7 +1783,13 @@ export class DrawingApp extends LitElement {
                   // (e.g. another tab saved this project): encode the live layer.
                   const live = this._state.layers.find(l => l.id === snap.id)?.canvas;
                   if (!live) throw new Error(`Layer ${snap.id} disappeared during save`);
-                  imageData = live.getContext('2d')!.getImageData(0, 0, live.width, live.height);
+                  // The float's layer as it was snapshotted, float included: only
+                  // while the float is still the one keyed, else the layer alone
+                  // is stored untrusted and the next save corrects it.
+                  const sameFloat = !!floatKey && snap.id === floatKey.layerId
+                    && this.canvas?.getFloatKey()?.key === floatKey.key;
+                  imageData = (sameFloat ? readLayerWithFloat(live) : null)
+                    ?? live.getContext('2d')!.getImageData(0, 0, live.width, live.height);
                   // Record the hash of what is actually stored, so a later save
                   // can't match the old hash and keep these different pixels.
                   layerHashes[i] = hashImageData(imageData);
@@ -1801,7 +1835,7 @@ export class DrawingApp extends LitElement {
           let thumbnail: Blob | null = null;
           const thumbKey = `${contentVersionAtSnapshot}|${viewport.zoom},${viewport.panX},${viewport.panY}`
             + `|${viewportSize?.width}x${viewportSize?.height}`;
-          const thumbnailCurrent = !floatSnap && oldThumbRef && thumbKey === this._savedThumbKey;
+          const thumbnailCurrent = !floatKey && oldThumbRef && thumbKey === this._savedThumbKey;
           if (this.canvas?.mainCanvas && !thumbnailCurrent) {
             try { thumbnail = await canvasToBlob(this._renderThumbnail(this.canvas.mainCanvas)); } catch { /* non-critical */ }
           }
@@ -3187,6 +3221,8 @@ export class DrawingApp extends LitElement {
         index: this.canvas.getHistoryIndex(),
         counter: this._layerCounter,
         saved: this._savedDocument,
+        generation: this._documentGeneration,
+        exported: this._exportedDocument,
       }
       : null;
     // Announced once this tab has it open (see createProject).
@@ -3222,7 +3258,12 @@ export class DrawingApp extends LitElement {
             : this._enterProject(previous, () => this._loadProject(previous.id), true));
           // Still the document it was: edits since its last save stay unsaved.
           if (keep) {
-            this._savedDocument = { ...keep.saved, generation: this._documentGeneration };
+            // Marks (and exports in flight) from before the attempt are valid
+            // again, so the generation goes back too rather than moving on.
+            this._documentGeneration = keep.generation;
+            this._savedDocument = keep.saved;
+            this._exportedDocument = keep.exported;
+            if (this._layoutWidth > 0) this._updateMobileLayout(this._layoutWidth);
             this._reportModified();
           }
         } catch (backErr) {
@@ -3693,6 +3734,7 @@ export class DrawingApp extends LitElement {
               ${this._opening && this._isMobile ? this._renderOverlayProjects() : ''}
             ` : this._projectGone ? html`
               <p>This project was deleted in another tab.${this._stranded ? ' Changes made here since the last save are still here.' : ''}</p>
+              ${this._keepError ? html`<p class="save-error">${this._keepError}</p>` : ''}
               <div class="read-only-actions">
                 ${this._stranded ? html`<button ?disabled=${this._keeping} @click=${() => this._keepAsNewProject()}>Keep them as a new project</button>` : ''}
                 <button ?disabled=${this._keeping} @click=${() => { this._stranded = false; void this._openAfterGone().catch(err => console.error('Could not open another project:', err)); }}>${this._stranded ? 'Discard and open another project' : 'Open another project'}</button>

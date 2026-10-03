@@ -1691,8 +1691,10 @@ export class DrawingCanvas extends LitElement {
 
     // Plain wheel → pan
     e.preventDefault();
-    this._panX -= e.deltaX;
-    this._panY -= e.deltaY;
+    // Wheel deltas are client pixels; the pan is in display-canvas pixels.
+    const k = this._clientScale(this._getCanvasRect());
+    this._panX -= e.deltaX * k.x;
+    this._panY -= e.deltaY * k.y;
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.scheduleComposite(false);
     if (this._textEditing) this._renderTextPreview();
@@ -3925,6 +3927,13 @@ export class DrawingCanvas extends LitElement {
   /** Whether an external image float is active (used by drawing-app for Escape handling) */
   public get hasExternalFloat(): boolean {
     return this._floatIsExternalImage && this._transformManager !== null;
+  }
+
+  /** The float's layer and a key that changes with the float (see `TransformManager.getStateKey`), without rendering it. */
+  public getFloatKey(): { layerId: string; key: string } | null {
+    const layerId = this._ctx.value?.state.activeLayerId;
+    if (!this._transformManager || !layerId) return null;
+    return { layerId, key: this._transformManager.getStateKey() };
   }
 
   /** Returns active transform info for persistence, or null if no transform. */

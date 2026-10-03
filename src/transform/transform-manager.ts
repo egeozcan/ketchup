@@ -35,7 +35,10 @@ interface WarpCache {
 
 const CORNERS = ['nw', 'ne', 'se', 'sw'] as const;
 
+let nextManagerId = 1;
+
 export class TransformManager {
+  private readonly _id = nextManagerId++;
   // --- Source data ---
   private _sourceImageData: ImageData;
   private _sourceRect: TransformRect;
@@ -674,6 +677,19 @@ export class TransformManager {
     this._render(ctx, clip ?? null, clip ? Infinity : WARP_SNAPSHOT_PIXELS);
     ctx.restore();
     return { canvas, ...bounds };
+  }
+
+  /**
+   * Changes whenever what `snapshot()` would draw does: this float, its box,
+   * and its warp. The pixels it holds never change, so a save can skip reading
+   * back a layer it already stored under the same key.
+   */
+  getStateKey(): string {
+    const s = this._state;
+    const corners = this._perspectiveActive
+      ? CORNERS.map(c => `${this._perspectiveCorners[c].x},${this._perspectiveCorners[c].y}`).join(';')
+      : '';
+    return `${this._id}:${s.x},${s.y},${s.width},${s.height},${s.rotation},${s.skewX},${s.skewY},${s.scaleX},${s.scaleY}:${corners}`;
   }
 
   // --- Lifecycle ---
