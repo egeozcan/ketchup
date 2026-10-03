@@ -1676,8 +1676,10 @@ export class DrawingApp extends LitElement {
           });
           // The layer with the float merged in, on a copy so the live canvas is
           // untouched; null when the float can't be had (stored but not trusted).
-          const readLayerWithFloat = (canvas: HTMLCanvasElement): ImageData | null => {
-            const floatSnap = (floatSnapshot ??= this.canvas?.getFloatSnapshot() ?? null);
+          const readLayerWithFloat = (
+            canvas: HTMLCanvasElement,
+            floatSnap = (floatSnapshot ??= this.canvas?.getFloatSnapshot() ?? null),
+          ): ImageData | null => {
             if (!floatSnap) return null;
             const tmp = document.createElement('canvas');
             tmp.width = canvas.width;
@@ -1783,13 +1785,19 @@ export class DrawingApp extends LitElement {
                   // (e.g. another tab saved this project): encode the live layer.
                   const live = this._state.layers.find(l => l.id === snap.id)?.canvas;
                   if (!live) throw new Error(`Layer ${snap.id} disappeared during save`);
-                  // The float's layer as it was snapshotted, float included: only
-                  // while the float is still the one keyed, else the layer alone
-                  // is stored untrusted and the next save corrects it.
-                  const sameFloat = !!floatKey && snap.id === floatKey.layerId
-                    && this.canvas?.getFloatKey()?.key === floatKey.key;
-                  imageData = (sameFloat ? readLayerWithFloat(live) : null)
-                    ?? live.getContext('2d')!.getImageData(0, 0, live.width, live.height);
+                  // The float's layer: whatever float is on it now is merged in
+                  // (it may have moved since the snapshot; this save is stored
+                  // untrusted, so the next one corrects it). With none left, the
+                  // layer holds it, committed. A float that can't be had fails
+                  // the save rather than storing the layer with a hole.
+                  const nowOnLayer = this.canvas?.getFloatKey()?.layerId === snap.id;
+                  if (nowOnLayer) {
+                    const current = this.canvas?.getFloatSnapshot() ?? null;
+                    if (!current) throw new Error(`Could not read the float on layer ${snap.id}`);
+                    imageData = readLayerWithFloat(live, current)!;
+                  } else {
+                    imageData = live.getContext('2d')!.getImageData(0, 0, live.width, live.height);
+                  }
                   // Record the hash of what is actually stored, so a later save
                   // can't match the old hash and keep these different pixels.
                   layerHashes[i] = hashImageData(imageData);
