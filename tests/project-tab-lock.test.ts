@@ -242,6 +242,43 @@ describe('one tab edits a project at a time', () => {
     expect(load).toHaveBeenCalled();
   });
 
+  it('a project renamed while "Use here" waits is still loaded once the other tab lets go', async () => {
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    fakeLocks();
+    const { app: editing } = makeApp();
+    await (editing as any)._enterProject(meta('p'), async () => {});
+    (editing as any)._dirty = true;
+    let saved!: () => void;
+    (editing as any)._flushPendingSaveAndWait = vi.fn(() => new Promise<void>(r => { saved = () => { (editing as any)._dirty = false; r(); }; }));
+    const { app: shown } = makeApp();
+    await (shown as any)._enterProject(meta('p'), async () => {});
+    const load = vi.fn(async () => {});
+    (shown as any)._loadProject = load;
+
+    const done = (shown as any)._editHere(true);
+    await vi.waitFor(() => expect(saved).toBeTypeOf('function'));
+    (shown as any)._currentProject = { ...meta('p'), name: 'renamed' };
+    saved();
+    await done;
+    expect(load).toHaveBeenCalledWith('p');
+    expect((shown as any)._readOnly).toBe(false);
+    expect((shown as any)._currentProject.name).toBe('renamed');
+  });
+
+  it('saves nothing under a lock the content was not loaded under', async () => {
+    fakeLocks();
+    const { app, backend, project } = await makeSavingApp();
+    // The lock let go and taken again without reloading.
+    (app as any)._releaseProjectLock();
+    await settle();
+    expect(await (app as any)._lockProject(project.id)).toBe(true);
+    const write = vi.spyOn(backend.state, 'save');
+    (app as any)._contentVersion++;
+    (app as any)._dirty = true;
+    await (app as any)._save(true);
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it('when two tabs ask at once, the one that does not get the project stops waiting', async () => {
     vi.stubGlobal('BroadcastChannel', FakeChannel);
     fakeLocks();

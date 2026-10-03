@@ -647,6 +647,7 @@ export class DrawingApp extends LitElement {
       // A load that failed carries on in a new project, which is ours.
       const current = this._currentProject ?? meta;
       if (current.id !== meta.id) await this._lockProject(current.id);
+      this._contentLock = this._projectLock;
       // Editable once its own content is in, if still ours (another tab may
       // have asked for it meanwhile).
       this._readOnly = !this._ownsProject(current.id);
@@ -688,6 +689,8 @@ export class DrawingApp extends LitElement {
   @state() private _waitingForTab = false;
   /** The project this tab holds the edit lock for, and how to let it go. */
   private _projectLock: { id: string; release: () => void } | null = null;
+  /** The project lock the canvas content was loaded (or kept) under: saves are made only under it. */
+  private _contentLock: { id: string; release: () => void } | null = null;
   /** Counts lock requests: one granted after another was made is let go at once. */
   private _lockRequest = 0;
   /** Ends a lock request queued behind the tab holding the lock. */
@@ -881,7 +884,7 @@ export class DrawingApp extends LitElement {
       // (it can't write now).
       if (this._savePromise) await this._savePromise;
       let got = await this._lockProject(meta.id);
-      if (!got && takeOver && this._currentProject === meta) {
+      if (!got && takeOver && this._currentProject?.id === meta.id) {
         this._waitingForTab = true;
         try {
           got = await this._takeOver(meta.id);
@@ -889,8 +892,16 @@ export class DrawingApp extends LitElement {
           this._waitingForTab = false;
         }
       }
-      if (!got || this._currentProject !== meta) return;
-      await this._enterProject(meta, () => this._loadProject(meta.id));
+      if (!got) return;
+      // Opened as it is now (renamed meanwhile, say). Another project opened
+      // meanwhile has its own lock; one got for this project but not loaded
+      // under is let go.
+      const current = this._currentProject;
+      if (current?.id !== meta.id) {
+        if (this._ownsProject(meta.id)) this._releaseProjectLock();
+        return;
+      }
+      await this._enterProject(current, () => this._loadProject(current.id));
     } finally {
       this._claiming = false;
     }
@@ -973,6 +984,7 @@ export class DrawingApp extends LitElement {
       if (!this._stranded) return;
       const meta = await this._backend.projects.create({ name: `${from.name} (copy)`, thumbnailRef: null });
       if (!(await this._lockProject(meta.id))) return;
+      this._contentLock = this._projectLock;
       await this._carryStamps(from.id, meta.id);
       this._currentProject = meta;
       this._projectList = await this._backend.projects.list().catch(() => [meta, ...this._projectList]);
@@ -1040,7 +1052,10 @@ export class DrawingApp extends LitElement {
     }
     if (!this._currentProject || !this._dirty || this._projectLoads > 0) return;
     const savingId = this._currentProject.id;
-    if (!this._backend || savingId === this._unsavableProjectId || !this._ownsProject(savingId)) return;
+    // Only under the lock the content was loaded under: a tab holding a lock
+    // it never loaded under (or took back without reloading) has stale content.
+    if (!this._backend || savingId === this._unsavableProjectId || !this._ownsProject(savingId)
+      || this._projectLock !== this._contentLock) return;
 
     this._savePromise = (async () => {
       this._saveInProgress = true;
@@ -1051,7 +1066,7 @@ export class DrawingApp extends LitElement {
         // Only while this tab still has the project ("Use here anyway" in
         // another tab takes it; the writes below check again).
         while (this._currentProject?.id === savingId && this._dirty && this._projectLoads === 0
-          && this._ownsProject(savingId)) {
+          && this._ownsProject(savingId) && this._projectLock === this._contentLock) {
           const projectId = savingId;
           const dirtyVersionAtSnapshot = this._dirtyVersion;
           const contentVersionAtSnapshot = this._contentVersion;
