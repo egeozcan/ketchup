@@ -1589,6 +1589,13 @@ export class DrawingCanvas extends LitElement {
     };
   }
 
+  /** Client position as a position in the display canvas's own pixels. */
+  private _clientToView(clientX: number, clientY: number): Point {
+    const rect = this._getCanvasRect();
+    const k = this._clientScale(rect);
+    return { x: (clientX - rect.left) * k.x, y: (clientY - rect.top) * k.y };
+  }
+
   private _clientToDoc(clientX: number, clientY: number): Point {
     const rect = this._getCanvasRect();
     const k = this._clientScale(rect);
@@ -1613,8 +1620,9 @@ export class DrawingCanvas extends LitElement {
 
   private _updatePan(e: PointerEvent) {
     if (!this._panning) return;
-    this._panX = this._panStartOffsetX + (e.clientX - this._panStartX);
-    this._panY = this._panStartOffsetY + (e.clientY - this._panStartY);
+    const k = this._clientScale(this._getCanvasRect());
+    this._panX = this._panStartOffsetX + (e.clientX - this._panStartX) * k.x;
+    this._panY = this._panStartOffsetY + (e.clientY - this._panStartY) * k.y;
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
     this.scheduleComposite(false);
     if (this._textEditing) this._renderTextPreview();
@@ -1933,9 +1941,9 @@ export class DrawingCanvas extends LitElement {
     const TOTAL_HEIGHT = GRID_SIZE + SWATCH_HEIGHT + 4;
     const OFFSET = 20;
 
-    const rect = this._getCanvasRect();
-    let destX = e.clientX - rect.left + OFFSET;
-    let destY = e.clientY - rect.top - OFFSET - TOTAL_HEIGHT;
+    const view = this._clientToView(e.clientX, e.clientY);
+    let destX = view.x + OFFSET;
+    let destY = view.y - OFFSET - TOTAL_HEIGHT;
 
     if (destX + GRID_SIZE > this._vw) destX = destX - GRID_SIZE - 2 * OFFSET;
     if (destY < 0) destY = destY + TOTAL_HEIGHT + 2 * OFFSET;
@@ -1944,8 +1952,8 @@ export class DrawingCanvas extends LitElement {
     previewCtx.imageSmoothingEnabled = false;
 
     if (sampleAll) {
-      const srcX = e.clientX - rect.left;
-      const srcY = e.clientY - rect.top;
+      const srcX = view.x;
+      const srcY = view.y;
       previewCtx.drawImage(this.mainCanvas, srcX - 5, srcY - 5, 11, 11, destX, destY, GRID_SIZE, GRID_SIZE);
     } else {
       const srcX = Math.round(docPoint.x);
@@ -2249,7 +2257,15 @@ export class DrawingCanvas extends LitElement {
       || (activeTool === 'text' && (!this._textEditing || !this._isInTextBox(this._getDocPoint(e)))))) {
       // Keeps the text box's textarea focusable, as below.
       if (activeTool === 'text') e.preventDefault();
-      this._pendingTap = { pointerId: e.pointerId, down: e };
+      if (activeTool === 'stamp') {
+        // The second press of a double-click on ✓/✗ is judged when it lands,
+        // not when the finger lifts (a held press would outlast the window).
+        const ended = this._floatButtonEnd;
+        this._floatButtonEnd = null;
+        if (ended && e.timeStamp - ended.time < 400
+            && Math.hypot(e.clientX - ended.x, e.clientY - ended.y) < 6) return;
+      }
+      this._pendingTap ={ pointerId: e.pointerId, down: e };
       return;
     }
 
@@ -2440,9 +2456,9 @@ export class DrawingCanvas extends LitElement {
       this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: tracked.type });
     }
 
-    const rect = this._getCanvasRect();
-    this._lastPointerScreenX = e.clientX - rect.left;
-    this._lastPointerScreenY = e.clientY - rect.top;
+    const view = this._clientToView(e.clientX, e.clientY);
+    this._lastPointerScreenX = view.x;
+    this._lastPointerScreenY = view.y;
 
     // Handle pinch/pan gesture
     if (this._pinching) {
@@ -2773,9 +2789,9 @@ export class DrawingCanvas extends LitElement {
 
   private _onPointerEnter = (e: PointerEvent) => {
     this._pointerOnCanvas = true;
-    const rect = this._getCanvasRect();
-    this._lastPointerScreenX = e.clientX - rect.left;
-    this._lastPointerScreenY = e.clientY - rect.top;
+    const view = this._clientToView(e.clientX, e.clientY);
+    this._lastPointerScreenX = view.x;
+    this._lastPointerScreenY = view.y;
     this._renderPreview();
   };
 
@@ -2952,17 +2968,16 @@ export class DrawingCanvas extends LitElement {
     const midY = (pts[0].y + pts[1].y) / 2;
 
     // Pan: delta of midpoint (applied first so zoom anchor uses already-panned state)
-    const panDx = midX - this._lastPinchMidX;
-    const panDy = midY - this._lastPinchMidY;
+    const k = this._clientScale(this._getCanvasRect());
+    const panDx = (midX - this._lastPinchMidX) * k.x;
+    const panDy = (midY - this._lastPinchMidY) * k.y;
     this._panX += panDx;
     this._panY += panDy;
 
     // Zoom: ratio of current distance to previous distance
     if (this._lastPinchDist > 0) {
       const scale = dist / this._lastPinchDist;
-      const rect = this._getCanvasRect();
-      const viewportX = midX - rect.left;
-      const viewportY = midY - rect.top;
+      const { x: viewportX, y: viewportY } = this._clientToView(midX, midY);
 
       // Anchor zoom to the midpoint between the two fingers
       const docX = (viewportX - this._panX) / this._zoom;
@@ -3427,6 +3442,14 @@ export class DrawingCanvas extends LitElement {
     this._notifyHistory();
   }
 
+  /** Whether the editor sits in an inert subtree, as when a tab is read-only. */
+  private _isInert(): boolean {
+    for (let node: Node | null = this; node; node = node.parentNode ?? (node as ShadowRoot).host ?? null) {
+      if (node instanceof Element && node.hasAttribute('inert')) return true;
+    }
+    return false;
+  }
+
   /**
    * Shared handler for external images from paste or drag-and-drop.
    * Creates a new layer, optionally shows resize dialog, places a TransformManager.
@@ -3446,6 +3469,8 @@ export class DrawingCanvas extends LitElement {
       const shouldScale = await this._resizeDialog.show(w, h, canvasW, canvasH);
       // Another document, or an editor taken away while it asked.
       if (generation !== this._documentGeneration || !this.isConnected) return;
+      // Handed over to another tab meanwhile: the editor is read-only (inert).
+      if (this._isInert()) return;
       if (shouldScale) {
         const scale = Math.min(canvasW / w, canvasH / h);
         w = Math.round(w * scale);

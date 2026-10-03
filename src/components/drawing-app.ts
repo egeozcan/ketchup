@@ -739,6 +739,7 @@ export class DrawingApp extends LitElement {
     this._keepError = '';
     this._overlayProjects = false;
     this._projectGone = false;
+    this._noCanvas = false;
     // A failure of the last project's saves isn't this one's.
     this._saveFailed = false;
     this._clearSaveError();
@@ -763,7 +764,10 @@ export class DrawingApp extends LitElement {
           // on in a blank document of the default size and report the failure.
           console.error('Could not make the document:', err);
           loadError = err;
-          if (!this.embedded) this._notice = "Couldn't make a canvas that large.";
+          if (!this.embedded) {
+            this._notice = err instanceof RangeError
+              ? "Couldn't make a canvas that large." : "Couldn't make the document.";
+          }
           try {
             await this._resetToFreshProject();
           } catch (freshErr) {
@@ -790,6 +794,7 @@ export class DrawingApp extends LitElement {
       this._contentLock = this._projectLock;
       // Editable once its own content is in, if still ours (another tab may
       // have asked for it meanwhile).
+      this._noCanvas = noCanvas;
       this._readOnly = noCanvas || !this._ownsProject(current.id);
     } finally {
       this._projectLoads--;
@@ -849,6 +854,8 @@ export class DrawingApp extends LitElement {
   private _forceTakeOver: (() => void) | null = null;
   /** Settles when the `_editHere` under way ends (so a wait it is in can be cancelled and awaited). */
   private _claimEnd: Promise<void> | null = null;
+  /** Not even a blank document could be made: the tab holds the lock but has no canvas content to edit. */
+  @state() private _noCanvas = false;
   /** The read-only overlay lists projects to open instead (phone layout). */
   @state() private _overlayProjects = false;
   /** Another tab took the project before this one stored its latest work, which is still here. */
@@ -878,6 +885,8 @@ export class DrawingApp extends LitElement {
    */
   private async _beginSwitch(request: number): Promise<boolean> {
     this._switching = true;
+    // What happened to the last project isn't news about the next.
+    this._notice = '';
     // A press still down would otherwise leave half a stroke for the save.
     this.canvas?.cancelGesture();
     // Commit any float so the save captures the layer with
@@ -1151,14 +1160,14 @@ export class DrawingApp extends LitElement {
       if (this._dirty || this._savePromise) await this._flushPendingSaveAndWait();
       if (!held || this._projectLock !== held) return;
       if (this._dirty && this._saveFailed) {
-        this._readOnly = false;
+        this._readOnly = this._noCanvas;
         this._tabs?.postMessage({ type: 'kept', id });
         return;
       }
       // The tab that asked may have given up meanwhile: no one waiting, so
       // stay editable rather than leave the project to no one.
       if (!(await this._projectWanted(id))) {
-        if (this._projectLock === held) this._readOnly = false;
+        if (this._projectLock === held) this._readOnly = this._noCanvas;
         return;
       }
       if (this._projectLock !== held) return;
@@ -2063,6 +2072,8 @@ export class DrawingApp extends LitElement {
     const w = width;
     const h = height;
     const layer = this._createLayer(w, h);
+    // A canvas the browser can't back fails here, before the state changes.
+    if (!layer.canvas.getContext('2d')) throw new RangeError(`This browser cannot make a ${w}\u00d7${h} canvas`);
     this._state = {
       activeTool: 'pencil',
       strokeColor: '#000000',
@@ -2656,7 +2667,13 @@ export class DrawingApp extends LitElement {
           if (!(await this._beginSwitch(request))) return;
           const meta = await this._backend!.projects.create({ name, thumbnailRef: null });
           this._announceProjects();
-          if (request !== this._switchRequest) return;
+          if (request !== this._switchRequest) {
+            // Never opened, so nothing is in it: don't leave an empty project behind.
+            await this._projectService!.deleteProject(meta.id).catch(() => {});
+            this._announceProjects();
+            this._projectList = await this._backend!.projects.list();
+            return;
+          }
           await this._enterProject(meta, async () => {
             this._projectList = await this._backend!.projects.list();
             await this._resetToFreshProject(width, height);
@@ -2747,6 +2764,8 @@ export class DrawingApp extends LitElement {
   override willUpdate() {
     this._provider.setValue(this._buildContextValue());
     this.toggleAttribute('mobile', this._isMobile);
+    // The overlay's project list belongs to one showing of the overlay.
+    if (this._overlayProjects && !this._readOnly) this._overlayProjects = false;
   }
 
   private _onHistoryChange(e: CustomEvent) {
@@ -2968,14 +2987,32 @@ export class DrawingApp extends LitElement {
     // Recent stamps are the user's, not the document's; they follow along
     // before the previous project, and its stamps, are discarded.
     if (this.embedded && previous) await this._carryStamps(previous.id, meta.id);
-    await this._enterProject(meta, async () => {
-      await this._resetToFreshProject(width, height, background);
-      // Painted while the load holds autosave off, so no save sees the blank layer.
-      if (paint) {
-        paint(this._state.layers[0]);
-        this.canvas?.composite();
+    try {
+      await this._enterProject(meta, async () => {
+        await this._resetToFreshProject(width, height, background);
+        // Painted while the load holds autosave off, so no save sees the blank layer.
+        if (paint) {
+          paint(this._state.layers[0]);
+          this.canvas?.composite();
+        }
+      });
+    } catch (err) {
+      // The editor holds a blank stand-in for the document that failed: go
+      // back to the previous project and drop the one made for this.
+      if (previous) {
+        try {
+          await this._enterProject(previous, () => this._loadProject(previous.id), true);
+        } catch (backErr) {
+          console.error('Could not return to the previous document:', backErr);
+        }
+        if (this._currentProject?.id !== meta.id) {
+          await this._projectService!.deleteProject(meta.id).catch(() => {});
+          this._announceProjects();
+        }
       }
-    });
+      this._projectList = await this._backend!.projects.list().catch(() => this._projectList);
+      throw err;
+    }
     if (this.embedded && previous) {
       // The new document is already on screen; failing to free the old one
       // only costs memory, and must not fail the replacement.
@@ -3272,12 +3309,17 @@ export class DrawingApp extends LitElement {
       const meta = await this._backend!.projects.create({ name: 'Untitled', thumbnailRef: null });
       this._projectList = [meta];
       this._announceProjects();
-      await this._enterProject(meta, async () => {
-        // The first render may have measured a pre-mobile layout; fit to the real one.
-        await this.updateComplete;
-        await this.canvas?.updateComplete;
-        this.canvas?.resetView();
-      });
+      try {
+        await this._enterProject(meta, async () => {
+          // The first render may have measured a pre-mobile layout; fit to the real one.
+          await this.updateComplete;
+          await this.canvas?.updateComplete;
+          this.canvas?.resetView();
+        });
+      } catch (err) {
+        // The editor already carries on in a blank document: not a reason to fail the app.
+        console.error('Could not start the first project cleanly:', err);
+      }
       this._markDirty();
     }
   }
@@ -3378,6 +3420,20 @@ export class DrawingApp extends LitElement {
   /** A file dropped on the read-only overlay isn't opened by the browser in place of the app. */
   private _ignoreDrop = (e: DragEvent) => e.preventDefault();
 
+  /** The read-only overlay's way to open another project (phone layout). */
+  private _renderOverlayProjects() {
+    return html`
+      <button @click=${() => { this._overlayProjects = !this._overlayProjects; }}>Open another project</button>
+      ${this._overlayProjects ? html`
+        <div class="read-only-actions">
+          ${this._projectList.filter(p => p.id !== this._currentProject?.id).map(p => html`
+            <button @click=${() => { this._overlayProjects = false; this._buildContextValue().switchProject(p.id); }}>${p.name}</button>
+          `)}
+        </div>
+      ` : ''}
+    `;
+  }
+
   /** The read-only overlay's "Use here" (as `label`), and what follows a press. */
   private _renderClaim(label: string) {
     if (this._waitingForTab) {
@@ -3402,7 +3458,7 @@ export class DrawingApp extends LitElement {
     }
     return html`<div class="app">
       ${this._saveError ? html`<div class="save-banner" role="alert">Couldn't save your work${this._lastSaveError instanceof StorageQuotaError ? ': storage is full' : ''}. Trying again…</div>` : ''}
-      ${!this._isMobile ? html`<tool-settings ?inert=${this._stranded || this._switching}></tool-settings>` : ''}
+      ${!this._isMobile ? html`<tool-settings ?inert=${this._stranded || (this._switching && !this._opening)}></tool-settings>` : ''}
       <div class="main-area">
         ${this._readOnly || this._switching ? html`
           <div class="read-only" role="alert" @dragover=${this._ignoreDrop} @drop=${this._ignoreDrop}>
@@ -3426,21 +3482,15 @@ export class DrawingApp extends LitElement {
                   ${this._renderClaim('Use here without them')}
                 </div>
               `}
+            ` : this._noCanvas ? html`
+              <p>Couldn't make a document to edit. Open another project, or reload to try again.</p>
+              ${this._isMobile ? this._renderOverlayProjects() : ''}
             ` : this._handingOver ? html`<p>Saving, for the tab that asked to edit this project…</p>` : html`
               <p>This project is open in another tab. Changes made there are saved; this tab only shows it.</p>
               ${this._keptElsewhere
                 ? html`<p>That tab couldn't save its changes, so it keeps the project for now.</p>` : ''}
               ${this._renderClaim('Use here')}
-              ${this._isMobile && !this._waitingForTab && !this._claiming ? html`
-                <button @click=${() => { this._overlayProjects = !this._overlayProjects; }}>Open another project</button>
-                ${this._overlayProjects ? html`
-                  <div class="read-only-actions">
-                    ${this._projectList.filter(p => p.id !== this._currentProject?.id).map(p => html`
-                      <button @click=${() => { this._overlayProjects = false; this._buildContextValue().switchProject(p.id); }}>${p.name}</button>
-                    `)}
-                  </div>
-                ` : ''}
-              ` : ''}
+              ${this._isMobile && !this._waitingForTab && !this._claiming ? this._renderOverlayProjects() : ''}
             `}
           </div>
         ` : ''}
