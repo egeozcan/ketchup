@@ -54,6 +54,9 @@ export class IndexedDBBackend implements StorageBackend {
   }
 
   async init(): Promise<void> {
+    // Reopened (an editor back in the document): one connection, not two.
+    this._db?.close();
+    this._db = null;
     // One-time cleanup of legacy stamps database
     const legacyReq = indexedDB.deleteDatabase('ketchup-stamps');
     legacyReq.onerror = () => {};

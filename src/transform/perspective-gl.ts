@@ -1,6 +1,6 @@
 import type { Point } from '../types.js';
 import type { TransformRect } from './transform-types.js';
-import { warpGeometry } from './transform-math.js';
+import { warpGeometry, type WarpGeometry } from './transform-math.js';
 
 /**
  * `warpPerspective` on the GPU: the same per-pixel inverse map, exact
@@ -35,6 +35,9 @@ uniform bool uLinear, uConvex;
 uniform vec2 uQuad[4];
 uniform vec4 uLines[4];
 uniform vec4 uLobes[8];
+uniform vec2 uCentroids[2];
+// Which of u and v the quad's corner order reverses (see QUAD_ORDERS).
+uniform vec2 uFlip;
 out vec4 outColor;
 
 float meanClamped(float la, float lb) {
@@ -84,7 +87,8 @@ float nearestOnQuad(vec2 p, out vec2 nearest, out vec2 edge) {
   for (int i = 0; i < 4; i++) {
     vec2 a = uQuad[i], q = uQuad[(i + 1) % 4] - a, w = p - a;
     float len2 = dot(q, q);
-    float t = len2 > 0.0 ? clamp(dot(w, q) / len2, 0.0, 1.0) : 0.0;
+    if (len2 == 0.0) continue;
+    float t = clamp(dot(w, q) / len2, 0.0, 1.0);
     vec2 d = w - q * t;
     float d2 = dot(d, d);
     if (d2 < best) {
@@ -176,8 +180,17 @@ void main() {
     }
   }
   vec2 uv;
-  if (!unmapBilinear(h, uv)) return;
+  if (!unmapBilinear(h, uv)) {
+    bool mapped = false;
+    for (int i = 0; i < 2 && !mapped; i++) {
+      vec2 d = uCentroids[i] - h;
+      float len = length(d);
+      if (len > 0.0) mapped = unmapBilinear(h + d * (0.01 / len), uv);
+    }
+    if (!mapped) return;
+  }
 
+  uv = mix(uv, 1.0 - uv, uFlip);
   ivec2 size = textureSize(uSrc, 0);
   vec2 st = clamp(uv * vec2(size) - 0.5, vec2(0.0), vec2(size - 1));
   ivec2 i0 = ivec2(st);
@@ -194,7 +207,20 @@ void main() {
 }`;
 
 const UNIFORMS = [
-  'uSrc', 'uOrigin', 'uTileH', 'uE', 'uF', 'uG', 'uK2', 'uEF', 'uLinear', 'uConvex', 'uQuad', 'uLines', 'uLobes',
+  'uSrc', 'uOrigin', 'uTileH', 'uE', 'uF', 'uG', 'uK2', 'uEF', 'uLinear', 'uConvex', 'uQuad', 'uLines', 'uLobes', 'uCentroids', 'uFlip',
+] as const;
+
+/**
+ * The quad's corners reordered to start from each corner in turn, with
+ * whether u and v then run backwards. Solved from the corner nearest a tile,
+ * the map keeps its precision there in single precision; from a far corner,
+ * cancellation can throw pixels next to a collapsed corner off the source.
+ */
+const QUAD_ORDERS = [
+  { order: [0, 1, 2, 3], flip: [0, 0] },
+  { order: [1, 0, 3, 2], flip: [1, 0] },
+  { order: [2, 3, 0, 1], flip: [1, 1] },
+  { order: [3, 2, 1, 0], flip: [0, 1] },
 ] as const;
 
 /** Largest tile drawn at once, keeping each draw well clear of GPU watchdogs. */
@@ -218,10 +244,14 @@ interface Gpu {
 
 /** undefined: not tried yet (or lost, to try again); null: unavailable. */
 let gpu: Gpu | null | undefined;
-/** Sources that failed to upload (out of GPU memory), left to the CPU. */
-let failed = new WeakSet<ImageData>();
+/**
+ * Sources that failed to upload (out of GPU memory), left to the CPU. Kept
+ * across a lost context, which such an upload may itself have caused.
+ */
+const failed = new WeakSet<ImageData>();
 
-function createGpu(): Gpu | null {
+/** null if there is no usable GPU; undefined if the context was lost while setting up, to try again. */
+function createGpu(): Gpu | null | undefined {
   if (typeof WebGL2RenderingContext === 'undefined') return null;
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 1;
@@ -248,6 +278,7 @@ function createGpu(): Gpu | null {
     gl.attachShader(program, shader);
   }
   gl.linkProgram(program);
+  if (gl.isContextLost()) return undefined;
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
     const logs = gl.getAttachedShaders(program)?.map(s => gl.getShaderInfoLog(s)).filter(Boolean) ?? [];
     console.warn('Perspective warp shader failed; warping on the CPU.', gl.getProgramInfoLog(program), ...logs);
@@ -279,13 +310,15 @@ function createGpu(): Gpu | null {
   canvas.addEventListener('webglcontextlost', () => {
     // Try a new context next time; until then the CPU warps.
     if (gpu?.canvas === canvas) gpu = undefined;
-    failed = new WeakSet();
   });
   return { canvas, gl, uniforms, texture, maxTexture: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number, tile, source: null };
 }
 
 function getGpu(): Gpu | null {
-  if (gpu === undefined) gpu = createGpu();
+  if (gpu === undefined) {
+    gpu = createGpu();
+    if (gpu === undefined) return null;
+  }
   if (gpu?.gl.isContextLost()) gpu = undefined;
   return gpu ?? null;
 }
@@ -314,15 +347,16 @@ export function warpPerspectiveGpu(
 
   if (g.source !== src) {
     g.source = null;
-    gl.getError();
+    // Several errors may be pending; each call clears one.
+    while (gl.getError() !== gl.NO_ERROR && !gl.isContextLost());
+    // Failed until known otherwise, in case the upload loses the context.
+    failed.add(src);
     gl.texImage2D(
       gl.TEXTURE_2D, 0, gl.RGBA8, src.width, src.height, 0, gl.RGBA, gl.UNSIGNED_BYTE,
       new Uint8Array(src.data.buffer, src.data.byteOffset, src.data.byteLength),
     );
-    if (gl.getError() !== gl.NO_ERROR) {
-      failed.add(src);
-      return false;
-    }
+    if (gl.getError() !== gl.NO_ERROR || gl.isContextLost()) return false;
+    failed.delete(src);
     g.source = src;
   }
 
@@ -348,17 +382,48 @@ export function warpPerspectiveGpu(
     return false;
   }
 
-  const geo = warpGeometry(dst);
-  gl.uniform2f(u.uE, geo.ex, geo.ey);
-  gl.uniform2f(u.uF, geo.fx, geo.fy);
-  gl.uniform2f(u.uG, geo.gx, geo.gy);
-  gl.uniform1f(u.uK2, geo.k2);
-  gl.uniform1f(u.uEF, geo.ef);
-  gl.uniform1i(u.uLinear, geo.linear ? 1 : 0);
-  gl.uniform1i(u.uConvex, geo.convex ? 1 : 0);
-  gl.uniform2fv(u.uQuad, geo.quad.flatMap(p => [p.x, p.y]));
-  gl.uniform4fv(u.uLines, Float32Array.from(geo.lines));
-  gl.uniform4fv(u.uLobes, Float32Array.from(geo.lobes));
+  // A convex quad maps each point from exactly one source position, so any
+  // corner can be the origin. A folded one is solved from the same corner
+  // everywhere, so tiles agree on which fold they show.
+  const geometries: (WarpGeometry | undefined)[] = [warpGeometry(dst)];
+  const geo = geometries[0]!;
+  let current = -1;
+  const useOrigin = (i: number) => {
+    if (i === current) return;
+    current = i;
+    const { order, flip } = QUAD_ORDERS[i];
+    const q = geometries[i] ??= warpGeometry(order.map(k => dst[k]) as typeof dst);
+    gl.uniform2f(u.uE, q.ex, q.ey);
+    gl.uniform2f(u.uF, q.fx, q.fy);
+    gl.uniform2f(u.uG, q.gx, q.gy);
+    gl.uniform1f(u.uK2, q.k2);
+    gl.uniform1f(u.uEF, q.ef);
+    gl.uniform1i(u.uLinear, q.linear ? 1 : 0);
+    gl.uniform1i(u.uConvex, q.convex ? 1 : 0);
+    gl.uniform2fv(u.uQuad, q.quad.flatMap(p => [p.x, p.y]));
+    gl.uniform4fv(u.uLines, Float32Array.from(q.lines));
+    gl.uniform4fv(u.uLobes, Float32Array.from(q.lobes));
+    gl.uniform2fv(u.uCentroids, q.centroids.flatMap(p => [p.x, p.y]));
+    gl.uniform2f(u.uFlip, flip[0], flip[1]);
+  };
+  // Precision is lost next to a short edge; of corners equally near a tile
+  // (in it), the one with the shortest edge wins.
+  const shortest = dst.map((p, i) => Math.min(
+    Math.hypot(dst[(i + 1) % 4].x - p.x, dst[(i + 1) % 4].y - p.y),
+    Math.hypot(dst[(i + 3) % 4].x - p.x, dst[(i + 3) % 4].y - p.y),
+  ));
+  const nearestCorner = (x: number, y: number, w: number, h: number) => {
+    let best = 0, bestD = Infinity;
+    dst.forEach((p, i) => {
+      const dx = Math.max(x - p.x, 0, p.x - (x + w)), dy = Math.max(y - p.y, 0, p.y - (y + h));
+      const d = dx * dx + dy * dy;
+      if (d < bestD || (d === bestD && shortest[i] < shortest[best])) {
+        bestD = d;
+        best = i;
+      }
+    });
+    return best;
+  };
 
   out.save();
   out.setTransform(1, 0, 0, 1, 0, 0);
@@ -372,8 +437,11 @@ export function warpPerspectiveGpu(
         out.clearRect(tx, ty, tw, th);
         continue;
       }
+      const origin = geo.convex ? nearestCorner(region.x + tx, region.y + ty, tw, th) : 0;
+      useOrigin(origin);
+      const tileGeo = geometries[origin]!;
       gl.viewport(0, 0, tw, th);
-      gl.uniform2f(u.uOrigin, region.x + tx - geo.ax, region.y + ty - geo.ay);
+      gl.uniform2f(u.uOrigin, region.x + tx - tileGeo.ax, region.y + ty - tileGeo.ay);
       gl.uniform1f(u.uTileH, th);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       // The viewport is the drawing buffer's bottom-left corner.

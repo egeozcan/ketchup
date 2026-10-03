@@ -7,11 +7,17 @@ export type HandleType = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 export type TransformInteraction =
   | { type: 'idle' }
   | { type: 'moving'; startPoint: Point; startX: number; startY: number }
-  | { type: 'resizing'; handle: HandleType; origin: { rect: TransformRect; point: Point } }
+  /** Measured against the state when grabbed, so the opposite edge stays put. */
+  | { type: 'resizing'; handle: HandleType; origin: { point: Point; state: TransformState } }
   | { type: 'rotating'; startAngle: number; startRotation: number }
   | { type: 'skewing'; edge: 'n' | 'e' | 's' | 'w'; startPoint: Point; startSkewX: number; startSkewY: number }
   | { type: 'perspective'; corner: 'nw' | 'ne' | 'se' | 'sw'; startPoint: Point; startOffset: Point }
-  | { type: 'outside-pending'; startPoint: Point };
+  | { type: 'outside-pending'; startPoint: Point; slop: number }
+  /**
+   * Pressed on the commit or cancel button, which acts only if released on it
+   * too (where it was when pressed: a typed value applied on blur may move it).
+   */
+  | { type: 'button'; button: 'commit' | 'cancel'; center: Point; radius: number };
 
 /** Bounding rect in document space */
 export interface TransformRect {
@@ -39,7 +45,10 @@ export interface TransformState {
   scaleY: number;
 }
 
-/** Per-corner offsets for perspective warp (relative to affine-transformed corners) */
+/**
+ * Per-corner offsets for perspective warp, in the float's own (untransformed)
+ * space, so the warp turns, flips and scales with the rest of the transform.
+ */
 export interface PerspectiveCorners {
   nw: Point;
   ne: Point;
@@ -57,6 +66,11 @@ export interface HandleConfig {
   shape: 'square' | 'circle';
   /** Rotation handle stem length in viewport pixels */
   rotationStemLength: number;
+  /**
+   * How far (viewport pixels) a press outside the float may move and still
+   * be a click that commits, rather than a drag that rotates: fingers drift.
+   */
+  outsideDragThreshold: number;
 }
 
 export const HANDLE_CONFIG_DESKTOP: HandleConfig = {
@@ -64,6 +78,7 @@ export const HANDLE_CONFIG_DESKTOP: HandleConfig = {
   hitRadius: 6,
   shape: 'square',
   rotationStemLength: 30,
+  outsideDragThreshold: 3,
 };
 
 export const HANDLE_CONFIG_TOUCH: HandleConfig = {
@@ -71,10 +86,8 @@ export const HANDLE_CONFIG_TOUCH: HandleConfig = {
   hitRadius: 20,
   shape: 'circle',
   rotationStemLength: 50,
+  outsideDragThreshold: 10,
 };
 
 /** Minimum size in document pixels (before zoom) during resize */
 export const MIN_TRANSFORM_SIZE = 4;
-
-/** Distance threshold for click-outside vs drag-outside in viewport pixels */
-export const OUTSIDE_DRAG_THRESHOLD = 3;

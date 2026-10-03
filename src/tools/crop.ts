@@ -94,9 +94,14 @@ export function hitTestCropHandle(
   rect: CropRect,
   p: Point,
   zoom: number,
+  /** How far (viewport pixels) a handle reaches: its drawn half-size unless given (bigger for touch). */
+  reachPx = HANDLE_SIZE / 2,
 ): CropHandle | null {
-  const hs = HANDLE_SIZE / zoom;
-  const half = hs / 2;
+  const inside = p.x >= rect.x && p.x <= rect.x + rect.w && p.y >= rect.y && p.y <= rect.y + rect.h;
+  // Inside a rect small on screen, big handles would leave nothing to move it
+  // by: there they reach at most a quarter of its narrower side.
+  if (inside) reachPx = Math.min(reachPx, Math.min(Math.abs(rect.w), Math.abs(rect.h)) * zoom / 4);
+  const half = reachPx / zoom;
 
   const handles: { handle: CropHandle; cx: number; cy: number }[] = [
     { handle: 'nw', cx: rect.x, cy: rect.y },
@@ -109,16 +114,19 @@ export function hitTestCropHandle(
     { handle: 'w',  cx: rect.x, cy: rect.y + rect.h / 2 },
   ];
 
+  // The nearest handle in reach (square, as drawn).
+  let nearest: CropHandle | null = null, best = Infinity;
   for (const { handle, cx, cy } of handles) {
-    if (p.x >= cx - half && p.x <= cx + half && p.y >= cy - half && p.y <= cy + half) {
-      return handle;
+    const d = Math.max(Math.abs(p.x - cx), Math.abs(p.y - cy));
+    if (d <= half && d < best) {
+      best = d;
+      nearest = handle;
     }
   }
+  if (nearest) return nearest;
 
   // Interior -> move
-  if (p.x >= rect.x && p.x <= rect.x + rect.w && p.y >= rect.y && p.y <= rect.y + rect.h) {
-    return 'move';
-  }
+  if (inside) return 'move';
 
   return null;
 }

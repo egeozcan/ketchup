@@ -2,7 +2,7 @@
 import type { BlobRef, BlobStore } from '../types.js';
 import { createBlobRef } from '../types.js';
 import { StorageNotFoundError } from '../errors.js';
-import { mapDOMException } from './error-utils.js';
+import { mapDOMException, txAbortError } from './error-utils.js';
 import { generateUUID } from './migration.js';
 
 const BLOBS_STORE = 'blobs';
@@ -38,6 +38,7 @@ export class IndexedDBBlobStore implements BlobStore {
       }
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
   }
 
@@ -57,6 +58,7 @@ export class IndexedDBBlobStore implements BlobStore {
       };
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
     if (orphaned.length > 0) {
       await this.deleteMany(orphaned);
@@ -72,8 +74,12 @@ export class IndexedDBBlobStore implements BlobStore {
     return new Promise((resolve, reject) => {
       const tx = this._db.transaction(BLOBS_STORE, mode);
       const req = fn(tx.objectStore(BLOBS_STORE));
-      req.onsuccess = () => resolve(req.result);
+      // A write is stored only once its transaction completes: a quota abort
+      // comes after the request's success.
+      if (mode === 'readonly') req.onsuccess = () => resolve(req.result);
+      else tx.oncomplete = () => resolve(req.result);
       tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
   }
 }

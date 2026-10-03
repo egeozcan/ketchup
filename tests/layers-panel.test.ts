@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { LayersPanel } from '../src/components/layers-panel.ts';
 import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../src/contexts/drawing-context.ts';
-import { makeState } from './helpers.ts';
+import { makeLayer, makeState } from './helpers.ts';
 
 describe('LayersPanel mobile update cycle', () => {
   it('renders sheet visibility in one update when context opens or closes it', async () => {
@@ -197,5 +197,121 @@ describe('LayersPanel opacity', () => {
     expect(committed.length).toBe(1);
     expect(committed[0].detail.before).toBe(0.8);
     expect(committed[0].detail.after).toBe(0.5);
+  });
+});
+
+describe('LayersPanel rename', () => {
+  it('hands the keyboard back to the app when Enter or Escape ends a rename', () => {
+    for (const k of ['Enter', 'Escape']) {
+      const host = document.createElement('div');
+      host.tabIndex = 0;
+      document.body.append(host);
+      const root = host.attachShadow({ mode: 'open' });
+      const panel = new LayersPanel();
+      const input = document.createElement('input');
+      root.append(input);
+      input.value = 'Renamed';
+      input.focus();
+      const renameLayer = vi.fn();
+      Object.defineProperty(panel, 'ctx', { value: { state: makeState({}), renameLayer } });
+      vi.spyOn(panel, 'getRootNode').mockReturnValue(root);
+      input.addEventListener('blur', e => (panel as any)._onRenameBlur('l1', e));
+      (panel as any)._editingLayerId = 'l1';
+
+      (panel as any)._onRenameKeyDown('l1', { key: k, target: input, stopPropagation() {}, preventDefault() {} });
+
+      // On the host itself, not still in the input (which would report it as active too).
+      expect(document.activeElement, k).toBe(host);
+      expect(root.activeElement, k).toBeNull();
+      expect(renameLayer, k).toHaveBeenCalledTimes(k === 'Enter' ? 1 : 0);
+      host.remove();
+    }
+  });
+});
+
+describe('LayersPanel menus and rows', () => {
+  it('keeps Escape that closes a menu from reaching the app, which would cancel a float', () => {
+    const panel = new LayersPanel();
+    (panel as any)._contextMenuOpen = true;
+    const open = { key: 'Escape', stopPropagation: vi.fn(), preventDefault: vi.fn() };
+    (panel as any)._onDocKeyDown(open);
+    expect(open.stopPropagation).toHaveBeenCalled();
+    // Nor is it a host dialog's close request.
+    expect(open.preventDefault).toHaveBeenCalled();
+    expect((panel as any)._contextMenuOpen).toBe(false);
+
+    const closed = { key: 'Escape', stopPropagation: vi.fn(), preventDefault: vi.fn() };
+    (panel as any)._onDocKeyDown(closed);
+    expect(closed.stopPropagation).not.toHaveBeenCalled();
+  });
+
+  it('starts no reorder from a control in the row, such as the opacity slider', () => {
+    const panel = new LayersPanel();
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    (panel as any)._onReorderPointerDown({ id: 'l1' }, { button: 0, pointerId: 1, clientY: 10, composedPath: () => [slider] });
+    expect((panel as any)._draggedLayerId).toBeNull();
+    const row = document.createElement('div');
+    (panel as any)._onReorderPointerDown({ id: 'l1' }, { button: 0, pointerId: 1, clientY: 10, composedPath: () => [row], currentTarget: row });
+    expect((panel as any)._draggedLayerId).toBe('l1');
+  });
+
+  it('keeps focus on the Move button pressed from the keyboard as its row moves', async () => {
+    const host = document.createElement('div');
+    const panel = new LayersPanel();
+    const a = makeLayer(10, 10, { id: 'a' }), b = makeLayer(10, 10, { id: 'b' }), c = makeLayer(10, 10, { id: 'c' });
+    let provider!: ContextProvider<typeof drawingContext>;
+    const context = {
+      state: makeState({ layers: [a, b, c], activeLayerId: 'a', layersPanelOpen: true }),
+      isMobile: false,
+      reorderLayer: (id: string, to: number) => {
+        const layers = context.state.layers.filter(l => l.id !== id);
+        layers.splice(to, 0, context.state.layers.find(l => l.id === id)!);
+        context.state = { ...context.state, layers };
+        provider.setValue({ ...context });
+        // A browser drops focus from a node that moves; jsdom doesn't.
+        (panel.shadowRoot!.activeElement as HTMLElement | null)?.blur();
+      },
+    } as unknown as DrawingContextValue;
+    provider = new ContextProvider(host, { context: drawingContext, initialValue: context });
+    host.append(panel);
+    document.body.append(host);
+    try {
+      await panel.updateComplete;
+      const button = (id: string, title: string) =>
+        panel.shadowRoot!.querySelector<HTMLButtonElement>(`[data-layer-id="${id}"] .reorder-btn[title="${title}"]`)!;
+      button('a', 'Move up').focus();
+      for (let i = 0; i < 3; i++) {
+        (panel.shadowRoot!.activeElement as HTMLElement).click();
+        await panel.updateComplete;
+        const focused = panel.shadowRoot!.activeElement as HTMLElement | null;
+        expect(focused?.closest('[data-layer-id]')?.getAttribute('data-layer-id')).toBe('a');
+        expect(focused?.getAttribute('title')).toBe('Move up');
+      }
+      // At the top it stays put, and on the same button: a repeated key doesn't move it back.
+      expect(context.state.layers.map(l => l.id)).toEqual(['b', 'c', 'a']);
+    } finally {
+      host.remove();
+    }
+  });
+
+  it('keeps each row with its layer when layers are reordered, so focus stays on the same layer', async () => {
+    const host = document.createElement('div');
+    const a = makeLayer(10, 10, { id: 'a' }), b = makeLayer(10, 10, { id: 'b' });
+    const context = { state: makeState({ layers: [a, b], activeLayerId: 'a', layersPanelOpen: true }), isMobile: false } as unknown as DrawingContextValue;
+    const provider = new ContextProvider(host, { context: drawingContext, initialValue: context });
+    const panel = new LayersPanel();
+    host.append(panel);
+    document.body.append(host);
+    try {
+      await panel.updateComplete;
+      const rowOf = (id: string) => panel.shadowRoot!.querySelector(`[data-layer-id="${id}"]`);
+      const before = rowOf('a');
+      provider.setValue({ ...context, state: { ...context.state, layers: [b, a] } });
+      await panel.updateComplete;
+      expect(rowOf('a')).toBe(before);
+    } finally {
+      host.remove();
+    }
   });
 });

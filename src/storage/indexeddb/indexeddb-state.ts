@@ -1,6 +1,6 @@
 // src/storage/indexeddb/indexeddb-state.ts
 import type { ProjectStateRecord, ProjectStateStore } from '../types.js';
-import { mapDOMException } from './error-utils.js';
+import { mapDOMException, txAbortError } from './error-utils.js';
 
 const STATE_STORE = 'project-state';
 
@@ -22,6 +22,7 @@ export class IndexedDBStateStore implements ProjectStateStore {
       tx.objectStore(STATE_STORE).put(record);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
   }
 
@@ -31,6 +32,7 @@ export class IndexedDBStateStore implements ProjectStateStore {
       tx.objectStore(STATE_STORE).delete(projectId);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
   }
 }

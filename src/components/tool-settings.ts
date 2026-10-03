@@ -12,6 +12,7 @@ import { getStampThumbnailUrl, removeStampThumbnail } from '../utils/stamp-thumb
 import { MAX_STAMP_SIZE, MIN_STAMP_SIZE } from '../tools/stamp-size.js';
 import { SHAPE_TOOLS, isShapeTool } from '../tools/shapes.js';
 import { toolIcons, toolLabels, toolShortcuts } from './tool-icons.js';
+import { focusEditor, keyIsForEditorOf } from '../utils/focus-editor.js';
 
 /** Icons for the project dropdown's per-row actions. */
 const projectActionIcons = {
@@ -1141,6 +1142,7 @@ export class ToolSettings extends LitElement {
   override connectedCallback() {
     super.connectedCallback();
     // Stamps loaded on first willUpdate when projectId is available
+    document.addEventListener('keydown', this._onDropdownEscape, true);
   }
 
   override willUpdate() {
@@ -1170,11 +1172,17 @@ export class ToolSettings extends LitElement {
 
   override disconnectedCallback() {
     super.disconnectedCallback();
+    document.removeEventListener('keydown', this._onDropdownEscape, true);
     this._closeDropdown();
     document.removeEventListener('click', this._onBrushDropdownOutsideClick);
     this._closePanel();
     this._stampLoadVersion++;
     this._thumbUrls.clear();
+    // Thumbnails load again if it comes back (moved in the DOM).
+    this._lastProjectId = null;
+    // A modal open as it leaves would come back neither modal nor in view.
+    const dialog = this.shadowRoot?.querySelector<HTMLDialogElement>('.new-project-dialog');
+    if (dialog?.open) dialog.close();
   }
 
   private async _loadStamps(projectId: string) {
@@ -1374,6 +1382,30 @@ export class ToolSettings extends LitElement {
     }
   }
 
+  /**
+   * Enter applies a number field's value and hands the keyboard back to the
+   * app (whose shortcuts listen on it), so the next Enter or Escape commits
+   * or cancels the transform or stamp.
+   */
+  private _blurOnEnter = (e: KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    const input = e.target as HTMLInputElement;
+    focusEditor(this);
+    if (this.shadowRoot?.activeElement === input) input.blur();
+  };
+
+  /** Escape closes an open dropdown, and only that (the app would also cancel a float). */
+  private _onDropdownEscape = (e: KeyboardEvent) => {
+    if (e.key !== 'Escape' || (!this._projectDropdownOpen && !this._brushDropdownOpen) || !keyIsForEditorOf(this, e)) return;
+    // A project name being edited in the dropdown takes its own Escape.
+    if (this._renamingProjectId) return;
+    // Nor (preventDefault) a host dialog's close request.
+    e.stopPropagation();
+    e.preventDefault();
+    this._closeDropdown();
+    this._closeBrushDropdown();
+  };
+
   private _onSelectProject(id: string) {
     this._closeDropdown();
     this.ctx.switchProject(id);
@@ -1385,6 +1417,7 @@ export class ToolSettings extends LitElement {
     this._newProjectWidth = '800';
     this._newProjectHeight = '600';
     const dialog = this.shadowRoot?.querySelector('.new-project-dialog') as HTMLDialogElement | null;
+    if (dialog?.open) dialog.close();
     dialog?.showModal();
     this.updateComplete.then(() => {
       const input = this.shadowRoot?.querySelector('.new-project-name-input') as HTMLInputElement | null;
@@ -1443,8 +1476,12 @@ export class ToolSettings extends LitElement {
     e.stopPropagation();
     if (e.key === 'Enter') {
       this._commitRename(e, id);
+      // The input goes; focus would fall to the page.
+      focusEditor(this);
     } else if (e.key === 'Escape') {
+      e.preventDefault();
       this._renamingProjectId = null;
+      focusEditor(this);
     }
   }
 
@@ -1636,8 +1673,9 @@ export class ToolSettings extends LitElement {
    * a clicked button), and keeps it from also reaching canvas shortcuts.
    */
   private _onPanelEscape = (e: KeyboardEvent) => {
-    if (e.key !== 'Escape' || this._openPanel === null) return;
+    if (e.key !== 'Escape' || this._openPanel === null || !keyIsForEditorOf(this, e)) return;
     e.stopPropagation();
+    e.preventDefault();
     const wrap = this._openPanelWrap();
     const focusInside = !!wrap && e.composedPath().includes(wrap);
     this._closePanel();
@@ -1722,8 +1760,10 @@ export class ToolSettings extends LitElement {
     const { x, y, width, height, rotation, skewX, skewY, flipH, flipV } = vals;
     const set = (key: string, value: number | boolean) => this._ctx.value?.setTransformValue(key, value);
 
+    const blurOnEnter = this._blurOnEnter;
     const onNumericInput = (key: string, suffix?: string) => (e: Event) => {
-      const raw = (e.target as HTMLInputElement).value;
+      const input = e.target as HTMLInputElement;
+      const raw = input.value;
       const num = suffix === '°' ? parseFloat(raw) : parseFloat(raw);
       if (!isNaN(num)) {
         if (key === 'width' && this._aspectLock && width !== 0) {
@@ -1738,6 +1778,11 @@ export class ToolSettings extends LitElement {
           set(key, num);
         }
       }
+      // Show what was applied (a skew clamps to ±89, a non-positive size is
+      // ignored); the binding alone wouldn't rewrite a value it already set,
+      // and forcing it on every render would wipe a value mid-typing.
+      const applied = this._ctx.value?.getTransformValues()?.[key as 'x'];
+      if (typeof applied === 'number') input.value = String(Math.round(applied * 10) / 10);
     };
 
     return html`
@@ -1745,11 +1790,11 @@ export class ToolSettings extends LitElement {
         <label>Position</label>
         <div class="transform-row">
           <span class="transform-suffix">X</span>
-          <input class="transform-input" type="number" step="0.1"
+          <input class="transform-input" @keydown=${blurOnEnter} type="number" step="0.1"
             .value=${String(Math.round(x * 10) / 10)}
             aria-label="X position" @change=${onNumericInput('x')} />
           <span class="transform-suffix">Y</span>
-          <input class="transform-input" type="number" step="0.1"
+          <input class="transform-input" @keydown=${blurOnEnter} type="number" step="0.1"
             .value=${String(Math.round(y * 10) / 10)}
             aria-label="Y position" @change=${onNumericInput('y')} />
         </div>
@@ -1759,7 +1804,7 @@ export class ToolSettings extends LitElement {
         <label>Size</label>
         <div class="transform-row">
           <span class="transform-suffix">W</span>
-          <input class="transform-input" type="number" step="0.1" min="1"
+          <input class="transform-input" @keydown=${blurOnEnter} type="number" step="0.1" min="1"
             .value=${String(Math.round(width * 10) / 10)}
             aria-label="Width" @change=${onNumericInput('width')} />
           <button
@@ -1774,7 +1819,7 @@ export class ToolSettings extends LitElement {
             </svg>
           </button>
           <span class="transform-suffix">H</span>
-          <input class="transform-input" type="number" step="0.1" min="1"
+          <input class="transform-input" @keydown=${blurOnEnter} type="number" step="0.1" min="1"
             .value=${String(Math.round(height * 10) / 10)}
             aria-label="Height" @change=${onNumericInput('height')} />
         </div>
@@ -1783,7 +1828,7 @@ export class ToolSettings extends LitElement {
       <div class="transform-section">
         <label>Rotation</label>
         <div class="transform-row">
-          <input class="transform-input" type="number" step="0.1"
+          <input class="transform-input" @keydown=${blurOnEnter} type="number" step="0.1"
             .value=${String(Math.round(rotation * 10) / 10)}
             aria-label="Rotation in degrees" @change=${onNumericInput('rotation', '°')} />
           <span class="transform-suffix">°</span>
@@ -1794,12 +1839,12 @@ export class ToolSettings extends LitElement {
         <label>Skew</label>
         <div class="transform-row">
           <span class="transform-suffix">X</span>
-          <input class="transform-input" type="number" step="0.1"
+          <input class="transform-input" @keydown=${blurOnEnter} type="number" step="0.1"
             .value=${String(Math.round(skewX * 10) / 10)}
             aria-label="Horizontal skew in degrees" @change=${onNumericInput('skewX', '°')} />
           <span class="transform-suffix">°</span>
           <span class="transform-suffix" style="margin-left:0.25rem;">Y</span>
-          <input class="transform-input" type="number" step="0.1"
+          <input class="transform-input" @keydown=${blurOnEnter} type="number" step="0.1"
             .value=${String(Math.round(skewY * 10) / 10)}
             aria-label="Vertical skew in degrees" @change=${onNumericInput('skewY', '°')} />
           <span class="transform-suffix">°</span>
@@ -2140,6 +2185,7 @@ export class ToolSettings extends LitElement {
                 title="Stamp size in pixels"
                 .value=${String(stampSize)}
                 @change=${this._onStampSize}
+                @keydown=${this._blurOnEnter}
               />
             `
           : html`<span class="size-value">${brushSize}</span>`}
@@ -2290,6 +2336,7 @@ export class ToolSettings extends LitElement {
                 max="200"
                 .value=${String(this.ctx.state.fontSize)}
                 @change=${(e: Event) => this.ctx.setFontSize(Number((e.target as HTMLInputElement).value))}
+                @keydown=${this._blurOnEnter}
               />
             </div>
             <div class="section">

@@ -112,6 +112,9 @@ describe('embedded host API', () => {
 
     expect(requests).toHaveLength(0);
     expect(stub.saveCanvas).toHaveBeenCalledTimes(1);
+    // Text still being typed goes into the PNG too.
+    expect((stub.commitPendingText as any).mock.invocationCallOrder[0])
+      .toBeLessThan((stub.saveCanvas as any).mock.invocationCallOrder[0]);
   });
 
   it('answers Ctrl+S with a save request only when embedded', () => {
@@ -200,6 +203,8 @@ describe('embedded host API', () => {
     const committed = (stub.clearSelection as any).mock.invocationCallOrder[0];
     const rendered = (stub.renderFlattened as any).mock.invocationCallOrder[0];
     expect(committed).toBeLessThan(rendered);
+    // A crop being set up isn't work in progress; the user keeps it.
+    expect(stub.clearSelection).toHaveBeenCalledWith({ keepCrop: true });
   });
 
   it('saves on Ctrl+S from inside a text field when embedded', () => {

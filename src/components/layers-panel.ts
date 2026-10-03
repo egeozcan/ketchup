@@ -1,10 +1,12 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { createThrottledScheduler } from '../utils/raf-throttle.js';
 import { customElement, state } from 'lit/decorators.js';
+import { repeat } from 'lit/directives/repeat.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import type { Layer } from '../types.js';
 import { BLEND_MODE_LABELS } from '../engine/types.js';
+import { focusEditor, keyIsForEditorOf } from '../utils/focus-editor.js';
 
 @customElement('layers-panel')
 export class LayersPanel extends LitElement {
@@ -258,12 +260,14 @@ export class LayersPanel extends LitElement {
       line-height: 1;
     }
 
-    .reorder-btn:hover:not(:disabled) {
+    .reorder-btn:hover:not([aria-disabled="true"]) {
       background: #555;
       color: #fff;
     }
 
-    .reorder-btn:disabled {
+    /* Not :disabled: a button at the end of the list keeps keyboard focus
+       (it would jump to the other one, and a repeated key move it back). */
+    .reorder-btn[aria-disabled="true"] {
       opacity: 0.25;
       cursor: default;
     }
@@ -521,9 +525,20 @@ export class LayersPanel extends LitElement {
   };
 
   private _onDocKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
+    // A layer name being edited takes its own Escape.
+    if (e.key !== 'Escape' || this._editingLayerId || !keyIsForEditorOf(this, e)) return;
+    // Seen first (capture) and kept from the app, which would take it to
+    // cancel a float as well: a menu closes, or else the phone's sheet.
+    // Nor (preventDefault) a host dialog's close request.
+    if (this._contextMenuOpen || this._dropdownOpen) {
+      e.stopPropagation();
+      e.preventDefault();
       this._closeContextMenu();
       this._dropdownOpen = false;
+    } else if (this._sheetOpen) {
+      e.stopPropagation();
+      e.preventDefault();
+      this.closeSheet();
     }
   };
 
@@ -533,7 +548,7 @@ export class LayersPanel extends LitElement {
     (this.getRootNode() as ShadowRoot | Document).addEventListener('composited', this._onComposited);
     window.addEventListener('resize', this._onResize);
     document.addEventListener('click', this._onDocClick);
-    document.addEventListener('keydown', this._onDocKeyDown);
+    document.addEventListener('keydown', this._onDocKeyDown, true);
   }
 
   override disconnectedCallback() {
@@ -542,7 +557,7 @@ export class LayersPanel extends LitElement {
     this._thumbnailScheduler.cancel();
     window.removeEventListener('resize', this._onResize);
     document.removeEventListener('click', this._onDocClick);
-    document.removeEventListener('keydown', this._onDocKeyDown);
+    document.removeEventListener('keydown', this._onDocKeyDown, true);
   }
 
   @state() private _sheetOpen = false;
@@ -614,8 +629,12 @@ export class LayersPanel extends LitElement {
     e.stopPropagation();
     if (e.key === 'Enter') {
       this._commitRename(layerId, e.target as HTMLInputElement);
+      // The input goes; focus would fall to the page.
+      focusEditor(this);
     } else if (e.key === 'Escape') {
+      e.preventDefault();
       this._editingLayerId = null;
+      focusEditor(this);
     }
   }
 
@@ -630,7 +649,7 @@ export class LayersPanel extends LitElement {
     const layers = this.ctx.state.layers;
     const idx = layers.findIndex(l => l.id === layer.id);
     if (idx < layers.length - 1) {
-      this.ctx.reorderLayer(layer.id, idx + 1);
+      this._reorderFrom(e, layer.id, idx + 1);
     }
   }
 
@@ -639,14 +658,36 @@ export class LayersPanel extends LitElement {
     const layers = this.ctx.state.layers;
     const idx = layers.findIndex(l => l.id === layer.id);
     if (idx > 0) {
-      this.ctx.reorderLayer(layer.id, idx - 1);
+      this._reorderFrom(e, layer.id, idx - 1);
     }
+  }
+
+  /** A Move up/down button's press, whose focus the row's move would drop. */
+  private _reorderFrom(e: Event, layerId: string, toIndex: number) {
+    const button = e.currentTarget as HTMLButtonElement | null;
+    if (button && this.shadowRoot?.activeElement === button) {
+      this._focusAfterReorder = { layerId, toIndex, title: button.title };
+    }
+    this.ctx.reorderLayer(layerId, toIndex);
+  }
+
+  private _focusAfterReorder: { layerId: string; toIndex: number; title: string } | null = null;
+
+  /** Once the moved row is drawn in its new place, focus its button again. */
+  private _restoreReorderFocus() {
+    const pending = this._focusAfterReorder;
+    if (!pending || this.ctx.state.layers[pending.toIndex]?.id !== pending.layerId) return;
+    this._focusAfterReorder = null;
+    const row = this.shadowRoot?.querySelector(`[data-layer-id="${pending.layerId}"]`);
+    row?.querySelector<HTMLButtonElement>(`.reorder-btn[title="${pending.title}"]`)?.focus();
   }
 
   // ── Pointer-based reorder ─────────────────
 
   private _onReorderPointerDown(layer: Layer, e: PointerEvent) {
     if (e.button !== 0) return;
+    // A control in the row (the opacity slider, say) has a drag of its own.
+    if ((e.composedPath()[0] as Element).closest?.('input, select, button, textarea')) return;
     this._draggedLayerId = layer.id;
     this._dragPointerId = e.pointerId;
     this._dragStartY = e.clientY;
@@ -890,6 +931,23 @@ export class LayersPanel extends LitElement {
     this._contextMenuOpen = false;
   }
 
+  /** Keeps a menu opened near the window's right or bottom edge inside it. */
+  private _fitContextMenu() {
+    const menu = this.shadowRoot?.querySelector<HTMLElement>('.context-menu');
+    if (!menu) return;
+    const rect = menu.getBoundingClientRect();
+    // Where it is drawn against where it was put: inside the phone's sheet,
+    // which is transformed, `fixed` is relative to the sheet, not the window.
+    const ox = rect.left - this._contextMenuX, oy = rect.top - this._contextMenuY;
+    const x = Math.max(0, Math.min(this._contextMenuX, window.innerWidth - rect.width));
+    const y = Math.max(0, Math.min(this._contextMenuY, window.innerHeight - rect.height));
+    // Straight onto the element: the menu is already drawn, and this needs no second render.
+    if (ox || oy || x !== this._contextMenuX || y !== this._contextMenuY) {
+      menu.style.left = `${x - ox}px`;
+      menu.style.top = `${y - oy}px`;
+    }
+  }
+
   // ── Helpers ────────────────────────────────
 
   private _getLayerById(id: string): Layer | undefined {
@@ -979,7 +1037,7 @@ export class LayersPanel extends LitElement {
       </div>
 
       <div class="layer-list">
-        ${reversed.map(layer => this._renderLayerRow(layer, layers, activeLayerId))}
+        ${repeat(reversed, layer => layer.id, layer => this._renderLayerRow(layer, layers, activeLayerId))}
       </div>
 
       ${this._contextMenuOpen ? html`
@@ -1108,13 +1166,13 @@ export class LayersPanel extends LitElement {
             <button
               class="reorder-btn"
               title="Move up"
-              ?disabled=${isTop}
+              aria-disabled=${isTop ? 'true' : 'false'}
               @click=${(e: Event) => this._moveUp(layer, e)}
             >&#9650;</button>
             <button
               class="reorder-btn"
               title="Move down"
-              ?disabled=${isBottom}
+              aria-disabled=${isBottom ? 'true' : 'false'}
               @click=${(e: Event) => this._moveDown(layer, e)}
             >&#9660;</button>
           </div>
@@ -1186,6 +1244,10 @@ export class LayersPanel extends LitElement {
 
   override updated(changed: Map<string, unknown>) {
     super.updated(changed);
+    if (this._contextMenuOpen && ['_contextMenuOpen', '_contextMenuX', '_contextMenuY'].some(k => changed.has(k))) {
+      this._fitContextMenu();
+    }
+    this._restoreReorderFocus();
 
     // Every viewport change (wheel zoom, pan, pinch) rebuilds the context value and
     // re-renders this panel, so painting thumbnails on every update would redraw

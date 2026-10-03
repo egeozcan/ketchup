@@ -60,6 +60,7 @@ export class ResizeDialog extends LitElement {
       this.requestUpdate();
       this.updateComplete.then(() => {
         this._dialog = this.renderRoot.querySelector('dialog');
+        if (this._dialog?.open) this._dialog.close();
         this._dialog?.showModal();
       });
     });
@@ -80,6 +81,26 @@ export class ResizeDialog extends LitElement {
     this._dialog?.close();
     this._resolve?.(false);
     this._resolve = null;
+  }
+
+  /** Closes an open dialog unanswered (its document went away); `show` resolves false. */
+  dismiss() {
+    this._onKeep();
+  }
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    // Moved with the editor, a modal would come back neither modal nor in
+    // view: it closes, still unanswered, and asks again on its return.
+    if (this._dialog?.open) this._dialog.close();
+  }
+
+  override connectedCallback() {
+    super.connectedCallback();
+    if (!this._resolve) return;
+    void this.updateComplete.then(() => {
+      if (this._resolve && this.isConnected && this._dialog && !this._dialog.open) this._dialog.showModal();
+    });
   }
 
   override render() {

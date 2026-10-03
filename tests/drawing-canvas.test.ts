@@ -345,6 +345,105 @@ describe('DrawingCanvas', () => {
     expect((canvas as any)._beforeDrawCanvas).not.toBeNull();
   });
 
+  it('places a dropped image on the part of the document in view, but inside the document', async () => {
+    const { canvas } = setupCanvas({ width: 200, height: 200 });
+    const img = new Image();
+    Object.defineProperty(img, 'naturalWidth', { value: 40 });
+    Object.defineProperty(img, 'naturalHeight', { value: 30 });
+    Object.defineProperty(canvas, 'updateComplete', { value: Promise.resolve(true) });
+    (canvas as any)._ctx.value.addLayer = vi.fn();
+    // At 200%, only the document's last 5 columns and top half are on screen.
+    (canvas as any)._zoom = 2;
+    (canvas as any)._panX = -390;
+    (canvas as any)._panY = 0;
+
+    await (canvas as any)._handleExternalImage(img, 'Dropped Image');
+
+    const tm = (canvas as any)._transformManager;
+    expect([tm.x, tm.y]).toEqual([160, 35]);
+  });
+
+  it('drops an image still asking how to fit when another document is opened', async () => {
+    const { canvas } = setupCanvas();
+    const img = new Image();
+    Object.defineProperty(img, 'naturalWidth', { value: 300 });
+    Object.defineProperty(img, 'naturalHeight', { value: 300 });
+    Object.defineProperty(canvas, 'updateComplete', { value: Promise.resolve(true) });
+    const addLayer = vi.fn();
+    (canvas as any)._ctx.value.addLayer = addLayer;
+    let answer!: (scale: boolean) => void;
+    const dismiss = vi.fn(() => answer(false));
+    Object.defineProperty(canvas, '_resizeDialog', { value: { show: () => new Promise<boolean>(r => { answer = r; }), dismiss } });
+
+    const dropping = (canvas as any)._handleExternalImage(img, 'Dropped Image');
+    canvas.setHistory([], -1);
+    await dropping;
+
+    expect(dismiss).toHaveBeenCalled();
+    expect(addLayer).not.toHaveBeenCalled();
+    expect((canvas as any)._transformManager).toBeNull();
+  });
+
+  it('holds Redo while text is typed, rather than committing it and losing what could be redone', () => {
+    const { canvas } = setupCanvas();
+    const entry = { type: 'rename', layerId: 'x', before: 'a', after: 'b' };
+    (canvas as any)._history = [entry];
+    (canvas as any)._historyIndex = -1;
+    (canvas as any)._textEditing = true;
+    (canvas as any)._textAreaEl = Object.assign(document.createElement('textarea'), { value: 'Hi' });
+    let detail: { canRedo: boolean } | null = null;
+    canvas.addEventListener('history-change', (e: Event) => { detail = (e as CustomEvent).detail; });
+    const commitText = vi.spyOn(canvas as any, '_commitText').mockImplementation(() => {});
+
+    canvas.redo();
+    (canvas as any)._notifyHistory();
+
+    expect(commitText).not.toHaveBeenCalled();
+    expect((canvas as any)._historyIndex).toBe(-1);
+    expect(detail!.canRedo).toBe(false);
+  });
+
+  it('crops only within the document, which may have changed size under the rectangle', () => {
+    const { canvas, layers } = setupCanvas({ width: 100, height: 80 });
+    (canvas as any)._cropRectValue = { x: 50, y: 40, w: 300, h: 200 };
+    const crop = vi.fn();
+    canvas.addEventListener('crop-commit', (e: Event) => crop((e as CustomEvent).detail));
+
+    canvas.commitCrop();
+
+    expect([layers[0].canvas.width, layers[0].canvas.height]).toEqual([50, 40]);
+  });
+
+  it('picks the colour where a held mouse is let go, as a finger does', () => {
+    const { canvas } = setupCanvas({ stateOverrides: { activeTool: 'eyedropper' } });
+    const setStrokeColor = vi.fn();
+    (canvas as any)._ctx.value.setStrokeColor = setStrokeColor;
+    vi.spyOn(canvas as any, '_sampleColor').mockImplementation(((x: number) => (x < 50 ? '#ffffff' : '#00ff00')) as any);
+    vi.spyOn(canvas as any, '_renderEyedropperPreview').mockImplementation(() => {});
+    const mouse = (buttons: number, clientX: number) =>
+      ({ button: 0, buttons, pointerId: 1, clientX, clientY: 10, pointerType: 'mouse', isPrimary: true, preventDefault() {} }) as unknown as PointerEvent;
+
+    (canvas as any)._onPointerDown(mouse(1, 10));
+    (canvas as any)._onPointerMove(mouse(1, 80));
+
+    expect(setStrokeColor).toHaveBeenLastCalledWith('#00ff00');
+  });
+
+  it('places nothing when the editor is taken away while it asks how to fit an image', async () => {
+    const { canvas } = setupCanvas();
+    const img = new Image();
+    Object.defineProperty(img, 'naturalWidth', { value: 300 });
+    Object.defineProperty(img, 'naturalHeight', { value: 300 });
+    const addLayer = vi.fn();
+    (canvas as any)._ctx.value.addLayer = addLayer;
+    // Not connected, as after the host removed it; the question was answered as it went.
+    Object.defineProperty(canvas, '_resizeDialog', { value: { show: async () => false, dismiss: vi.fn() } });
+
+    await (canvas as any)._handleExternalImage(img, 'Dropped Image');
+
+    expect(addLayer).not.toHaveBeenCalled();
+  });
+
   it('reports canUndo when a transform is active with empty history', () => {
     const { canvas } = setupCanvas();
     (canvas as any)._history = [];

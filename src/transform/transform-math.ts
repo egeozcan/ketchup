@@ -143,19 +143,22 @@ export function detectContentBounds(imageData: ImageData): TransformRect | null 
 // --- Perspective warp ---
 
 /**
- * Compute the 4 destination corners for perspective warp.
- * Each corner is the affine-transformed position plus a per-corner offset.
+ * Compute the 4 destination corners for perspective warp: each corner of the
+ * float moved by its offset in the float's own (untransformed) space, then
+ * transformed, so the warp turns, flips and scales with the float.
  */
 export function getPerspectiveDestCorners(
   state: TransformState,
   offsets: PerspectiveCorners,
 ): [Point, Point, Point, Point] {
-  const [tl, tr, br, bl] = getTransformedCorners(state);
+  const m = composeMatrix(state);
+  const at = (x: number, y: number): Point => ({ x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f });
+  const { width: w, height: h } = state;
   return [
-    { x: tl.x + offsets.nw.x, y: tl.y + offsets.nw.y },
-    { x: tr.x + offsets.ne.x, y: tr.y + offsets.ne.y },
-    { x: br.x + offsets.se.x, y: br.y + offsets.se.y },
-    { x: bl.x + offsets.sw.x, y: bl.y + offsets.sw.y },
+    at(offsets.nw.x, offsets.nw.y),
+    at(w + offsets.ne.x, offsets.ne.y),
+    at(w + offsets.se.x, h + offsets.se.y),
+    at(offsets.sw.x, h + offsets.sw.y),
   ];
 }
 
@@ -199,6 +202,8 @@ export interface WarpGeometry {
    * square has of each lobe adds up to its nonzero-winding coverage.
    */
   lobes: Float64Array;
+  /** The middle of each lobe's corners (the first lobe's again for a missing second). */
+  centroids: [Point, Point];
 }
 
 /** Large enough to never exclude a pixel, small enough for single precision. */
@@ -250,12 +255,23 @@ export function warpGeometry(dst: [Point, Point, Point, Point]): WarpGeometry {
   } else {
     edges(0, quad);
   }
+  const centroids = [0, 16].map(offset => {
+    let x = 0, y = 0, n = 0;
+    for (let i = offset; i < offset + 16; i += 4) {
+      if (lobes[i] === lobes[i + 2] && lobes[i + 1] === lobes[i + 3]) continue;
+      x += lobes[i];
+      y += lobes[i + 1];
+      n++;
+    }
+    return n > 0 ? { x: x / n, y: y / n } : null;
+  });
+  const first = centroids[0] ?? { x: 0, y: 0 };
 
   return {
     ax: a.x, ay: a.y, quad, ex, ey, fx, fy, gx, gy, k2, ef,
     // Also where k2 would be 0 in the GPU's single precision.
     linear: Math.abs(k2) <= 1e-9 * Math.abs(ef) || Math.fround(k2) === 0,
-    convex, empty: convex && area === 0, lines, lobes,
+    convex, empty: convex && area === 0, lines, lobes, centroids: [first, centroids[1] ?? first],
   };
 }
 
@@ -352,7 +368,7 @@ export function warpPerspective(
           }
         }
       }
-      if (!unmapBilinear(g, hx, hy, uv)) continue;
+      if (!unmapBilinear(g, hx, hy, uv) && !unmapTowardLobes(g, hx, hy, uv)) continue;
       const u = uv.u, v = uv.v;
 
       let sx = u * W - 0.5, sy = v * H - 0.5;
@@ -414,6 +430,20 @@ function unmapBilinear(g: WarpGeometry, hx: number, hy: number, out: { u: number
   out.u = u;
   out.v = v;
   return true;
+}
+
+/**
+ * `unmapBilinear` a hundredth of a pixel from (hx, hy) towards the middle of
+ * either lobe. Where a whole source edge maps to one point (corners dragged
+ * together, or the crossing of a symmetric bow-tie) that point has no single
+ * source position, but just inside the outline next to it does.
+ */
+function unmapTowardLobes(g: WarpGeometry, hx: number, hy: number, out: { u: number; v: number }): boolean {
+  for (const c of g.centroids) {
+    const dx = c.x - hx, dy = c.y - hy, len = Math.hypot(dx, dy);
+    if (len > 0 && unmapBilinear(g, hx + 0.01 * dx / len, hy + 0.01 * dy / len, out)) return true;
+  }
+  return false;
 }
 
 /**
@@ -480,7 +510,9 @@ function nearestOnQuad(
     const p = q[i], n = q[(i + 1) % 4];
     const qx = n.x - p.x, qy = n.y - p.y, wx = x - p.x, wy = y - p.y;
     const len2 = qx * qx + qy * qy;
-    let t = len2 > 0 ? (wx * qx + wy * qy) / len2 : 0;
+    // Corners dragged together: the edges either side say where the outline goes.
+    if (len2 === 0) continue;
+    let t = (wx * qx + wy * qy) / len2;
     if (t < 0) t = 0; else if (t > 1) t = 1;
     const dx = wx - qx * t, dy = wy - qy * t;
     const d2 = dx * dx + dy * dy;

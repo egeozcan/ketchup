@@ -38,10 +38,16 @@ export function getRotationHandlePos(
   let dy = topCenter.y - center.y;
   let len = Math.sqrt(dx * dx + dy * dy);
   if (len < 1) {
-    // The top edge's middle is the centre (a symmetric bow-tie): go out
-    // square to the top edge instead, clear of the handles there.
+    // The top edge's middle is (nearly) the centre, as on a symmetric bow-tie
+    // or a float under 2 px tall: go out square to the top edge instead, on
+    // the side away from the bottom edge, clear of the handles there.
     dx = corners[1].y - corners[0].y;
     dy = corners[0].x - corners[1].x;
+    const bottom = mid(corners[2], corners[3]);
+    if (dx * (topCenter.x - bottom.x) + dy * (topCenter.y - bottom.y) < 0) {
+      dx = -dx;
+      dy = -dy;
+    }
     len = Math.sqrt(dx * dx + dy * dy);
     if (len < 1) return topCenter;
   }
@@ -63,17 +69,28 @@ export function hitTestHandle(
   zoom: number,
 ): HandleType | null {
   const positions = getDocHandlePositions(corners);
-  const hitDist = config.hitRadius / zoom;
+  const full = config.hitRadius / zoom;
+  // Inside a float small on screen, full-size handles would cover it and leave
+  // nothing to move it by: there each reaches at most a quarter of the float's
+  // extent in the direction it resizes (both, for a corner).
+  const inside = isInsideTransform(docPoint, corners);
+  const across = Math.hypot(positions.e.x - positions.w.x, positions.e.y - positions.w.y);
+  const down = Math.hypot(positions.s.x - positions.n.x, positions.s.y - positions.n.y);
 
   let nearest: HandleType | null = null;
-  let best = hitDist * hitDist;
-  for (const [key, hp] of Object.entries(positions)) {
+  let best = Infinity;
+  for (const [key, hp] of Object.entries(positions) as [HandleType, Point][]) {
+    let reach = full;
+    if (inside) {
+      const extent = key === 'e' || key === 'w' ? across : key === 'n' || key === 's' ? down : Math.min(across, down);
+      reach = Math.min(full, extent / 4);
+    }
     const dx = docPoint.x - hp.x;
     const dy = docPoint.y - hp.y;
     const d2 = dx * dx + dy * dy;
-    if (d2 <= best) {
+    if (d2 <= reach * reach && d2 <= best) {
       best = d2;
-      nearest = key as HandleType;
+      nearest = key;
     }
   }
   return nearest;
@@ -181,29 +198,48 @@ export function drawRotationHandle(
 
 /**
  * Get positions for commit/cancel floating buttons: out from the top-right
- * corner as shown, so a dragged corner never ends up under them.
+ * corner as shown, diagonally between the float's own up and right, so
+ * neither the top-right corner nor the rotation handle above the top edge
+ * ends up under them, however narrow the float.
  */
 export function getCommitCancelPositions(
   corners: Corners,
   config: HandleConfig,
   zoom: number,
+  /** The corner they sit out from: 1, the top-right, unless there is no room there. */
+  corner: 0 | 1 | 2 | 3 = 1,
 ): { commitCenter: Point; cancelCenter: Point; buttonRadius: number } {
-  const tr = corners[1];
+  const tr = corners[corner];
   const center = cornersCenter(corners);
-  const dx = tr.x - center.x;
-  const dy = tr.y - center.y;
-  const len = Math.sqrt(dx * dx + dy * dy);
+  const unit = (p: Point) => {
+    const l = Math.hypot(p.x - center.x, p.y - center.y);
+    return l > 0 ? { x: (p.x - center.x) / l, y: (p.y - center.y) / l } : { x: 0, y: 0 };
+  };
+  // The corner's two edges' outward directions: up or down, right or left.
+  const up = unit(corner < 2 ? mid(corners[0], corners[1]) : mid(corners[2], corners[3]));
+  const right = unit(corner === 1 || corner === 2 ? mid(corners[1], corners[2]) : mid(corners[3], corners[0]));
+  let dx = up.x + right.x;
+  let dy = up.y + right.y;
+  let len = Math.sqrt(dx * dx + dy * dy);
+  if (len < 1e-6) {
+    dx = tr.x - center.x;
+    dy = tr.y - center.y;
+    len = Math.sqrt(dx * dx + dy * dy);
+  }
   const touch = config.shape === 'circle';
   const offsetPx = (touch ? 38 : 30) / zoom;
   const buttonRadius = (touch ? 22 : 12) / zoom;
   const gap = (touch ? 48 : 28) / zoom;
 
-  const baseX = len > 1 ? tr.x + (dx / len) * offsetPx : tr.x + offsetPx;
-  const baseY = len > 1 ? tr.y + (dy / len) * offsetPx : tr.y - offsetPx;
+  const ux = len > 1e-6 ? dx / len : Math.SQRT1_2, uy = len > 1e-6 ? dy / len : -Math.SQRT1_2;
+  // The cancel button beside it, further out along that side (level with it
+  // on an upright float), so it stays clear of the handles however the float
+  // is turned or flipped.
+  const px = right.x || right.y ? right.x : 1, py = right.x || right.y ? right.y : 0;
 
   return {
-    commitCenter: { x: baseX, y: baseY },
-    cancelCenter: { x: baseX + gap, y: baseY },
+    commitCenter: { x: tr.x + ux * offsetPx, y: tr.y + uy * offsetPx },
+    cancelCenter: { x: tr.x + ux * offsetPx + px * gap, y: tr.y + uy * offsetPx + py * gap },
     buttonRadius,
   };
 }
@@ -213,11 +249,10 @@ export function getCommitCancelPositions(
  */
 export function drawCommitCancelButtons(
   ctx: CanvasRenderingContext2D,
-  corners: Corners,
-  config: HandleConfig,
+  buttons: { commitCenter: Point; cancelCenter: Point; buttonRadius: number },
   zoom: number,
 ): void {
-  const { commitCenter, cancelCenter, buttonRadius } = getCommitCancelPositions(corners, config, zoom);
+  const { commitCenter, cancelCenter, buttonRadius } = buttons;
 
   ctx.save();
   ctx.lineCap = 'round';
@@ -263,6 +298,34 @@ export function drawCommitCancelButtons(
   ctx.restore();
 }
 
+const RESIZE_CURSORS: Record<HandleType, string> = {
+  nw: 'nwse-resize', ne: 'nesw-resize', se: 'nwse-resize', sw: 'nesw-resize',
+  n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize',
+};
+
+/**
+ * The resize cursor for a handle, pointing the way it lies from the centre as
+ * shown, so a rotated, flipped, skewed or warped float gets the right one.
+ */
+export function getHandleCursor(handle: HandleType, corners: Corners): string {
+  const positions = getDocHandlePositions(corners);
+  const c = cornersCenter(corners);
+  const out = (h: HandleType) => {
+    const p = positions[h], l = Math.hypot(p.x - c.x, p.y - c.y);
+    return l > 1e-9 ? { x: (p.x - c.x) / l, y: (p.y - c.y) / l } : { x: 0, y: 0 };
+  };
+  // A corner points out between its two edges, whatever the float's proportions.
+  const [a, b] = handle.length === 2 ? [out(handle[0] as HandleType), out(handle[1] as HandleType)] : [out(handle), { x: 0, y: 0 }];
+  const dx = a.x + b.x, dy = a.y + b.y;
+  if (Math.hypot(dx, dy) < 1e-9) return RESIZE_CURSORS[handle];
+  // 0° is right, 90° down; cursors repeat every 180°.
+  const deg = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 180;
+  if (deg < 22.5 || deg >= 157.5) return 'ew-resize';
+  if (deg < 67.5) return 'nwse-resize';
+  if (deg < 112.5) return 'ns-resize';
+  return 'nesw-resize';
+}
+
 /**
  * Get the CSS cursor for a given document-space point.
  */
@@ -277,13 +340,7 @@ export function getCursorForPoint(
   }
 
   const handle = hitTestHandle(docPoint, corners, config, zoom);
-  if (handle) {
-    const cursors: Record<HandleType, string> = {
-      nw: 'nwse-resize', ne: 'nesw-resize', se: 'nwse-resize', sw: 'nesw-resize',
-      n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize',
-    };
-    return cursors[handle];
-  }
+  if (handle) return getHandleCursor(handle, corners);
 
   if (isInsideTransform(docPoint, corners)) {
     return 'move';

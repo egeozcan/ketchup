@@ -124,6 +124,21 @@ describe('perspective preview and commit', () => {
     expect((tm as any)._warpCache).toBe(full);
   });
 
+  it('frees a draft once a full-resolution warp covers it', () => {
+    const tm = makePerspectiveManager();
+    (tm as any)._interaction = { type: 'perspective', corner: 'se', startPoint: { x: 0, y: 0 }, startOffset: { x: 0, y: 0 } };
+    (tm as any)._perspectiveCorners.se = { x: 2000, y: 2000 };
+    tm.renderTransformed(makeCanvas(100, 100).getContext('2d')!);
+    const draft = (tm as any)._draftWarpCache;
+    expect(draft.scale).toBeLessThan(1);
+
+    tm.onPointerUp({ x: 0, y: 0 });
+    tm.renderTransformed(makeCanvas(100, 100).getContext('2d')!);
+    expect((tm as any)._warpCache.scale).toBe(1);
+    expect((tm as any)._draftWarpCache).toBeNull();
+    expect(draft.canvas.width).toBe(0);
+  });
+
   it('frees the warp when disposed', () => {
     const tm = makePerspectiveManager();
     tm.renderTransformed(makeCanvas(100, 100).getContext('2d')!);

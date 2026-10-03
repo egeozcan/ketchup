@@ -44,6 +44,55 @@ describe('DrawingCanvas.resetView', () => {
   });
 });
 
+describe('DrawingCanvas resizing', () => {
+  function resizer(canvas: DrawingCanvas) {
+    return (width: number, height: number) => {
+      (canvas as any).getBoundingClientRect = () => ({ left: 0, top: 0, width, height });
+      (canvas as any)._resizeToFit();
+    };
+  }
+
+  it('comes back to the same view when the viewport changes size by an odd amount and back', () => {
+    const canvas = setupCanvas(800, 600, 1200, 800);
+    canvas.setViewport(1, 200, 100);
+    const resize = resizer(canvas);
+    for (let i = 0; i < 5; i++) {
+      resize(1200, 793);
+      expect(Number.isInteger(canvas.getViewport().panY)).toBe(true);
+      resize(1200, 800);
+    }
+    expect(canvas.getViewport()).toEqual({ zoom: 1, panX: 200, panY: 100 });
+  });
+
+  it('comes back to the same view after growing a pixel at a time and shrinking back', () => {
+    const canvas = setupCanvas(800, 600, 1200, 800);
+    canvas.setViewport(1, 200, 100);
+    const resize = resizer(canvas);
+    for (let d = 1; d <= 41; d++) resize(1200 + d, 800 + d);
+    expect(canvas.getViewport()).toEqual({ zoom: 1, panX: 221, panY: 121 });
+    for (let d = 40; d >= 0; d--) resize(1200 + d, 800 + d);
+    expect(canvas.getViewport()).toEqual({ zoom: 1, panX: 200, panY: 100 });
+  });
+
+  it('comes back to a restored view when the canvas then settles to the size it was saved at', () => {
+    // Restored before the tool bar takes the saved tool's height.
+    const canvas = setupCanvas(800, 600, 1200, 804);
+    canvas.restoreViewport(1, 101, 54, { width: 1200, height: 797 });
+    resizer(canvas)(1200, 797);
+    expect(canvas.getViewport()).toEqual({ zoom: 1, panX: 101, panY: 54 });
+  });
+
+  it('keeps a pan made between resizes', () => {
+    const canvas = setupCanvas(800, 600, 1200, 800);
+    canvas.setViewport(1, 200, 100);
+    const resize = resizer(canvas);
+    resize(1201, 801);
+    canvas.setViewport(1, 150, 60);
+    resize(1200, 800);
+    expect(canvas.getViewport()).toEqual({ zoom: 1, panX: 150, panY: 60 });
+  });
+});
+
 describe('exportFileBaseName', () => {
   it('uses the project name', () => {
     expect(exportFileBaseName('My sketch')).toBe('My sketch');
@@ -77,6 +126,34 @@ describe('DrawingCanvas.restoreViewport', () => {
     canvas.restoreViewport(2, -300, -200, { width: 1200, height: 800 });
 
     expect(canvas.getViewport()).toEqual({ zoom: 2, panX: -350, panY: -200 });
+  });
+
+  it('keeps a restored view on whole pixels when the screen differs by an odd amount', () => {
+    const canvas = setupCanvas(800, 600, 1101, 801);
+
+    canvas.restoreViewport(1, 100, 50, { width: 1200, height: 800 });
+
+    const { panX, panY } = canvas.getViewport();
+    expect(Number.isInteger(panX) && Number.isInteger(panY)).toBe(true);
+  });
+
+  it('measures the canvas before restoring, so a layout just changed (the phone\'s) isn\'t taken for another screen', () => {
+    // Still sized for the desktop layout when the phone layout has been chosen.
+    const canvas = setupCanvas(800, 600, 129, 698);
+    (canvas as any).getBoundingClientRect = () => ({ left: 0, top: 0, width: 390, height: 796 });
+    canvas.restoreViewport(1, 5, 100, { width: 390, height: 796 });
+    expect(canvas.getViewport()).toEqual({ zoom: 1, panX: 5, panY: 100 });
+  });
+
+  it('keeps a view reloaded at window sizes an odd pixel apart where it was', () => {
+    let saved = { zoom: 1, panX: 101, panY: 61, size: { width: 1200, height: 800 } };
+    for (let i = 0; i < 4; i++) {
+      const size = i % 2 ? { width: 1200, height: 800 } : { width: 1201, height: 801 };
+      const canvas = setupCanvas(800, 600, size.width, size.height);
+      canvas.restoreViewport(saved.zoom, saved.panX, saved.panY, saved.size);
+      saved = { ...canvas.getViewport(), size };
+    }
+    expect(saved).toMatchObject({ panX: 101, panY: 61 });
   });
 
   it('shows the whole document when the view was saved on a much larger screen', () => {

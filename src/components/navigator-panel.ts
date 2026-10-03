@@ -4,6 +4,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import { blendModeToCompositeOp } from '../engine/types.js';
+import { focusEditor } from '../utils/focus-editor.js';
 
 @customElement('navigator-panel')
 export class NavigatorPanel extends LitElement {
@@ -486,18 +487,21 @@ export class NavigatorPanel extends LitElement {
   };
 
   private _onZoomInputBlur = () => {
-    this._commitZoomInput();
+    // Escape has already ended the edit, keeping the zoom as it was.
+    if (this._editingZoom) this._commitZoomInput();
     this._editingZoom = false;
   };
 
   private _onZoomInputKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      this._commitZoomInput();
+    if (e.key === 'Enter' || e.key === 'Escape') {
+      // Escape here isn't also a host dialog's close request.
+      e.preventDefault();
+      if (e.key === 'Enter') this._commitZoomInput();
       this._editingZoom = false;
-      (e.target as HTMLInputElement).blur();
-    } else if (e.key === 'Escape') {
-      this._editingZoom = false;
-      (e.target as HTMLInputElement).blur();
+      // To the app, whose shortcuts listen there, not the page.
+      const input = e.target as HTMLInputElement;
+      focusEditor(this);
+      if (this.shadowRoot?.activeElement === input) input.blur();
     }
     e.stopPropagation(); // prevent tool shortcuts
   };
