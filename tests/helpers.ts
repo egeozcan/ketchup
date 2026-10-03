@@ -134,6 +134,7 @@ export function makeAppCanvasStub(overrides: Record<string, unknown> = {}) {
     deleteSelection: vi.fn(),
     clearSelection: vi.fn(),
     cancelCrop: vi.fn(),
+    dismissResizeDialog: vi.fn(),
     commitCrop: vi.fn(),
     cancelExternalFloat: vi.fn(),
     cancelTransform: vi.fn(),

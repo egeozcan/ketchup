@@ -3442,6 +3442,11 @@ export class DrawingCanvas extends LitElement {
     this._notifyHistory();
   }
 
+  /** Closes a resize dialog still asking about a dropped image (the editor went inert). */
+  public dismissResizeDialog() {
+    this._resizeDialog?.dismiss();
+  }
+
   /** Whether the editor sits in an inert subtree, as when a tab is read-only. */
   private _isInert(): boolean {
     for (let node: Node | null = this; node; node = node.parentNode ?? (node as ShadowRoot).host ?? null) {

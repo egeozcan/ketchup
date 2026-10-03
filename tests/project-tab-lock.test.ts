@@ -374,6 +374,33 @@ describe('one tab edits a project at a time', () => {
     expect(locks.held.has(`ketchup-project:${copy.id}`)).toBe(true);
   });
 
+  it('goes back to the kept work, holding no lock, when saving the copy throws', async () => {
+    const locks = fakeLocks();
+    const backend = new MockBackend();
+    await backend.init();
+    const project = await backend.projects.create({ name: 'P', thumbnailRef: null });
+    const { app } = makeApp();
+    (app as any)._backend = backend;
+    (app as any)._projectService = { deleteProject: (id: string) => backend.projects.delete(id) };
+    await (app as any)._enterProject(project, async () => { (app as any)._trackLoadedProject(project.id, [], []); });
+    (app as any)._contentVersion++;
+    (app as any)._dirty = true;
+    void locks.request(`ketchup-project:${project.id}`, { steal: true }, () => new Promise(() => {}));
+    await settle();
+    expect((app as any)._stranded).toBe(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(app as any, '_carryStamps').mockRejectedValue(new Error('boom'));
+
+    await (app as any)._keepAsNewProject();
+    await settle();
+    expect((app as any)._currentProject.id).toBe(project.id);
+    expect((app as any)._stranded).toBe(true);
+    expect((app as any)._projectLock).toBeNull();
+    await vi.waitFor(async () => expect((await backend.projects.list()).map(p => p.id)).toEqual([project.id]));
+    // "Use here without them" can still be tried.
+    expect((app as any)._claiming).toBe(false);
+  });
+
   it('keeps work from a take-over through coming back into view, and through a return to the page', async () => {
     const locks = fakeLocks();
     const { app, project } = await makeSavingApp();
@@ -835,4 +862,35 @@ describe('one tab edits a project at a time', () => {
     expect([...root.querySelectorAll('.read-only button')].map(b => b.textContent!.trim())).toEqual(['Use here anyway', 'Keep them as a new project']);
   });
 
+
+  it('drops the save banner when going back online finds saving no longer possible', async () => {
+    const locks = fakeLocks();
+    const { app, project } = await makeSavingApp();
+    (app as any)._contentVersion++;
+    (app as any)._dirty = true;
+    (app as any)._saveError = true;
+    await stealElsewhere(locks, project.id);
+    (app as any)._onOnline();
+    await vi.waitFor(() => expect((app as any)._saveError).toBe(false), { timeout: 3000 });
+  });
+
+  it('retries a failed final flush of an editor taken out of the document', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    fakeLocks();
+    const backend = new MockBackend();
+    const { app } = makeApp();
+    app.storageBackend = backend;
+    document.body.append(app);
+    await app.whenReady();
+    await settle();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const save = vi.spyOn(backend.state, 'save').mockRejectedValueOnce(new Error('QuotaExceededError'));
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb) {
+      cb(new Blob(['png'], { type: 'image/png' }));
+    });
+    (app as any)._markDirty();
+    app.remove();
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(2), { timeout: 5000 });
+    await vi.waitFor(() => expect((app as any)._dirty).toBe(false), { timeout: 5000 });
+  });
 });

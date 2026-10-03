@@ -327,6 +327,27 @@ describe('embedded host API', () => {
     expect(app.modified).toBe(false);
   });
 
+  it('keeps the previous document when making the new one fails', async () => {
+    const app = new DrawingApp();
+    app.embedded = true;
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    Object.defineProperty(app, 'canvas', { configurable: true, value: makeAppCanvasStub() });
+    document.body.append(app);
+    await app.whenReady();
+    await app.newDocument(64, 32, { name: 'Keep' });
+    const state = (app as any)._state;
+    const project = (app as any)._currentProject;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect((app as any)._replaceDocument(16, 8, null, 'Failing', () => { throw new Error('paint'); }))
+      .rejects.toThrow('paint');
+
+    expect((app as any)._state).toBe(state);
+    expect((app as any)._state.documentWidth).toBe(64);
+    expect((app as any)._currentProject.id).toBe(project.id);
+    expect((await ((app as any)._backend as MemoryBackend).projects.list()).map(p => p.id)).toEqual([project.id]);
+  });
+
   it('replaces the document one call at a time, in the order the calls were made', async () => {
     const app = new DrawingApp();
     app.embedded = true;
