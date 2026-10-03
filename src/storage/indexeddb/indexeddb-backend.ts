@@ -11,10 +11,20 @@ import { migrateV3toV4 } from './migration.js';
 export interface IndexedDBBackendOptions {
   dbName?: string;
   version?: number;
+  /** Called with true while opening waits on another connection, false once it proceeds or fails. */
+  onBlocked?: (blocked: boolean) => void;
 }
 
 const DEFAULT_DB_NAME = 'ketchup-projects';
-const DEFAULT_VERSION = 4;
+// v5 is a format gate, with no schema change from v4: layer and history blobs
+// may now be stored as raw RGBA ("KTCH", see utils/canvas-helpers.ts). Builds
+// that only know v4 can't decode those (createImageBitmap rejects them), so a
+// project fails to load there and they carry on in a stray new project. A
+// browser refuses to open a database at a version lower than the one it is at
+// (VersionError), so those builds fail to open the database instead.
+// Bumping on every upgrade (not only once a raw blob is written) keeps the gate
+// independent of what any one session stores. New builds read v1-v4 data as is.
+const DEFAULT_VERSION = 5;
 
 export class IndexedDBBackend implements StorageBackend {
   private _projects?: ProjectStore;
@@ -47,10 +57,12 @@ export class IndexedDBBackend implements StorageBackend {
   private _db: IDBDatabase | null = null;
   private _dbName: string;
   private _version: number;
+  private _onBlocked?: (blocked: boolean) => void;
 
   constructor(opts?: IndexedDBBackendOptions) {
     this._dbName = opts?.dbName ?? DEFAULT_DB_NAME;
     this._version = opts?.version ?? DEFAULT_VERSION;
+    this._onBlocked = opts?.onBlocked;
   }
 
   async init(): Promise<void> {
@@ -94,12 +106,24 @@ export class IndexedDBBackend implements StorageBackend {
           migrateV3toV4(db, tx, oldVersion);
         }
       };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
+      // Another tab still on an older build (holding v4 open, not closing on
+      // versionchange) delays the upgrade until it goes away.
+      req.onblocked = () => {
+        console.warn('Storage upgrade is waiting for another tab to close');
+        this._onBlocked?.(true);
+      };
+      req.onsuccess = () => { this._onBlocked?.(false); resolve(req.result); };
+      req.onerror = () => { this._onBlocked?.(false); reject(req.error); };
     });
 
-    // Wire sub-stores
+    // Let a later upgrade (a newer build in another tab) go ahead.
     const db = this._db;
+    db.onversionchange = () => {
+      db.close();
+      if (this._db === db) this._db = null;
+    };
+
+    // Wire sub-stores
     const blobs = new IndexedDBBlobStore(db);
     this._blobs = blobs;
     this._projects = new IndexedDBProjectStore(db);

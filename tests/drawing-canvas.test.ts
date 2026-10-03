@@ -461,7 +461,7 @@ describe('DrawingCanvas', () => {
     expect(detail!.canUndo).toBe(true);
   });
 
-  it('undo discards the active transform even with empty history', () => {
+  it('undo commits the active transform and undoes that step, so redo restores it', () => {
     const { canvas } = setupCanvas();
     (canvas as any)._history = [];
     (canvas as any)._historyIndex = -1;
@@ -473,7 +473,9 @@ describe('DrawingCanvas', () => {
     canvas.undo();
 
     expect((canvas as any)._transformManager).toBeNull();
-    expect((canvas as any)._history).toHaveLength(0);
+    // The float became a step, which was then undone: Redo can bring it back.
+    expect((canvas as any)._history).toHaveLength(1);
+    expect((canvas as any)._historyIndex).toBe(-1);
   });
 
   it('redo discards the active transform before replaying the next entry', () => {

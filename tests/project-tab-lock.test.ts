@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DrawingApp } from '../src/components/drawing-app.ts';
 import { MockBackend } from '../src/storage/testing/mock-backend.ts';
 import { makeAppCanvasStub, makeCanvas, makeLayer, makeState } from './helpers.ts';
@@ -50,7 +50,10 @@ function fakeLocks() {
     return () => release();
   };
   // Every lock here is this tab's, as the browser reports them.
-  const query = vi.fn(async () => ({ held: [...held.keys()].map(name => ({ name, clientId: 'tab', mode: 'exclusive' })), pending: [] }));
+  const query = vi.fn(async () => ({ held: [...held.keys()].map(name => ({ name, clientId: 'tab', mode: 'exclusive' })),
+    // Requests waiting in a lock's queue, as the browser reports them.
+    pending: [...queues].flatMap(([name, queue]) => queue.map(() => ({ name, clientId: 'tab', mode: 'exclusive' }))),
+  }));
   vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { locks: { request, query } }));
   return { held, request, query, holdElsewhere };
 }
@@ -109,6 +112,7 @@ const flush = () => new Promise(r => setTimeout(r, 0));
 const settle = async (n = 10) => { for (let i = 0; i < n; i++) await flush(); };
 
 describe('one tab edits a project at a time', () => {
+  beforeEach(() => { vi.stubGlobal('BroadcastChannel', FakeChannel); });
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
@@ -646,7 +650,7 @@ describe('one tab edits a project at a time', () => {
     const fresh = meta('fresh');
     (app as any)._backend = {
       state: { get: vi.fn(async () => { throw new Error('Blob not found'); }) },
-      projects: { create: vi.fn(() => new Promise(r => { created = r; })), list: vi.fn(async () => []) },
+      projects: { create: vi.fn(() => new Promise(r => { created = r; })), list: vi.fn(async () => []), get: vi.fn(async () => null) },
     };
     const deleteProject = vi.fn(async () => {});
     (app as any)._projectService = { deleteProject };
@@ -828,7 +832,7 @@ describe('one tab edits a project at a time', () => {
     expect(root.querySelector('tool-settings')!.hasAttribute('inert')).toBe(true);
     Object.assign(app as any, { _claiming: true, _waitingForTab: true, _otherTabSilent: true });
     await app.updateComplete;
-    expect([...root.querySelectorAll('.read-only button')].map(b => b.textContent!.trim())).toEqual(['Use here anyway']);
+    expect([...root.querySelectorAll('.read-only button')].map(b => b.textContent!.trim())).toEqual(['Use here anyway', 'Keep them as a new project']);
   });
 
 });

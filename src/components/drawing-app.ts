@@ -6,9 +6,9 @@ import { blendModeToCompositeOp, type BlendMode, type BrushDescriptor, type TipD
 import { getDefaultDescriptor, getPresetById } from '../engine/brush-presets.js';
 import type { DrawingState, HistoryEntry, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
-import { IndexedDBBackend, MemoryBackend, ProjectService, StorageQuotaError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
+import { IndexedDBBackend, MemoryBackend, ProjectService, StorageQuotaError, StorageNotFoundError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
 import type { StorageBackend, BlobStore, BlobRef, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord, StampEntry } from '../storage/types.js';
-import { canvasToBlob } from '../utils/canvas-helpers.js';
+import { canvasToBlob, PixelDecodeError } from '../utils/canvas-helpers.js';
 import { hashImageData } from '../utils/image-diff.js';
 import { historyByteBudget, serializedHistoryEntryBytes } from '../utils/history-size.js';
 import {
@@ -284,6 +284,8 @@ export class DrawingApp extends LitElement {
   embedded = false;
 
   @state() private _storageState: 'loading' | 'ready' | 'error' = 'loading';
+  /** Opening storage waits on another window still on an older build. */
+  @state() private _storageBlocked = false;
   @state() private _storageError?: string;
   @state() private _backend?: StorageBackend;
   /** True when we created the backend ourselves (not caller-supplied). Only dispose what we own. */
@@ -586,6 +588,13 @@ export class DrawingApp extends LitElement {
     }, 500);
   }
 
+  /** Whether this tab may save the project now (backend open, not stranded/gone/deleting, lock held for its content). */
+  private _canSaveProject(id: string): boolean {
+    return !!this._backend && id !== this._unsavableProjectId && id !== this._deletingProject
+      && !this._projectGone && this._ownsProject(id)
+      && this._projectLock === this._contentLock;
+  }
+
   /** Tries a failed save again after a pause that doubles up to a minute. */
   private _scheduleSaveRetry() {
     // A detached editor retries when it is back (connectedCallback).
@@ -597,8 +606,7 @@ export class DrawingApp extends LitElement {
       const id = this._currentProject?.id;
       // Saving isn't possible (lock lost, project gone or unsavable): the
       // stranded/gone screens say so, and a retry would only return early.
-      if (!this._dirty || !id || !this._backend || id === this._unsavableProjectId || id === this._deletingProject
-          || this._projectGone || this._stranded || !this._ownsProject(id) || this._projectLock !== this._contentLock) {
+      if (!this._dirty || !id || this._stranded || !this._canSaveProject(id)) {
         this._clearSaveError();
         return;
       }
@@ -1136,7 +1144,7 @@ export class DrawingApp extends LitElement {
     if (fresh) {
       if (fresh.name !== current.name) this._currentProject = { ...current, name: fresh.name };
     // A list read before this tab created the project may lack it.
-    } else if (!(await this._backend.projects.get(current.id).catch(() => current))) {
+    } else if (!(await Promise.resolve().then(() => this._backend?.projects.get(current.id)).catch(() => current))) {
       void this._onProjectGone(current.id);
     }
   }
@@ -1502,8 +1510,7 @@ export class DrawingApp extends LitElement {
     const savingId = this._currentProject.id;
     // Only under the lock the content was loaded under: a tab holding a lock
     // it never loaded under (or took back without reloading) has stale content.
-    if (!this._backend || savingId === this._unsavableProjectId || savingId === this._deletingProject || this._projectGone || !this._ownsProject(savingId)
-      || this._projectLock !== this._contentLock) return;
+    if (!this._canSaveProject(savingId)) return;
 
     const enterGeneration = this._enterGeneration;
     this._savePromise = (async () => {
@@ -2262,6 +2269,12 @@ export class DrawingApp extends LitElement {
           history.push(await deserializeHistoryEntry(candidates[i].entry, blobs));
         } catch (err) {
           if (superseded()) return;
+          // Only corrupt data is dropped; a storage failure (transient read
+          // error) fails the load, so history isn't deleted by a hiccup.
+          const name = (err as { name?: string } | null)?.name;
+          const missing = err instanceof StorageNotFoundError || name === 'StorageNotFoundError' ||
+            name === 'NotFoundError' || name === 'NotReadableError';
+          if (!(err instanceof PixelDecodeError || missing)) throw err;
           // An undecodable entry costs the history, not the project: drop it
           // and everything older (or, for a redo entry, it and what follows).
           console.error('Dropping undecodable history entry:', err);
@@ -2894,16 +2907,10 @@ export class DrawingApp extends LitElement {
         // a blank document named after the image on screen. Other browsers
         // may only fail later, at the paint.
         checkDocumentSize(bitmap.width, bitmap.height);
-        const probe = document.createElement('canvas');
-        probe.width = bitmap.width;
-        probe.height = bitmap.height;
-        const fits = !!probe.getContext('2d');
-        probe.width = probe.height = 0;
-        if (!fits) {
-          throw new RangeError(`This browser cannot open a ${bitmap.width}\u00d7${bitmap.height} image`);
-        }
+        // (_replaceDocument runs the canvas probe, with this wording.)
         await this._replaceDocument(bitmap.width, bitmap.height, null, options.name ?? 'Untitled',
-          (layer) => layer.canvas.getContext('2d')!.drawImage(bitmap, 0, 0));
+          (layer) => layer.canvas.getContext('2d')!.drawImage(bitmap, 0, 0),
+          `This browser cannot open a ${bitmap.width}\u00d7${bitmap.height} image`);
       } finally {
         bitmap.close();
       }
@@ -3066,6 +3073,7 @@ export class DrawingApp extends LitElement {
     background: string | null,
     name: string,
     paint?: (layer: Layer) => void,
+    cannotFitMessage?: string,
   ) {
     width = Math.round(width);
     height = Math.round(height);
@@ -3078,7 +3086,7 @@ export class DrawingApp extends LitElement {
       probe.height = height;
       const fits = !!probe.getContext('2d');
       probe.width = probe.height = 0;
-      if (!fits) throw new RangeError(`This browser cannot make a ${width}×${height} canvas`);
+      if (!fits) throw new RangeError(cannotFitMessage ?? `This browser cannot make a ${width}×${height} canvas`);
     }
     this.canvas?.cancelCrop();
     this.canvas?.clearSelection();
@@ -3374,7 +3382,7 @@ export class DrawingApp extends LitElement {
   private async _doInitStorage() {
     try {
       const callerSupplied = !!this.storageBackend;
-      const backend = this.storageBackend ?? (this.embedded ? new MemoryBackend() : new IndexedDBBackend());
+      const backend = this.storageBackend ?? (this.embedded ? new MemoryBackend() : new IndexedDBBackend({ onBlocked: (b) => { this._storageBlocked = b; } }));
       await backend.init();
       this._backend = backend;
       this._ownsBackend = !callerSupplied;
@@ -3554,7 +3562,7 @@ export class DrawingApp extends LitElement {
 
   override render() {
     if (this._storageState === 'loading') {
-      return html`<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#888;">Loading...</div>`;
+      return html`<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#888;">${this._storageBlocked ? 'Close other Ketchup windows to finish updating' : 'Loading...'}</div>`;
     }
     if (this._storageState === 'error') {
       return html`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:#ff6b6b;gap:8px;">

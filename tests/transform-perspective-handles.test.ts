@@ -239,7 +239,7 @@ describe('perspective corners', () => {
         }
       }
     }
-  });
+  }, 20000); // a dense sweep of sizes, flips and angles: slow under load
 
   it('points corner cursors diagonally whatever the float\'s proportions', () => {
     for (const [w, h] of [[300, 30], [40, 200]]) {

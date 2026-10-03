@@ -215,7 +215,7 @@ describe('warpPerspective', () => {
       expect(inside).toBeGreaterThan(500);
       expect(outside).toBeGreaterThan(500);
     }
-  });
+  }, 20000); // per-pixel CPU warp: slow under load
 });
 
 /** How much of pixel (x, y) the quad covers by nonzero winding, from 64 × 64 samples. */

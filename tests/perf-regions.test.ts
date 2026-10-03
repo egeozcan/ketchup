@@ -311,6 +311,7 @@ describe('saves that reuse stored layers', () => {
     const live = new ImageData(20, 20);
     live.data[3] = 255;
     vi.spyOn(layer.canvas.getContext('2d')!, 'getImageData').mockReturnValue(live);
+    (app as any).canvas.getLayerRevision.mockReturnValue(1);
     // Another tab saved this project with different layer blobs.
     const state = (await backend.state.get(project.id))!;
     const otherRef = await backend.blobs.put(new Blob(['other']));
@@ -324,8 +325,9 @@ describe('saves that reuse stored layers', () => {
     expect(ref).not.toBe(otherRef);
     expect(await backend.blobs.get(ref)).toBeInstanceOf(Blob);
     expect((app as any)._savedContentVersion).toBe(-1);
-    // The recorded hash is that of the pixels stored, not the stale one.
-    expect((app as any)._savedLayerBlobs.get('l1')).toEqual({ hash: hashImageData(live), blobRef: ref });
+    // The recorded hash is that of the pixels stored, not the stale one; the
+    // snapshot isn't trusted, so no revision is kept and the next save reads it again.
+    expect((app as any)._savedLayerBlobs.get('l1')).toMatchObject({ hash: hashImageData(live), blobRef: ref, rev: null });
   });
 
   it('keeps the thumbnail on a settings-only save, and retries one that failed', async () => {

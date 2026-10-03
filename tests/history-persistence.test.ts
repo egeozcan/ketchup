@@ -147,7 +147,7 @@ describe('incremental history persistence', () => {
   });
 
   it('reuses the stored blob of a layer that has not changed', async () => {
-    const { backend, layer, save } = await setupApp();
+    const { app, backend, layer, save } = await setupApp();
     const serializeLayer = vi.spyOn(serialization, 'serializeLayerFromImageData');
     await save([]);
     const firstRef = (await backend.state.get((await backend.projects.list())[0].id))!.layers[0].imageBlobRef;
@@ -161,6 +161,8 @@ describe('incremental history persistence', () => {
     const changed = new ImageData(20, 20);
     changed.data[3] = 255;
     vi.spyOn(layer.canvas.getContext('2d')!, 'getImageData').mockReturnValue(changed);
+    // Only a layer whose revision moved is read back.
+    (app as any).canvas.getLayerRevision.mockReturnValue(1);
     await save([]);
     const after = (await backend.state.get(state.projectId))!;
     expect(serializeLayer).toHaveBeenCalledTimes(2);

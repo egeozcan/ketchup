@@ -8,9 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 npm run dev          # Start Vite dev server
 npm run build        # TypeScript check + Vite production build (tsc && vite build)
 npx tsc --noEmit     # Type-check only (no output)
+npx vitest run       # Run the test suite (tests/, jsdom + vitest-canvas-mock)
 ```
 
-No test runner or linter is configured.
+No linter is configured.
 
 ## Architecture
 
@@ -50,7 +51,7 @@ The standalone app edits a project in one tab at a time: `_enterProject` takes a
 
 `stamp-store.ts` stores recent stamp images as Blobs (max 20 per project, auto-pruned) in the `project-stamps` object store within the `ketchup-projects` database, scoped by project ID.
 
-Deferred-batch additions: layer and history pixels are stored as raw RGBA (`KTCH` header, deflate via CompressionStream; `canCompress()` self-tests it once and falls back to PNG, since Safari 16.4-16.5 truncates large flushes; old PNG blobs still load); an undecodable history entry on load is dropped with everything older (or, on the redo side, everything after) and history is rewritten at the next save; the discard prompt on a project switch covers any unsaved work (`_hasUnsavedWork`), and a stranded tab refuses to switch; "Keep as a new project" during "Use here" sets `_claimCancelled` (checked in `_editHere` after the try and after `_takeOver`), and during a steal (`_stealing`) the steal finishes and the lock moves to the copy; after a hand-over release the holder re-takes the lock with `ifAvailable` if the asking tab gave up, only when its content was loaded under that lock; `_noCanvas` marks a tab whose fresh-document fallback failed (its overlay offers no "Use here"); a failed `openImage`/`newDocument` re-enters the previous project and deletes the new one; a click on the canvas in CSS-zoomed hosts converts through `_clientToView` (client to display-canvas pixels).
+Deferred-batch additions: layer and history pixels are stored as raw RGBA (`KTCH` header, deflate via CompressionStream; `canCompress()` self-tests it once and falls back to PNG, since Safari 16.4-16.5 truncates large flushes; old PNG blobs still load); an undecodable history entry on load (`PixelDecodeError` for format/decode errors only, or a missing or unreadable blob by error name `StorageNotFoundError`/`NotFoundError`/`NotReadableError`; other read errors fail the load) is dropped with everything older (or, on the redo side, everything after) and history is rewritten at the next save; the IndexedDB version is 5, a format gate with no schema change (older builds get a `VersionError` instead of failing to decode raw blobs, which would make them carry on in a stray new project; while the open is blocked by another window on an older build the app shows "Close other Ketchup windows to finish updating", `onBlocked`); the `canCompress()` verdict is cached only when the round trip reached one (a 3 s timeout or a self-test exception falls back to PNG and isn't retried for 60 s); the discard prompt on a project switch covers any unsaved work (`_hasUnsavedWork`), and a stranded tab refuses to switch; "Keep as a new project" during "Use here" sets `_claimCancelled` (checked in `_editHere` after the try and after `_takeOver`), and during a steal (`_stealing`) the steal finishes and the lock moves to the copy; after a hand-over release the holder re-takes the lock with `ifAvailable` if the asking tab gave up, only when its content was loaded under that lock; `_noCanvas` marks a tab whose fresh-document fallback failed (its overlay offers no "Use here"); a failed `openImage`/`newDocument` re-enters the previous project and deletes the new one; a click on the canvas in CSS-zoomed hosts converts through `_clientToView` (client to display-canvas pixels).
 
 ### Embedding
 
