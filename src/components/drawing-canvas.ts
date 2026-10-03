@@ -2265,7 +2265,7 @@ export class DrawingCanvas extends LitElement {
         if (ended && e.timeStamp - ended.time < 400
             && Math.hypot(e.clientX - ended.x, e.clientY - ended.y) < 6) return;
       }
-      this._pendingTap ={ pointerId: e.pointerId, down: e };
+      this._pendingTap = { pointerId: e.pointerId, down: e };
       return;
     }
 
