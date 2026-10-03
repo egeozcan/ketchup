@@ -42,9 +42,10 @@ function hasCompressionApis(): boolean {
 let compressionTrusted: Promise<boolean> | null = null;
 
 /**
- * One-time round trip of ~64 KB of lightly compressible data in a single
- * chunk. Safari 16.4-16.5 truncates the output at flush when the final deflate
- * chunk exceeds 16 KB (WebKit bug 254021), which would corrupt stored blobs.
+ * One-time round trip of 64 KB of data that compresses to ~24 KB, all of it
+ * written at the final flush (fewer than 16383 deflate symbols, so no block is
+ * emitted earlier). Safari 16.4-16.5 truncates output when the flush exceeds
+ * 16 KB (WebKit bug 254021), which would corrupt stored blobs; this catches it.
  */
 function canCompress(): Promise<boolean> {
   if (!compressionTrusted) {
@@ -54,10 +55,15 @@ function canCompress(): Promise<boolean> {
         const n = 1 << 16;
         const data = new Uint8Array(n);
         let x = 12345;
-        for (let i = 0; i < n; i++) {
-          x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
-          // Six bits of noise per byte, with runs so it still compresses a little.
-          data[i] = (i >> 5) & 1 ? data[i - 1] : (x >>> 24) & 0xfc;
+        const next = () => (x = (Math.imul(x, 1664525) + 1013904223) >>> 0);
+        let i = 0;
+        for (; i < 4096; i++) data[i] = next() >>> 24;
+        // 4-11 byte copies from earlier offsets: stays under one 16383-symbol
+        // deflate block, so everything is written at the flush, whatever the chunking.
+        while (i < n) {
+          const len = 4 + (next() >>> 29);
+          const src = i - 1 - (next() % Math.min(i - 1, 30000));
+          for (let k = 0; k < len && i < n; k++) data[i++] = data[src + k];
         }
         const packed = await new Response(
           new Blob([data]).stream().pipeThrough(new CompressionStream('deflate')),
