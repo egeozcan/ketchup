@@ -554,7 +554,7 @@ export class AppToolbar extends LitElement {
 
   private _confirmClearCanvas() {
     if (confirm('Clear the whole drawing?')) {
-      this.ctx.clearCanvas();
+      this.ctx.clearCanvas(true);
     }
   }
 

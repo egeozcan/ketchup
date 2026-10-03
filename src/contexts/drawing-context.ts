@@ -14,7 +14,8 @@ export interface DrawingContextValue {
   setStampImage: (img: HTMLImageElement | null, stampId?: string | null) => void;
   undo: () => void;
   redo: () => void;
-  clearCanvas: () => void;
+  /** Clears the active layer, or with `allLayers` every layer (one undo step; only Layer 1 remains, white). */
+  clearCanvas: (allLayers?: boolean) => void;
   /** Save: downloads a PNG standalone, asks the host (`save-request`) when embedded. */
   saveCanvas: () => void;
   /** A host page owns the document; project management is its business. See `DrawingApp.embedded`. */

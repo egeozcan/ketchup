@@ -1,6 +1,6 @@
 // src/storage/indexeddb/indexeddb-stamps.ts
 import type { BlobRef, BlobStore, StampEntry, StampStore } from '../types.js';
-import { mapDOMException, txAbortError } from './error-utils.js';
+import { mapDOMException, txAbortError, txRequestError } from './error-utils.js';
 import { generateUUID } from './migration.js';
 
 const STAMPS_STORE = 'project-stamps';
@@ -28,6 +28,7 @@ export class IndexedDBStampStore implements StampStore {
         }
       };
       req.onerror = () => reject(mapDOMException(req.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
   }
 
@@ -43,7 +44,7 @@ export class IndexedDBStampStore implements StampStore {
       const tx = this._db.transaction(STAMPS_STORE, 'readwrite');
       tx.objectStore(STAMPS_STORE).add(entry);
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onerror = e => reject(txRequestError(e, tx));
       tx.onabort = () => reject(txAbortError(tx));
     });
     return entry;
@@ -59,6 +60,7 @@ export class IndexedDBStampStore implements StampStore {
         resolve(entry?.blobRef ?? null);
       };
       req.onerror = () => reject(mapDOMException(req.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
 
     // Delete the stamp record
@@ -66,7 +68,7 @@ export class IndexedDBStampStore implements StampStore {
       const tx = this._db.transaction(STAMPS_STORE, 'readwrite');
       tx.objectStore(STAMPS_STORE).delete(id);
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onerror = e => reject(txRequestError(e, tx));
       tx.onabort = () => reject(txAbortError(tx));
     });
 
@@ -94,7 +96,7 @@ export class IndexedDBStampStore implements StampStore {
       };
       req.onerror = () => reject(mapDOMException(req.error));
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onerror = e => reject(txRequestError(e, tx));
       tx.onabort = () => reject(txAbortError(tx));
     });
     // Best-effort blob cleanup

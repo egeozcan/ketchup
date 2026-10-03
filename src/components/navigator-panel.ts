@@ -483,7 +483,10 @@ export class NavigatorPanel extends LitElement {
     this._editingZoom = true;
     this._zoomInputValue = Math.round(this.ctx.zoom * 100).toString();
     const input = e.target as HTMLInputElement;
-    requestAnimationFrame(() => input.select());
+    requestAnimationFrame(() => {
+      // Not if Enter or Escape already ended the edit (or focus moved on).
+      if (this._editingZoom && this.shadowRoot?.activeElement === input) input.select();
+    });
   };
 
   private _onZoomInputBlur = () => {

@@ -1,6 +1,6 @@
 // src/storage/indexeddb/indexeddb-history.ts
 import type { ProjectHistoryRecord, ProjectHistoryStore } from '../types.js';
-import { mapDOMException, txAbortError } from './error-utils.js';
+import { mapDOMException, txAbortError, txRequestError } from './error-utils.js';
 
 const HISTORY_STORE = 'project-history';
 
@@ -24,6 +24,7 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
         }
       };
       req.onerror = () => reject(mapDOMException(req.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
   }
 
@@ -38,7 +39,7 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
         store.add({ ...rest, projectId });
       }
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onerror = e => reject(txRequestError(e, tx));
       tx.onabort = () => reject(txAbortError(tx));
     });
   }
@@ -63,7 +64,7 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
       };
       cursorReq.onerror = () => reject(mapDOMException(cursorReq.error));
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onerror = e => reject(txRequestError(e, tx));
       tx.onabort = () => reject(txAbortError(tx));
     });
   }
@@ -89,7 +90,7 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
         store.add({ ...rest, projectId });
       }
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onerror = e => reject(txRequestError(e, tx));
       // A quota failure at commit time aborts without an error event.
       tx.onabort = () => reject(txAbortError(tx));
     });
@@ -109,7 +110,7 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
       };
       req.onerror = () => reject(mapDOMException(req.error));
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onerror = e => reject(txRequestError(e, tx));
       tx.onabort = () => reject(txAbortError(tx));
     });
   }

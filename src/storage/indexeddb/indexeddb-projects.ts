@@ -1,7 +1,7 @@
 // src/storage/indexeddb/indexeddb-projects.ts
 import type { BlobRef, ProjectMeta, ProjectStore } from '../types.js';
 import { StorageNotFoundError } from '../errors.js';
-import { mapDOMException, txAbortError } from './error-utils.js';
+import { mapDOMException, txAbortError, txRequestError } from './error-utils.js';
 import { generateUUID } from './migration.js';
 
 const PROJECTS_STORE = 'projects';
@@ -31,6 +31,7 @@ export class IndexedDBProjectStore implements ProjectStore {
           }
         };
         req.onerror = () => reject(mapDOMException(req.error));
+        tx.onabort = () => reject(txAbortError(tx));
       } else {
         const req = store.getAll();
         req.onsuccess = () => {
@@ -41,6 +42,7 @@ export class IndexedDBProjectStore implements ProjectStore {
           resolve(all);
         };
         req.onerror = () => reject(mapDOMException(req.error));
+        tx.onabort = () => reject(txAbortError(tx));
       }
     });
   }
@@ -51,6 +53,7 @@ export class IndexedDBProjectStore implements ProjectStore {
       const req = tx.objectStore(PROJECTS_STORE).get(id);
       req.onsuccess = () => resolve((req.result as ProjectMeta) ?? null);
       req.onerror = () => reject(mapDOMException(req.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
   }
 
@@ -69,7 +72,7 @@ export class IndexedDBProjectStore implements ProjectStore {
       const tx = this._db.transaction(PROJECTS_STORE, 'readwrite');
       tx.objectStore(PROJECTS_STORE).add(record);
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onerror = e => reject(txRequestError(e, tx));
       tx.onabort = () => reject(txAbortError(tx));
     });
     return record;
@@ -98,7 +101,7 @@ export class IndexedDBProjectStore implements ProjectStore {
       };
       getReq.onerror = () => reject(mapDOMException(getReq.error));
       tx.oncomplete = () => resolve(updated);
-      tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onerror = e => reject(txRequestError(e, tx));
       tx.onabort = () => reject(txAbortError(tx));
     });
   }
@@ -108,7 +111,7 @@ export class IndexedDBProjectStore implements ProjectStore {
       const tx = this._db.transaction(PROJECTS_STORE, 'readwrite');
       tx.objectStore(PROJECTS_STORE).delete(id);
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onerror = e => reject(txRequestError(e, tx));
       tx.onabort = () => reject(txAbortError(tx));
     });
   }

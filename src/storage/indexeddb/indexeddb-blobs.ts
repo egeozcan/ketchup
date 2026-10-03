@@ -2,7 +2,7 @@
 import type { BlobRef, BlobStore } from '../types.js';
 import { createBlobRef } from '../types.js';
 import { StorageNotFoundError } from '../errors.js';
-import { mapDOMException, txAbortError } from './error-utils.js';
+import { mapDOMException, txAbortError, txRequestError } from './error-utils.js';
 import { generateUUID } from './migration.js';
 
 const BLOBS_STORE = 'blobs';
@@ -37,7 +37,7 @@ export class IndexedDBBlobStore implements BlobStore {
         store.delete(ref);
       }
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onerror = e => reject(txRequestError(e, tx));
       tx.onabort = () => reject(txAbortError(tx));
     });
   }
@@ -57,7 +57,7 @@ export class IndexedDBBlobStore implements BlobStore {
         }
       };
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onerror = e => reject(txRequestError(e, tx));
       tx.onabort = () => reject(txAbortError(tx));
     });
     if (orphaned.length > 0) {
@@ -78,7 +78,7 @@ export class IndexedDBBlobStore implements BlobStore {
       // comes after the request's success.
       if (mode === 'readonly') req.onsuccess = () => resolve(req.result);
       else tx.oncomplete = () => resolve(req.result);
-      tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onerror = e => reject(txRequestError(e, tx));
       tx.onabort = () => reject(txAbortError(tx));
     });
   }

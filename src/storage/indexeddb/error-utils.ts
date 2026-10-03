@@ -28,3 +28,11 @@ export function mapDOMException(e: unknown): StorageError {
 export function txAbortError(tx: IDBTransaction): StorageError {
   return mapDOMException(tx.error ?? new DOMException('The transaction was aborted', 'AbortError'));
 }
+
+/**
+ * The error a failed request inside a transaction reports: the request's own
+ * (which carries a quota failure), else the transaction's.
+ */
+export function txRequestError(e: Event, tx: IDBTransaction): StorageError {
+  return mapDOMException((e.target as IDBRequest | null)?.error ?? tx.error);
+}

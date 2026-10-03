@@ -216,6 +216,8 @@ export class DrawingCanvas extends LitElement {
    * box), held until the finger lifts: a second finger first makes it a
    * pinch, which must leave nothing behind.
    */
+  /** When and where ✓/✗ last ended a float, to ignore the second press of a double-click. */
+  private _floatButtonEnd: { time: number; x: number; y: number } | null = null;
   private _pendingTap: { pointerId: number; down: PointerEvent } | null = null;
   /** The held tap is being carried out now, after its finger lifted. */
   private _replayingTap = false;
@@ -1567,17 +1569,32 @@ export class DrawingCanvas extends LitElement {
   /** Convert viewport pointer position to document coordinates */
   private _getDocPoint(e: PointerEvent): Point {
     const rect = this._getCanvasRect();
+    const k = this._clientScale(rect);
     return {
-      x: (e.clientX - rect.left - this._panX) / this._zoom,
-      y: (e.clientY - rect.top - this._panY) / this._zoom,
+      x: ((e.clientX - rect.left) * k.x - this._panX) / this._zoom,
+      y: ((e.clientY - rect.top) * k.y - this._panY) / this._zoom,
+    };
+  }
+
+  /**
+   * Canvas pixels per client pixel. 1 unless a host's CSS `zoom` (or a
+   * transform) scales the editor, when the canvas is shown at another size
+   * than its bitmap.
+   */
+  private _clientScale(rect: DOMRect): Point {
+    const w = this.mainCanvas.width, h = this.mainCanvas.height;
+    return {
+      x: rect.width > 0 && w > 0 ? w / rect.width : 1,
+      y: rect.height > 0 && h > 0 ? h / rect.height : 1,
     };
   }
 
   private _clientToDoc(clientX: number, clientY: number): Point {
     const rect = this._getCanvasRect();
+    const k = this._clientScale(rect);
     return {
-      x: (clientX - rect.left - this._panX) / this._zoom,
-      y: (clientY - rect.top - this._panY) / this._zoom,
+      x: ((clientX - rect.left) * k.x - this._panX) / this._zoom,
+      y: ((clientY - rect.top) * k.y - this._panY) / this._zoom,
     };
   }
 
@@ -1633,8 +1650,9 @@ export class DrawingCanvas extends LitElement {
       e.preventDefault();
       if (e.deltaY === 0) return; // Pure horizontal scroll — don't zoom
       const rect = this._getCanvasRect();
-      const viewportX = e.clientX - rect.left;
-      const viewportY = e.clientY - rect.top;
+      const k = this._clientScale(rect);
+      const viewportX = (e.clientX - rect.left) * k.x;
+      const viewportY = (e.clientY - rect.top) * k.y;
 
       const docX = (viewportX - this._panX) / this._zoom;
       const docY = (viewportY - this._panY) / this._zoom;
@@ -2322,6 +2340,10 @@ export class DrawingCanvas extends LitElement {
     }
 
     if (activeTool === 'stamp') {
+      const ended = this._floatButtonEnd;
+      this._floatButtonEnd = null;
+      if (ended && e.timeStamp - ended.time < 400
+          && Math.hypot(e.clientX - ended.x, e.clientY - ended.y) < 6) return;
       // TransformManager intercept above handles active transforms.
       // Commit any active transform, then place a new stamp.
       if (this._transformManager) this.commitTransform();
@@ -2641,6 +2663,11 @@ export class DrawingCanvas extends LitElement {
         this.commitTransform();
       } else if (result === 'cancel-button') {
         this.cancelTransform();
+      }
+      // The second click of a double-click on ✓/✗ lands on the canvas, where
+      // the stamp tool would drop a stray stamp.
+      if (result === 'commit-button' || result === 'cancel-button') {
+        this._floatButtonEnd = { time: e.timeStamp, x: e.clientX, y: e.clientY };
       }
       this.composite();
       this._refreshTransformCursor(e);
@@ -3321,6 +3348,19 @@ export class DrawingCanvas extends LitElement {
   }
 
   /** Cancel the active crop, clearing the overlay. */
+  /**
+   * Ends every gesture under way (a stroke, a drag, a pinch) as a cancelled
+   * one, so what it started is undone and nothing is left half done for a
+   * save to capture. Pointer releases that follow find nothing to end.
+   */
+  public cancelGesture() {
+    for (const id of [...this._pointers.keys()]) this._cancelCurrentTool(id, true);
+    this._pointers.clear();
+    this._palmPointers.clear();
+    this._pendingTap = null;
+    this._pinching = false;
+  }
+
   public cancelCrop() {
     if (!this._cropRect) return;
     this._cropRect = null;
@@ -3467,12 +3507,33 @@ export class DrawingCanvas extends LitElement {
   }
 
   /** Puts the float, as shown, on the clipboards. */
-  private _copyFloatToClipboard() {
-    const snapshot = this._transformManager!.snapshot();
-    this._clipboard = snapshot.canvas.getContext('2d')!.getImageData(0, 0, snapshot.w, snapshot.h);
+  private _copyFloatToClipboard(): boolean {
+    const snapshot = this._clippedFloatSnapshot();
+    if (!snapshot) return false;
+    try {
+      this._clipboard = snapshot.canvas.getContext('2d')!.getImageData(0, 0, snapshot.w, snapshot.h);
+    } catch (err) {
+      console.error('Copy failed', err);
+      return false;
+    }
     this._clipboardOrigin = { x: snapshot.x, y: snapshot.y };
     this._clipboardRotation = 0;
     this._writeToSystemClipboard(snapshot.canvas);
+    return true;
+  }
+
+  /**
+   * The float as shown, clipped to the document (only that part survives a
+   * commit, and a float dragged far outside could otherwise ask for too large
+   * a canvas); null when nothing of it is on the document or it can't be made.
+   */
+  private _clippedFloatSnapshot() {
+    try {
+      return this._transformManager!.snapshot({ x: 0, y: 0, w: this._docWidth, h: this._docHeight });
+    } catch (err) {
+      console.error('Float snapshot failed', err);
+      return null;
+    }
   }
 
   private _writeToSystemClipboard(canvas: HTMLCanvasElement) {
@@ -3493,7 +3554,8 @@ export class DrawingCanvas extends LitElement {
     // Copy, then delete the float rather than commit it: clearing what it
     // covers after a commit would also clear everything else in its bounds
     // (it may be rotated or warped) and whatever it was moved over.
-    this._copyFloatToClipboard();
+    // Nothing copied (off the document, or too large): keep the float.
+    if (!this._copyFloatToClipboard()) return;
     this.deleteSelection();
   }
 
@@ -3659,8 +3721,15 @@ export class DrawingCanvas extends LitElement {
 
   public duplicateInPlace() {
     if (this._transformManager) {
-      const snapshot = this._transformManager.snapshot();
-      const imageData = snapshot.canvas.getContext('2d')!.getImageData(0, 0, snapshot.w, snapshot.h);
+      const snapshot = this._clippedFloatSnapshot();
+      if (!snapshot) return;
+      let imageData: ImageData;
+      try {
+        imageData = snapshot.canvas.getContext('2d')!.getImageData(0, 0, snapshot.w, snapshot.h);
+      } catch (err) {
+        console.error('Duplicate failed', err);
+        return;
+      }
 
       // Store the transformed result in the clipboard. Neither the clipboard
       // nor a TransformManager writes to its ImageData, so the duplicate below

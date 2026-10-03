@@ -1,6 +1,6 @@
 // src/storage/indexeddb/indexeddb-state.ts
 import type { ProjectStateRecord, ProjectStateStore } from '../types.js';
-import { mapDOMException, txAbortError } from './error-utils.js';
+import { mapDOMException, txAbortError, txRequestError } from './error-utils.js';
 
 const STATE_STORE = 'project-state';
 
@@ -13,6 +13,7 @@ export class IndexedDBStateStore implements ProjectStateStore {
       const req = tx.objectStore(STATE_STORE).get(projectId);
       req.onsuccess = () => resolve((req.result as ProjectStateRecord) ?? null);
       req.onerror = () => reject(mapDOMException(req.error));
+      tx.onabort = () => reject(txAbortError(tx));
     });
   }
 
@@ -21,7 +22,7 @@ export class IndexedDBStateStore implements ProjectStateStore {
       const tx = this._db.transaction(STATE_STORE, 'readwrite');
       tx.objectStore(STATE_STORE).put(record);
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onerror = e => reject(txRequestError(e, tx));
       tx.onabort = () => reject(txAbortError(tx));
     });
   }
@@ -31,7 +32,7 @@ export class IndexedDBStateStore implements ProjectStateStore {
       const tx = this._db.transaction(STATE_STORE, 'readwrite');
       tx.objectStore(STATE_STORE).delete(projectId);
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(mapDOMException(tx.error));
+      tx.onerror = e => reject(txRequestError(e, tx));
       tx.onabort = () => reject(txAbortError(tx));
     });
   }
