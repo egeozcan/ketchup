@@ -2254,13 +2254,31 @@ export class DrawingApp extends LitElement {
         if (bytes > budget) break;
         keepTo++;
       }
-      const historyRecords = allHistoryRecords.slice(keepFrom, keepTo);
-      const history: HistoryEntry[] = [];
-      for (const r of historyRecords) {
-        history.push(await deserializeHistoryEntry(r.entry, blobs));
+      const candidates = allHistoryRecords.slice(keepFrom, keepTo);
+      let history: HistoryEntry[] = [];
+      let firstKept = keepFrom;
+      for (let i = 0; i < candidates.length; i++) {
+        try {
+          history.push(await deserializeHistoryEntry(candidates[i].entry, blobs));
+        } catch (err) {
+          if (superseded()) return;
+          // An undecodable entry costs the history, not the project: drop it
+          // and everything older (or, for a redo entry, it and what follows).
+          console.error('Dropping undecodable history entry:', err);
+          const abs = keepFrom + i;
+          if (abs <= storedIndex) {
+            history = [];
+            firstKept = abs + 1;
+          } else {
+            keepTo = abs;
+            break;
+          }
+        }
         if (superseded()) return;
       }
       if (superseded()) return;
+      keepFrom = firstKept;
+      const historyRecords = allHistoryRecords.slice(keepFrom, keepTo);
       // The stored PNGs are what these layers were just decoded from, so a
       // layer still holding the same pixels at the next save can keep its blob.
       const layerBlobs = new Map(layers.map((layer, i) => {

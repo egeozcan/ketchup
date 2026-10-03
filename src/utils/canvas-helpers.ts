@@ -27,8 +27,60 @@ const RAW_MAGIC = [0x4b, 0x54, 0x43, 0x48]; // "KTCH"
 const RAW_VERSION = 1;
 const RAW_HEADER_BYTES = 16;
 
-function canCompress(): boolean {
-  return typeof CompressionStream !== 'undefined' && typeof DecompressionStream !== 'undefined';
+const MAX_RAW_DIMENSION = 32768;
+const MAX_RAW_PIXELS = 268435456; // 16384 x 16384, the app's largest canvas
+
+function canDecompress(): boolean {
+  return typeof DecompressionStream !== 'undefined' && typeof Blob !== 'undefined' &&
+    typeof Blob.prototype.stream === 'function';
+}
+
+function hasCompressionApis(): boolean {
+  return typeof CompressionStream !== 'undefined' && canDecompress();
+}
+
+let compressionTrusted: Promise<boolean> | null = null;
+
+/**
+ * One-time round trip of ~64 KB of lightly compressible data in a single
+ * chunk. Safari 16.4-16.5 truncates the output at flush when the final deflate
+ * chunk exceeds 16 KB (WebKit bug 254021), which would corrupt stored blobs.
+ */
+function canCompress(): Promise<boolean> {
+  if (!compressionTrusted) {
+    compressionTrusted = (async () => {
+      if (!hasCompressionApis()) return false;
+      try {
+        const n = 1 << 16;
+        const data = new Uint8Array(n);
+        let x = 12345;
+        for (let i = 0; i < n; i++) {
+          x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+          // Six bits of noise per byte, with runs so it still compresses a little.
+          data[i] = (i >> 5) & 1 ? data[i - 1] : (x >>> 24) & 0xfc;
+        }
+        const packed = await new Response(
+          new Blob([data]).stream().pipeThrough(new CompressionStream('deflate')),
+        ).blob();
+        const back = new Uint8Array(await new Response(
+          packed.stream().pipeThrough(new DecompressionStream('deflate')),
+        ).arrayBuffer());
+        if (back.length !== n) return false;
+        for (let i = 0; i < n; i++) if (back[i] !== data[i]) return false;
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+  }
+  return compressionTrusted;
+}
+
+function checkRawSize(width: number, height: number) {
+  if (!(width > 0 && height > 0) || width > MAX_RAW_DIMENSION || height > MAX_RAW_DIMENSION ||
+      width * height > MAX_RAW_PIXELS) {
+    throw new Error(`Stored pixel data has invalid dimensions ${width}x${height}`);
+  }
 }
 
 async function encodeRaw(imageData: ImageData): Promise<Blob> {
@@ -54,19 +106,25 @@ async function readRawHeader(blob: Blob): Promise<{ width: number; height: numbe
 }
 
 async function decodeRaw(blob: Blob, width: number, height: number): Promise<ImageData> {
-  if (typeof DecompressionStream === 'undefined') throw new Error('DecompressionStream is unavailable');
+  if (!canDecompress()) throw new Error('DecompressionStream is unavailable');
+  checkRawSize(width, height);
   const out = new Uint8ClampedArray(width * height * 4);
   const reader = blob.slice(RAW_HEADER_BYTES).stream()
     .pipeThrough(new DecompressionStream('deflate')).getReader();
   let off = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (off + value.length > out.length) throw new Error('Stored pixel data is larger than expected');
-    out.set(value, off);
-    off += value.length;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (off + value.length > out.length) throw new Error('Stored pixel data is larger than expected');
+      out.set(value, off);
+      off += value.length;
+    }
+    if (off !== out.length) throw new Error('Stored pixel data is truncated');
+  } catch (err) {
+    await reader.cancel().catch(() => undefined);
+    throw err;
   }
-  if (off !== out.length) throw new Error('Stored pixel data is truncated');
   return new ImageData(out, width, height);
 }
 
@@ -122,7 +180,7 @@ export async function blobToCanvas(
 
 /** Encode ImageData for storage: lossless raw+deflate where available, else PNG. */
 export async function imageDataToBlob(imageData: ImageData): Promise<Blob> {
-  if (canCompress()) return encodeRaw(imageData);
+  if (await canCompress()) return encodeRaw(imageData);
   const canvas = document.createElement('canvas');
   canvas.width = imageData.width;
   canvas.height = imageData.height;
