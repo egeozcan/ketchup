@@ -147,6 +147,26 @@ describe('one tab edits a project at a time', () => {
     expect(locks.held.has('ketchup-project:q')).toBe(true);
   });
 
+  it('opening the same project twice in a row ends holding it, not read-only', async () => {
+    const locks = fakeLocks();
+    const { app } = makeApp();
+    const first = (app as any)._enterProject(meta('q'), async () => {});
+    const second = (app as any)._enterProject(meta('q'), async () => {});
+    await Promise.all([first, second]);
+    await settle();
+    expect((app as any)._projectLock?.id).toBe('q');
+    expect(locks.held.has('ketchup-project:q')).toBe(true);
+    expect((app as any)._readOnly).toBe(false);
+  });
+
+  it('takes a project again right after letting it go', async () => {
+    fakeLocks();
+    const { app } = makeApp();
+    expect(await (app as any)._lockProject('p')).toBe(true);
+    (app as any)._releaseProjectLock();
+    expect(await (app as any)._lockProject('p')).toBe(true);
+  });
+
   it('holds only the project asked for last when requests overlap', async () => {
     const locks = fakeLocks();
     const { app } = makeApp();
@@ -540,6 +560,70 @@ describe('one tab edits a project at a time', () => {
     expect((app as any)._projectLock?.id).toBe(project.id);
     expect(write).not.toHaveBeenCalled();
     expect((app as any)._dirty).toBe(true);
+  });
+
+  it('a save from before the tab lost its project and took it back writes nothing', async () => {
+    const locks = fakeLocks();
+    const { app, backend, project } = await makeSavingApp();
+    let resume!: () => void;
+    const get = backend.state.get.bind(backend.state);
+    vi.spyOn(backend.state, 'get').mockImplementationOnce(async id => {
+      await new Promise<void>(r => { resume = r; });
+      return get(id);
+    });
+    const write = vi.spyOn(backend.state, 'save');
+    (app as any)._contentVersion++;
+    (app as any)._dirty = true;
+    const saving = (app as any)._save(true);
+    await settle();
+    const letGo = await stealElsewhere(locks, project.id);
+    letGo();
+    await settle();
+    expect(await (app as any)._lockProject(project.id)).toBe(true);
+    resume();
+    await saving;
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('a project opened while another waited for a save ends that wait, and a save come due then is made', async () => {
+    const locks = fakeLocks();
+    void locks.request('ketchup-save:p', {}, () => new Promise<void>(() => {}));
+    await settle();
+    const { app } = makeApp();
+    const schedule = vi.spyOn(app as any, '_scheduleSave').mockImplementation(() => {});
+    const enteringP = (app as any)._enterProject(meta('p'), async () => {});
+    await settle();
+    (app as any)._dirty = true;
+    await (app as any)._enterProject(meta('q'), async () => {});
+    await enteringP;
+    expect((app as any)._projectLoads).toBe(0);
+    expect((app as any)._currentProject.id).toBe('q');
+    expect(schedule).toHaveBeenCalled();
+  });
+
+  it('a failed load overtaken by opening another project leaves that project open', async () => {
+    fakeLocks();
+    const { app } = makeApp();
+    Object.defineProperty(app, 'updateComplete', { value: Promise.resolve(true) });
+    let created!: (m: unknown) => void;
+    const fresh = meta('fresh');
+    (app as any)._backend = {
+      state: { get: vi.fn(async () => { throw new Error('Blob not found'); }) },
+      projects: { create: vi.fn(() => new Promise(r => { created = r; })), list: vi.fn(async () => []) },
+    };
+    const deleteProject = vi.fn(async () => {});
+    (app as any)._projectService = { deleteProject };
+    const reset = vi.spyOn(app as any, '_resetToFreshProject').mockResolvedValue(undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const entering = (app as any)._enterProject(meta('broken'), () => (app as any)._loadProject('broken'));
+    await vi.waitFor(() => expect(created).toBeTypeOf('function'));
+    await (app as any)._enterProject(meta('q'), async () => {});
+    created(fresh);
+    await entering;
+    expect((app as any)._currentProject.id).toBe('q');
+    expect(reset).not.toHaveBeenCalled();
+    expect(deleteProject).toHaveBeenCalledWith('fresh');
+    expect((app as any)._projectLock?.id).toBe('q');
   });
 
   it('opens a project only once storage has reopened', async () => {

@@ -623,8 +623,11 @@ export class DrawingApp extends LitElement {
    */
   private async _enterProject(meta: StorageProjectMeta, load: () => Promise<void>) {
     const generation = ++this._enterGeneration;
-    // Another project was opened meanwhile: this one's load must not land.
+    // Another project was opened meanwhile: this one's load must not land,
+    // nor wait any longer for another tab's save.
     const superseded = () => generation !== this._enterGeneration;
+    this._enterAbort?.abort();
+    const abort = this._enterAbort = new AbortController();
     this._projectLoads++;
     this._keptElsewhere = false;
     this._stranded = false;
@@ -637,7 +640,7 @@ export class DrawingApp extends LitElement {
       if (!(await this._lockProject(meta.id))) this._readOnly = true;
       // A tab that had it (and didn't answer in time to hand it over) may
       // still be writing a save.
-      else await this._saveSettled(meta.id);
+      else await this._saveSettled(meta.id, abort.signal);
       if (superseded()) return;
       await load();
       if (superseded()) return;
@@ -650,6 +653,8 @@ export class DrawingApp extends LitElement {
     } finally {
       this._projectLoads--;
       if (!superseded()) this._opening = false;
+      // Saves wait for loads to end; one may have come due meanwhile.
+      if (this._projectLoads === 0 && this._dirty && !this._saveTimer && !this._savePromise) this._scheduleSave();
     }
     if (superseded()) return;
     // Another document is open, however it was reached (the host API, or the
@@ -687,6 +692,8 @@ export class DrawingApp extends LitElement {
   private _lockRequest = 0;
   /** Ends a lock request queued behind the tab holding the lock. */
   private _lockWait: AbortController | null = null;
+  /** Settles once the project lock this tab asked for last is held, or let go of as the browser sees it. */
+  private _lockAsked: Promise<unknown> = Promise.resolve();
   /** Tabs of the app asking each other to hand a project over. */
   private _tabs: BroadcastChannel | null = null;
   /** Saving to hand the project to the tab that asked for it. */
@@ -704,6 +711,8 @@ export class DrawingApp extends LitElement {
   @state() private _opening = false;
   /** Counts project openings: one that a later opening replaced does nothing more. */
   private _enterGeneration = 0;
+  /** Ends the latest opening's wait for another tab's save. */
+  private _enterAbort: AbortController | null = null;
   /** Taking the project up here: getting its lock, then loading it. */
   @state() private _claiming = false;
   /** The last save failed, so its work is only here. */
@@ -749,13 +758,20 @@ export class DrawingApp extends LitElement {
       options = { signal: this._lockWait.signal };
     }
     let held: { id: string; release: () => void } | null = null;
-    return new Promise<boolean>(resolve => {
-      void locks.request(`ketchup-project:${id}`, options, lock => {
-        // Not free, or another project was asked for since.
-        if (!lock || request !== this._lockRequest) {
-          resolve(false);
-          return undefined;
-        }
+    let asked: Promise<unknown> = Promise.resolve();
+    // Asked once this tab's previous request has let go of whatever it gave
+    // up (a grant not yet returned, a lock just released): asking for the
+    // same project before then would find this tab's own lock in the way.
+    const result = this._lockAsked.then(() => new Promise<boolean>(resolve => {
+      // Another project was asked for while this one waited its turn.
+      if (request !== this._lockRequest) {
+        resolve(false);
+        return;
+      }
+      asked = locks.request(`ketchup-project:${id}`, options, lock => {
+        // Not free, or another project was asked for since: settled below,
+        // once let go.
+        if (!lock || request !== this._lockRequest) return undefined;
         resolve(true);
         // Other tabs still waiting for it ask this one now.
         this._tabs?.postMessage({ type: 'taken', id });
@@ -764,7 +780,8 @@ export class DrawingApp extends LitElement {
           held = { id, release };
           this._projectLock = held;
         });
-      }).catch(() => {
+      });
+      asked.then(() => resolve(false), () => {
         // No longer waited for; or taken by another tab whose "Use here"
         // this one didn't answer: show it, don't save, but keep any work not
         // yet stored for the user to keep as a new project.
@@ -776,7 +793,9 @@ export class DrawingApp extends LitElement {
         this.canvas?.clearSelection({ keepCrop: true });
         this._stranded = this._hasUnsavedWork();
       });
-    });
+    }));
+    this._lockAsked = result.then(() => asked).catch(() => undefined);
+    return result;
   }
 
   /** Makes lock requests still pending moot: a grant is let go at once, a wait ends. */
@@ -793,14 +812,16 @@ export class DrawingApp extends LitElement {
   }
 
   /** Waits for a save of project `id` that another tab still has under way, shown and not editable meanwhile. */
-  private async _saveSettled(id: string) {
+  private async _saveSettled(id: string, signal: AbortSignal) {
     const locks = this._locks;
     if (!locks) return;
     const name = `ketchup-save:${id}`;
     if (await locks.request(name, { ifAvailable: true }, lock => !!lock)) return;
+    if (signal.aborted) return;
     this._readOnly = true;
     this._opening = true;
-    await locks.request(name, {}, () => undefined);
+    // Ended early by opening another project.
+    await locks.request(name, { signal }, () => undefined).catch(() => undefined);
   }
 
   private _listenToTabs() {
@@ -856,6 +877,9 @@ export class DrawingApp extends LitElement {
     this._claiming = true;
     if (takeOver) this._keptElsewhere = false;
     try {
+      // A save of this tab's from before it lost the project ends first
+      // (it can't write now).
+      if (this._savePromise) await this._savePromise;
       let got = await this._lockProject(meta.id);
       if (!got && takeOver && this._currentProject === meta) {
         this._waitingForTab = true;
@@ -1114,6 +1138,9 @@ export class DrawingApp extends LitElement {
           const historySnapshot = this.canvas?.getHistory() ?? [];
           const historyIndex = this.canvas?.getHistoryIndex() ?? -1;
           const trackingGeneration = this._trackingGeneration;
+          // The lock this snapshot was taken under: one lost and taken again
+          // since (the project reloaded) isn't it.
+          const lockAtSnapshot = this._projectLock;
           const historyPlan = this._planHistorySave(projectId, historySnapshot);
           const clearExistingHistory = historyPlan.rewrite;
 
@@ -1226,6 +1253,7 @@ export class DrawingApp extends LitElement {
           // dialog may not know yet that "Use here anyway" took it, and the
           // tab that took it may have loaded already.
           const wrote = await this._holdingSaveLock(projectId, async () => {
+            if (this._projectLock !== lockAtSnapshot || this._trackingGeneration !== trackingGeneration) return false;
             if (this._locks && !(await this._holdsProjectLock(projectId))) return false;
             // Save state + history atomically: if either fails, restore the
             // previous state record (so the project doesn't point at deleted
@@ -1760,12 +1788,17 @@ export class DrawingApp extends LitElement {
       // or, if not even that can be made, without saving.
       try {
         const meta = await this._backend!.projects.create({ name: 'Untitled', thumbnailRef: null });
+        if (superseded()) {
+          void this._projectService?.deleteProject(meta.id).catch(() => undefined);
+          return;
+        }
         this._currentProject = meta;
         this._projectList = await this._backend!.projects.list();
       } catch (createErr) {
         console.error('Could not start a new project:', createErr);
         this._unsavableProjectId = projectId;
       }
+      if (superseded()) return;
       await this._resetToFreshProject();
     }
   }
