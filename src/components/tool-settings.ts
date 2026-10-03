@@ -1,5 +1,6 @@
 import { LitElement, html, css, nothing, svg } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
+import { repeat } from 'lit/directives/repeat.js';
 import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import { storageBackendContext, projectServiceContext } from '../storage/storage-context.js';
@@ -1454,7 +1455,8 @@ export class ToolSettings extends LitElement {
 
   private _onDeleteProject(e: Event, id: string) {
     e.stopPropagation();
-    if (confirm('Delete this project? This cannot be undone.')) {
+    const name = this.ctx.projectList.find(p => p.id === id)?.name ?? 'this project';
+    if (confirm(`Delete \u201c${name}\u201d? This cannot be undone.`)) {
       this._closeDropdown();
       this.ctx.deleteProject(id);
     }
@@ -2070,7 +2072,7 @@ export class ToolSettings extends LitElement {
             </button>
             ${this._projectDropdownOpen ? html`
               <div class="project-dropdown">
-                ${this.ctx.projectList.map(p => html`
+                ${repeat(this.ctx.projectList, p => p.id, p => html`
                   <div class="project-item ${p.id === this.ctx.currentProject?.id ? 'active' : ''}">
                     ${this._renamingProjectId === p.id ? html`
                       <input

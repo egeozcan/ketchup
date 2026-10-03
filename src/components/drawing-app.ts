@@ -97,6 +97,7 @@ export class DrawingApp extends LitElement {
     /* The layout lives here too, so a host page's own display rule on the
        element (display: block is common) can't undo it. */
     .app {
+      position: relative;
       display: flex;
       flex-direction: column;
       flex: 1;
@@ -112,8 +113,9 @@ export class DrawingApp extends LitElement {
       position: relative;
     }
 
+    /* Inside the editor, so an embedded one doesn't cover its host page. */
     .save-banner {
-      position: fixed;
+      position: absolute;
       top: 8px;
       left: 50%;
       transform: translateX(-50%);
@@ -586,12 +588,21 @@ export class DrawingApp extends LitElement {
 
   /** Tries a failed save again after a pause that doubles up to a minute. */
   private _scheduleSaveRetry() {
-    if (this._saveRetryTimer || !this._autosave) return;
+    // A detached editor retries when it is back (connectedCallback).
+    if (this._saveRetryTimer || !this._autosave || !this.isConnected) return;
     const delay = this._saveRetryDelay;
     this._saveRetryDelay = Math.min(delay * 2, DrawingApp.SAVE_RETRY_MAX);
     this._saveRetryTimer = setTimeout(() => {
       this._saveRetryTimer = null;
-      if (!this._dirty) { this._clearSaveError(); return; }
+      const id = this._currentProject?.id;
+      // Saving isn't possible (lock lost, project gone or unsavable): the
+      // stranded/gone screens say so, and a retry would only return early.
+      if (!this._dirty || !id || !this._backend || id === this._unsavableProjectId || id === this._deletingProject
+          || this._projectGone || this._stranded || !this._ownsProject(id) || this._projectLock !== this._contentLock) {
+        this._clearSaveError();
+        return;
+      }
+      if (this._projectLoads > 0) { this._scheduleSaveRetry(); return; }
       if (!this._saveTimer && !this._savePromise) void this._save();
     }, delay);
   }
@@ -739,6 +750,7 @@ export class DrawingApp extends LitElement {
     this._keepError = '';
     this._overlayProjects = false;
     this._projectGone = false;
+    this._noCanvas = false;
     // A failure of the last project's saves isn't this one's.
     this._saveFailed = false;
     this._clearSaveError();
@@ -763,7 +775,10 @@ export class DrawingApp extends LitElement {
           // on in a blank document of the default size and report the failure.
           console.error('Could not make the document:', err);
           loadError = err;
-          if (!this.embedded) this._notice = "Couldn't make a canvas that large.";
+          if (!this.embedded) {
+            this._notice = err instanceof RangeError
+              ? "Couldn't make a canvas that large." : "Couldn't make the document.";
+          }
           try {
             await this._resetToFreshProject();
           } catch (freshErr) {
@@ -790,6 +805,7 @@ export class DrawingApp extends LitElement {
       this._contentLock = this._projectLock;
       // Editable once its own content is in, if still ours (another tab may
       // have asked for it meanwhile).
+      this._noCanvas = noCanvas;
       this._readOnly = noCanvas || !this._ownsProject(current.id);
     } finally {
       this._projectLoads--;
@@ -849,6 +865,12 @@ export class DrawingApp extends LitElement {
   private _forceTakeOver: (() => void) | null = null;
   /** Settles when the `_editHere` under way ends (so a wait it is in can be cancelled and awaited). */
   private _claimEnd: Promise<void> | null = null;
+  /** "Keep as new project" was chosen during the `_editHere` under way: it ends without loading. */
+  private _claimCancelled = false;
+  /** The `_editHere` under way is taking the lock from its holder (cancelling that would lose it for both tabs). */
+  private _stealing = false;
+  /** Not even a blank document could be made: the tab holds the lock but has no canvas content to edit. */
+  @state() private _noCanvas = false;
   /** The read-only overlay lists projects to open instead (phone layout). */
   @state() private _overlayProjects = false;
   /** Another tab took the project before this one stored its latest work, which is still here. */
@@ -878,6 +900,8 @@ export class DrawingApp extends LitElement {
    */
   private async _beginSwitch(request: number): Promise<boolean> {
     this._switching = true;
+    // What happened to the last project isn't news about the next.
+    this._notice = '';
     // A press still down would otherwise leave half a stroke for the save.
     this.canvas?.cancelGesture();
     // Commit any float so the save captures the layer with
@@ -885,7 +909,12 @@ export class DrawingApp extends LitElement {
     this.canvas?.clearSelection();
     if (this._savePromise || this._dirty) await this._flushPendingSaveAndWait();
     // Unsaved work would be lost by going on: ask first.
-    if (this._saveFailed && this._hasUnsavedWork() && request === this._switchRequest
+    // Work held on screen after a lost lock stays: its own screen offers to keep or drop it.
+    if (this._stranded) {
+      this._endSwitch(request);
+      return false;
+    }
+    if (this._hasUnsavedWork() && request === this._switchRequest
         && !confirm("Changes couldn't be saved — discard them?")) {
       this._endSwitch(request);
       return false;
@@ -1065,6 +1094,24 @@ export class DrawingApp extends LitElement {
     }
   }
 
+  private _lastSaveAnnounce = 0;
+  private _saveAnnounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * After a save, other tabs' project lists (thumbnail, order) are stale. Tell
+   * them at most once per 5 s, with a trailing announcement. Receiving a
+   * `projects` message only reloads the list; it never announces.
+   */
+  private _announceSavedThrottled() {
+    if (this.embedded || this._saveAnnounceTimer !== undefined) return;
+    const wait = Math.max(0, this._lastSaveAnnounce + 5000 - Date.now());
+    this._saveAnnounceTimer = setTimeout(() => {
+      this._saveAnnounceTimer = undefined;
+      this._lastSaveAnnounce = Date.now();
+      this._announceProjects();
+    }, wait);
+  }
+
   /** Tells other tabs that the list of projects changed. */
   private _announceProjects() {
     this._tabs?.postMessage({ type: 'projects' });
@@ -1151,18 +1198,29 @@ export class DrawingApp extends LitElement {
       if (this._dirty || this._savePromise) await this._flushPendingSaveAndWait();
       if (!held || this._projectLock !== held) return;
       if (this._dirty && this._saveFailed) {
-        this._readOnly = false;
+        this._readOnly = this._noCanvas;
         this._tabs?.postMessage({ type: 'kept', id });
         return;
       }
       // The tab that asked may have given up meanwhile: no one waiting, so
       // stay editable rather than leave the project to no one.
       if (!(await this._projectWanted(id))) {
-        if (this._projectLock === held) this._readOnly = false;
+        if (this._projectLock === held) this._readOnly = this._noCanvas;
         return;
       }
       if (this._projectLock !== held) return;
+      // Only content loaded under this very lock, with no load or stranded
+      // state since, may be made writable again below.
+      const contentIsHeld = this._contentLock === held && this._projectLoads === 0 && !this._stranded;
       this._releaseProjectLock();
+      // The tab that asked is first in line; if it gave up since the check,
+      // nobody holds the project, so this tab takes it back (saved: nothing
+      // to reload) unless it has moved on meanwhile.
+      if (contentIsHeld && !this._projectLock && this._readOnly && this._currentProject?.id === id && !this._claiming
+        && await this._lockProject(id) && this._currentProject?.id === id) {
+        this._contentLock = this._projectLock;
+        this._readOnly = this._noCanvas;
+      }
     } finally {
       this._handingOver = false;
     }
@@ -1183,6 +1241,8 @@ export class DrawingApp extends LitElement {
       return;
     }
     this._claiming = true;
+    this._claimCancelled = false;
+    this._stealing = false;
     let claimEnd!: () => void;
     this._claimEnd = new Promise<void>(resolve => { claimEnd = resolve; });
     if (takeOver) this._keptElsewhere = false;
@@ -1208,7 +1268,9 @@ export class DrawingApp extends LitElement {
       } else {
         this._waitingForTab = false;
       }
-      if (!got) return;
+      // Keep was chosen meanwhile: a lock got stays (Keep moves it to the copy),
+      // and nothing is reloaded over the work Keep is saving.
+      if (!got || this._claimCancelled) return;
       // Opened as it is now (renamed meanwhile, say). Another project opened
       // meanwhile has its own lock; one got for this project but not loaded
       // under is let go.
@@ -1219,6 +1281,7 @@ export class DrawingApp extends LitElement {
       }
       await this._enterProject(current, () => this._loadProject(current.id), true);
     } finally {
+      this._stealing = false;
       this._claiming = false;
       claimEnd();
     }
@@ -1234,7 +1297,10 @@ export class DrawingApp extends LitElement {
    */
   private _takeOver(id: string): Promise<boolean> {
     const tabs = this._tabs;
-    if (!tabs) return this._lockProject(id, 'steal');
+    if (!tabs) {
+      this._stealing = true;
+      return this._lockProject(id, 'steal');
+    }
     return new Promise<boolean>(resolve => {
       let stealing = false;
       let released = false;
@@ -1285,6 +1351,7 @@ export class DrawingApp extends LitElement {
         this._otherTabSilent = true;
         this._forceTakeOver = () => {
           stealing = true;
+          this._stealing = true;
           answered();
           void this._lockProject(id, 'steal').then(done);
         };
@@ -1301,11 +1368,18 @@ export class DrawingApp extends LitElement {
   private async _keepAsNewProject() {
     const from = this._currentProject;
     // Waiting for the other tab ("Use here without them"): that ends first.
-    if (this._waitingForTab && this._claimEnd) {
-      this._cancelLockRequests();
+    if (this._claiming && this._claimEnd) {
+      // Not while it is taking the lock: letting go of that grant would cost
+      // the other tab its lock without this one getting it.
+      this._claimCancelled = true;
+      if (!this._stealing) this._cancelLockRequests();
       await this._claimEnd;
     }
-    if (!from || !this._backend || this._claiming || !this._stranded) return;
+    if (!from || !this._backend || this._claiming || !this._stranded) {
+      // A lock the cancelled claim got isn't needed.
+      if (from && this._readOnly && this._projectLock?.id === from.id) this._releaseProjectLock();
+      return;
+    }
     this._claiming = true;
     this._keeping = true;
     try {
@@ -1375,6 +1449,8 @@ export class DrawingApp extends LitElement {
     } finally {
       this._claiming = false;
       this._keeping = false;
+      // A save refused while this ran isn't scheduled by anything else.
+      if (this._dirty && this._autosave && !this._stranded) this._scheduleSave();
     }
   }
 
@@ -1429,6 +1505,7 @@ export class DrawingApp extends LitElement {
     if (!this._backend || savingId === this._unsavableProjectId || savingId === this._deletingProject || this._projectGone || !this._ownsProject(savingId)
       || this._projectLock !== this._contentLock) return;
 
+    const enterGeneration = this._enterGeneration;
     this._savePromise = (async () => {
       this._saveInProgress = true;
       this._saveFailed = false;
@@ -1789,6 +1866,7 @@ export class DrawingApp extends LitElement {
           // Best-effort: the content is stored by now, so a failed listing
           // mustn't read as a failed save.
           await this._backend!.projects.list().then(list => { this._projectList = list; }).catch(() => undefined);
+          this._announceSavedThrottled();
 
           // Keep saves at least this far apart (and the indicator, when shown,
           // up long enough not to flash), but skip the delay when flushing
@@ -1820,10 +1898,13 @@ export class DrawingApp extends LitElement {
           flushingThisRun = false;
         }
       } catch (err) {
-        this._saveFailed = true;
-        this._lastSaveError = err;
-        this._saveError = true;
-        this._scheduleSaveRetry();
+        // A project since replaced is no news about this one.
+        if (this._currentProject?.id === savingId && this._enterGeneration === enterGeneration) {
+          this._saveFailed = true;
+          this._lastSaveError = err;
+          this._saveError = true;
+          this._scheduleSaveRetry();
+        }
         if (err instanceof StorageQuotaError) {
           console.error('Storage quota exceeded. Consider deleting old projects to free space.');
         } else {
@@ -2059,10 +2140,16 @@ export class DrawingApp extends LitElement {
 
   private async _resetToFreshProject(width = 800, height = 600, background: string | null = '#ffffff') {
     this.canvas?.clearSelection();
-    this._layerCounter = 0;
     const w = width;
     const h = height;
+    const prevCounter = this._layerCounter;
+    this._layerCounter = 0;
     const layer = this._createLayer(w, h);
+    // A canvas the browser can't back fails here, before the state changes.
+    if (!layer.canvas.getContext('2d')) {
+      this._layerCounter = prevCounter;
+      throw new RangeError(`This browser cannot make a ${w}\u00d7${h} canvas`);
+    }
     this._state = {
       activeTool: 'pencil',
       strokeColor: '#000000',
@@ -2167,13 +2254,31 @@ export class DrawingApp extends LitElement {
         if (bytes > budget) break;
         keepTo++;
       }
-      const historyRecords = allHistoryRecords.slice(keepFrom, keepTo);
-      const history: HistoryEntry[] = [];
-      for (const r of historyRecords) {
-        history.push(await deserializeHistoryEntry(r.entry, blobs));
+      const candidates = allHistoryRecords.slice(keepFrom, keepTo);
+      let history: HistoryEntry[] = [];
+      let firstKept = keepFrom;
+      for (let i = 0; i < candidates.length; i++) {
+        try {
+          history.push(await deserializeHistoryEntry(candidates[i].entry, blobs));
+        } catch (err) {
+          if (superseded()) return;
+          // An undecodable entry costs the history, not the project: drop it
+          // and everything older (or, for a redo entry, it and what follows).
+          console.error('Dropping undecodable history entry:', err);
+          const abs = keepFrom + i;
+          if (abs <= storedIndex) {
+            history = [];
+            firstKept = abs + 1;
+          } else {
+            keepTo = abs;
+            break;
+          }
+        }
         if (superseded()) return;
       }
       if (superseded()) return;
+      keepFrom = firstKept;
+      const historyRecords = allHistoryRecords.slice(keepFrom, keepTo);
       // The stored PNGs are what these layers were just decoded from, so a
       // layer still holding the same pixels at the next save can keep its blob.
       const layerBlobs = new Map(layers.map((layer, i) => {
@@ -2656,7 +2761,13 @@ export class DrawingApp extends LitElement {
           if (!(await this._beginSwitch(request))) return;
           const meta = await this._backend!.projects.create({ name, thumbnailRef: null });
           this._announceProjects();
-          if (request !== this._switchRequest) return;
+          if (request !== this._switchRequest) {
+            // Never opened, so nothing is in it: don't leave an empty project behind.
+            await this._projectService!.deleteProject(meta.id).catch(() => {});
+            this._announceProjects();
+            this._projectList = await this._backend!.projects.list();
+            return;
+          }
           await this._enterProject(meta, async () => {
             this._projectList = await this._backend!.projects.list();
             await this._resetToFreshProject(width, height);
@@ -2747,6 +2858,8 @@ export class DrawingApp extends LitElement {
   override willUpdate() {
     this._provider.setValue(this._buildContextValue());
     this.toggleAttribute('mobile', this._isMobile);
+    // The overlay's project list belongs to one showing of the overlay.
+    if (this._overlayProjects && !this._readOnly) this._overlayProjects = false;
   }
 
   private _onHistoryChange(e: CustomEvent) {
@@ -2957,6 +3070,16 @@ export class DrawingApp extends LitElement {
     width = Math.round(width);
     height = Math.round(height);
     checkDocumentSize(width, height);
+    // Refuse before anything is touched when the browser can't back a canvas
+    // this size, so the current document and project stay as they are.
+    {
+      const probe = document.createElement('canvas');
+      probe.width = width;
+      probe.height = height;
+      const fits = !!probe.getContext('2d');
+      probe.width = probe.height = 0;
+      if (!fits) throw new RangeError(`This browser cannot make a ${width}×${height} canvas`);
+    }
     this.canvas?.cancelCrop();
     this.canvas?.clearSelection();
     if (this._savePromise || this._dirty) {
@@ -2968,14 +3091,32 @@ export class DrawingApp extends LitElement {
     // Recent stamps are the user's, not the document's; they follow along
     // before the previous project, and its stamps, are discarded.
     if (this.embedded && previous) await this._carryStamps(previous.id, meta.id);
-    await this._enterProject(meta, async () => {
-      await this._resetToFreshProject(width, height, background);
-      // Painted while the load holds autosave off, so no save sees the blank layer.
-      if (paint) {
-        paint(this._state.layers[0]);
-        this.canvas?.composite();
+    try {
+      await this._enterProject(meta, async () => {
+        await this._resetToFreshProject(width, height, background);
+        // Painted while the load holds autosave off, so no save sees the blank layer.
+        if (paint) {
+          paint(this._state.layers[0]);
+          this.canvas?.composite();
+        }
+      });
+    } catch (err) {
+      // The editor holds a blank stand-in for the document that failed: go
+      // back to the previous project and drop the one made for this.
+      if (previous) {
+        try {
+          await this._enterProject(previous, () => this._loadProject(previous.id), true);
+        } catch (backErr) {
+          console.error('Could not return to the previous document:', backErr);
+        }
+        if (this._currentProject?.id !== meta.id) {
+          await this._projectService!.deleteProject(meta.id).catch(() => {});
+          this._announceProjects();
+        }
       }
-    });
+      this._projectList = await this._backend!.projects.list().catch(() => this._projectList);
+      throw err;
+    }
     if (this.embedded && previous) {
       // The new document is already on screen; failing to free the old one
       // only costs memory, and must not fail the replacement.
@@ -3165,6 +3306,8 @@ export class DrawingApp extends LitElement {
     if (!this.embedded) this._strayKeysOurs = true;
     this._initStorage();
     // Back after a while away (a cached view, say): reopen what leaving closed.
+    // A failing save's retry stopped while out of the document: resume.
+    if (this._saveError && this._dirty) this._scheduleSaveRetry();
     if (this._backendClosed && this._backend) {
       this._backendClosed = false;
       const reopen = this._backend.init()
@@ -3272,12 +3415,17 @@ export class DrawingApp extends LitElement {
       const meta = await this._backend!.projects.create({ name: 'Untitled', thumbnailRef: null });
       this._projectList = [meta];
       this._announceProjects();
-      await this._enterProject(meta, async () => {
-        // The first render may have measured a pre-mobile layout; fit to the real one.
-        await this.updateComplete;
-        await this.canvas?.updateComplete;
-        this.canvas?.resetView();
-      });
+      try {
+        await this._enterProject(meta, async () => {
+          // The first render may have measured a pre-mobile layout; fit to the real one.
+          await this.updateComplete;
+          await this.canvas?.updateComplete;
+          this.canvas?.resetView();
+        });
+      } catch (err) {
+        // The editor already carries on in a blank document: not a reason to fail the app.
+        console.error('Could not start the first project cleanly:', err);
+      }
       this._markDirty();
     }
   }
@@ -3378,6 +3526,20 @@ export class DrawingApp extends LitElement {
   /** A file dropped on the read-only overlay isn't opened by the browser in place of the app. */
   private _ignoreDrop = (e: DragEvent) => e.preventDefault();
 
+  /** The read-only overlay's way to open another project (phone layout). */
+  private _renderOverlayProjects() {
+    return html`
+      <button @click=${() => { this._overlayProjects = !this._overlayProjects; }}>Open another project</button>
+      ${this._overlayProjects ? html`
+        <div class="read-only-actions">
+          ${this._projectList.filter(p => p.id !== this._currentProject?.id).map(p => html`
+            <button @click=${() => { this._overlayProjects = false; this._buildContextValue().switchProject(p.id); }}>${p.name}</button>
+          `)}
+        </div>
+      ` : ''}
+    `;
+  }
+
   /** The read-only overlay's "Use here" (as `label`), and what follows a press. */
   private _renderClaim(label: string) {
     if (this._waitingForTab) {
@@ -3402,7 +3564,7 @@ export class DrawingApp extends LitElement {
     }
     return html`<div class="app">
       ${this._saveError ? html`<div class="save-banner" role="alert">Couldn't save your work${this._lastSaveError instanceof StorageQuotaError ? ': storage is full' : ''}. Trying again…</div>` : ''}
-      ${!this._isMobile ? html`<tool-settings ?inert=${this._stranded || this._switching}></tool-settings>` : ''}
+      ${!this._isMobile ? html`<tool-settings ?inert=${this._stranded || (this._switching && !this._opening)}></tool-settings>` : ''}
       <div class="main-area">
         ${this._readOnly || this._switching ? html`
           <div class="read-only" role="alert" @dragover=${this._ignoreDrop} @drop=${this._ignoreDrop}>
@@ -3426,21 +3588,15 @@ export class DrawingApp extends LitElement {
                   ${this._renderClaim('Use here without them')}
                 </div>
               `}
+            ` : this._noCanvas ? html`
+              <p>Couldn't make a document to edit. Open another project, or reload to try again.</p>
+              ${this._isMobile ? this._renderOverlayProjects() : ''}
             ` : this._handingOver ? html`<p>Saving, for the tab that asked to edit this project…</p>` : html`
               <p>This project is open in another tab. Changes made there are saved; this tab only shows it.</p>
               ${this._keptElsewhere
                 ? html`<p>That tab couldn't save its changes, so it keeps the project for now.</p>` : ''}
               ${this._renderClaim('Use here')}
-              ${this._isMobile && !this._waitingForTab && !this._claiming ? html`
-                <button @click=${() => { this._overlayProjects = !this._overlayProjects; }}>Open another project</button>
-                ${this._overlayProjects ? html`
-                  <div class="read-only-actions">
-                    ${this._projectList.filter(p => p.id !== this._currentProject?.id).map(p => html`
-                      <button @click=${() => { this._overlayProjects = false; this._buildContextValue().switchProject(p.id); }}>${p.name}</button>
-                    `)}
-                  </div>
-                ` : ''}
-              ` : ''}
+              ${this._isMobile && !this._waitingForTab && !this._claiming ? this._renderOverlayProjects() : ''}
             `}
           </div>
         ` : ''}
