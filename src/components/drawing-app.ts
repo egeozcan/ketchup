@@ -97,6 +97,7 @@ export class DrawingApp extends LitElement {
     /* The layout lives here too, so a host page's own display rule on the
        element (display: block is common) can't undo it. */
     .app {
+      position: relative;
       display: flex;
       flex-direction: column;
       flex: 1;
@@ -112,8 +113,9 @@ export class DrawingApp extends LitElement {
       position: relative;
     }
 
+    /* Inside the editor, so an embedded one doesn't cover its host page. */
     .save-banner {
-      position: fixed;
+      position: absolute;
       top: 8px;
       left: 50%;
       transform: translateX(-50%);
@@ -586,12 +588,21 @@ export class DrawingApp extends LitElement {
 
   /** Tries a failed save again after a pause that doubles up to a minute. */
   private _scheduleSaveRetry() {
-    if (this._saveRetryTimer || !this._autosave) return;
+    // A detached editor retries when it is back (connectedCallback).
+    if (this._saveRetryTimer || !this._autosave || !this.isConnected) return;
     const delay = this._saveRetryDelay;
     this._saveRetryDelay = Math.min(delay * 2, DrawingApp.SAVE_RETRY_MAX);
     this._saveRetryTimer = setTimeout(() => {
       this._saveRetryTimer = null;
-      if (!this._dirty) { this._clearSaveError(); return; }
+      const id = this._currentProject?.id;
+      // Saving isn't possible (lock lost, project gone or unsavable): the
+      // stranded/gone screens say so, and a retry would only return early.
+      if (!this._dirty || !id || !this._backend || id === this._unsavableProjectId || id === this._deletingProject
+          || this._projectGone || this._stranded || !this._ownsProject(id) || this._projectLock !== this._contentLock) {
+        this._clearSaveError();
+        return;
+      }
+      if (this._projectLoads > 0) { this._scheduleSaveRetry(); return; }
       if (!this._saveTimer && !this._savePromise) void this._save();
     }, delay);
   }
@@ -854,6 +865,10 @@ export class DrawingApp extends LitElement {
   private _forceTakeOver: (() => void) | null = null;
   /** Settles when the `_editHere` under way ends (so a wait it is in can be cancelled and awaited). */
   private _claimEnd: Promise<void> | null = null;
+  /** "Keep as new project" was chosen during the `_editHere` under way: it ends without loading. */
+  private _claimCancelled = false;
+  /** The `_editHere` under way is taking the lock from its holder (cancelling that would lose it for both tabs). */
+  private _stealing = false;
   /** Not even a blank document could be made: the tab holds the lock but has no canvas content to edit. */
   @state() private _noCanvas = false;
   /** The read-only overlay lists projects to open instead (phone layout). */
@@ -894,7 +909,12 @@ export class DrawingApp extends LitElement {
     this.canvas?.clearSelection();
     if (this._savePromise || this._dirty) await this._flushPendingSaveAndWait();
     // Unsaved work would be lost by going on: ask first.
-    if (this._saveFailed && this._hasUnsavedWork() && request === this._switchRequest
+    // Work held on screen after a lost lock stays: its own screen offers to keep or drop it.
+    if (this._stranded) {
+      this._endSwitch(request);
+      return false;
+    }
+    if (this._hasUnsavedWork() && request === this._switchRequest
         && !confirm("Changes couldn't be saved — discard them?")) {
       this._endSwitch(request);
       return false;
@@ -1172,6 +1192,14 @@ export class DrawingApp extends LitElement {
       }
       if (this._projectLock !== held) return;
       this._releaseProjectLock();
+      // The tab that asked is first in line; if it gave up since the check,
+      // nobody holds the project, so this tab takes it back (saved: nothing
+      // to reload) unless it has moved on meanwhile.
+      if (!this._projectLock && this._readOnly && this._currentProject?.id === id && !this._claiming
+        && await this._lockProject(id) && this._currentProject?.id === id) {
+        this._contentLock = this._projectLock;
+        this._readOnly = this._noCanvas;
+      }
     } finally {
       this._handingOver = false;
     }
@@ -1192,6 +1220,8 @@ export class DrawingApp extends LitElement {
       return;
     }
     this._claiming = true;
+    this._claimCancelled = false;
+    this._stealing = false;
     let claimEnd!: () => void;
     this._claimEnd = new Promise<void>(resolve => { claimEnd = resolve; });
     if (takeOver) this._keptElsewhere = false;
@@ -1217,7 +1247,9 @@ export class DrawingApp extends LitElement {
       } else {
         this._waitingForTab = false;
       }
-      if (!got) return;
+      // Keep was chosen meanwhile: a lock got stays (Keep moves it to the copy),
+      // and nothing is reloaded over the work Keep is saving.
+      if (!got || this._claimCancelled) return;
       // Opened as it is now (renamed meanwhile, say). Another project opened
       // meanwhile has its own lock; one got for this project but not loaded
       // under is let go.
@@ -1228,6 +1260,7 @@ export class DrawingApp extends LitElement {
       }
       await this._enterProject(current, () => this._loadProject(current.id), true);
     } finally {
+      this._stealing = false;
       this._claiming = false;
       claimEnd();
     }
@@ -1243,7 +1276,10 @@ export class DrawingApp extends LitElement {
    */
   private _takeOver(id: string): Promise<boolean> {
     const tabs = this._tabs;
-    if (!tabs) return this._lockProject(id, 'steal');
+    if (!tabs) {
+      this._stealing = true;
+      return this._lockProject(id, 'steal');
+    }
     return new Promise<boolean>(resolve => {
       let stealing = false;
       let released = false;
@@ -1294,6 +1330,7 @@ export class DrawingApp extends LitElement {
         this._otherTabSilent = true;
         this._forceTakeOver = () => {
           stealing = true;
+          this._stealing = true;
           answered();
           void this._lockProject(id, 'steal').then(done);
         };
@@ -1310,11 +1347,18 @@ export class DrawingApp extends LitElement {
   private async _keepAsNewProject() {
     const from = this._currentProject;
     // Waiting for the other tab ("Use here without them"): that ends first.
-    if (this._waitingForTab && this._claimEnd) {
-      this._cancelLockRequests();
+    if (this._claiming && this._claimEnd) {
+      // Not while it is taking the lock: letting go of that grant would cost
+      // the other tab its lock without this one getting it.
+      this._claimCancelled = true;
+      if (!this._stealing) this._cancelLockRequests();
       await this._claimEnd;
     }
-    if (!from || !this._backend || this._claiming || !this._stranded) return;
+    if (!from || !this._backend || this._claiming || !this._stranded) {
+      // A lock the cancelled claim got isn't needed.
+      if (from && this._readOnly && this._projectLock?.id === from.id) this._releaseProjectLock();
+      return;
+    }
     this._claiming = true;
     this._keeping = true;
     try {
@@ -1384,6 +1428,8 @@ export class DrawingApp extends LitElement {
     } finally {
       this._claiming = false;
       this._keeping = false;
+      // A save refused while this ran isn't scheduled by anything else.
+      if (this._dirty && this._autosave && !this._stranded) this._scheduleSave();
     }
   }
 
@@ -1438,6 +1484,7 @@ export class DrawingApp extends LitElement {
     if (!this._backend || savingId === this._unsavableProjectId || savingId === this._deletingProject || this._projectGone || !this._ownsProject(savingId)
       || this._projectLock !== this._contentLock) return;
 
+    const enterGeneration = this._enterGeneration;
     this._savePromise = (async () => {
       this._saveInProgress = true;
       this._saveFailed = false;
@@ -1829,10 +1876,13 @@ export class DrawingApp extends LitElement {
           flushingThisRun = false;
         }
       } catch (err) {
-        this._saveFailed = true;
-        this._lastSaveError = err;
-        this._saveError = true;
-        this._scheduleSaveRetry();
+        // A project since replaced is no news about this one.
+        if (this._currentProject?.id === savingId && this._enterGeneration === enterGeneration) {
+          this._saveFailed = true;
+          this._lastSaveError = err;
+          this._saveError = true;
+          this._scheduleSaveRetry();
+        }
         if (err instanceof StorageQuotaError) {
           console.error('Storage quota exceeded. Consider deleting old projects to free space.');
         } else {
@@ -3202,6 +3252,8 @@ export class DrawingApp extends LitElement {
     if (!this.embedded) this._strayKeysOurs = true;
     this._initStorage();
     // Back after a while away (a cached view, say): reopen what leaving closed.
+    // A failing save's retry stopped while out of the document: resume.
+    if (this._saveError && this._dirty) this._scheduleSaveRetry();
     if (this._backendClosed && this._backend) {
       this._backendClosed = false;
       const reopen = this._backend.init()
