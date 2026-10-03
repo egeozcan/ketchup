@@ -1094,6 +1094,24 @@ export class DrawingApp extends LitElement {
     }
   }
 
+  private _lastSaveAnnounce = 0;
+  private _saveAnnounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * After a save, other tabs' project lists (thumbnail, order) are stale. Tell
+   * them at most once per 5 s, with a trailing announcement. Receiving a
+   * `projects` message only reloads the list; it never announces.
+   */
+  private _announceSavedThrottled() {
+    if (this.embedded || this._saveAnnounceTimer !== undefined) return;
+    const wait = Math.max(0, this._lastSaveAnnounce + 5000 - Date.now());
+    this._saveAnnounceTimer = setTimeout(() => {
+      this._saveAnnounceTimer = undefined;
+      this._lastSaveAnnounce = Date.now();
+      this._announceProjects();
+    }, wait);
+  }
+
   /** Tells other tabs that the list of projects changed. */
   private _announceProjects() {
     this._tabs?.postMessage({ type: 'projects' });
@@ -1848,6 +1866,7 @@ export class DrawingApp extends LitElement {
           // Best-effort: the content is stored by now, so a failed listing
           // mustn't read as a failed save.
           await this._backend!.projects.list().then(list => { this._projectList = list; }).catch(() => undefined);
+          this._announceSavedThrottled();
 
           // Keep saves at least this far apart (and the indicator, when shown,
           // up long enough not to flash), but skip the delay when flushing
@@ -2121,12 +2140,16 @@ export class DrawingApp extends LitElement {
 
   private async _resetToFreshProject(width = 800, height = 600, background: string | null = '#ffffff') {
     this.canvas?.clearSelection();
-    this._layerCounter = 0;
     const w = width;
     const h = height;
+    const prevCounter = this._layerCounter;
+    this._layerCounter = 0;
     const layer = this._createLayer(w, h);
     // A canvas the browser can't back fails here, before the state changes.
-    if (!layer.canvas.getContext('2d')) throw new RangeError(`This browser cannot make a ${w}\u00d7${h} canvas`);
+    if (!layer.canvas.getContext('2d')) {
+      this._layerCounter = prevCounter;
+      throw new RangeError(`This browser cannot make a ${w}\u00d7${h} canvas`);
+    }
     this._state = {
       activeTool: 'pencil',
       strokeColor: '#000000',
@@ -3029,6 +3052,16 @@ export class DrawingApp extends LitElement {
     width = Math.round(width);
     height = Math.round(height);
     checkDocumentSize(width, height);
+    // Refuse before anything is touched when the browser can't back a canvas
+    // this size, so the current document and project stay as they are.
+    {
+      const probe = document.createElement('canvas');
+      probe.width = width;
+      probe.height = height;
+      const fits = !!probe.getContext('2d');
+      probe.width = probe.height = 0;
+      if (!fits) throw new RangeError(`This browser cannot make a ${width}×${height} canvas`);
+    }
     this.canvas?.cancelCrop();
     this.canvas?.clearSelection();
     if (this._savePromise || this._dirty) {
