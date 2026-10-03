@@ -19,6 +19,7 @@ import { TransformManager } from '../transform/transform-manager.js';
 import { HANDLE_CONFIG_TOUCH } from '../transform/transform-types.js';
 import { detectContentBounds } from '../transform/transform-math.js';
 import { diffBounds, cropImageData, type PixelRect } from '../utils/image-diff.js';
+import { historyEntryBytes, historyByteBudget } from '../utils/history-size.js';
 import { focusEditor } from '../utils/focus-editor.js';
 import './resize-dialog.js';
 import type { ResizeDialog } from './resize-dialog.js';
@@ -889,10 +890,43 @@ export class DrawingCanvas extends LitElement {
   public getHistory(): HistoryEntry[] { return [...this._history]; }
   public getHistoryIndex(): number { return this._historyIndex; }
   public getHistoryTrimmedCount(): number { return this._historyTrimmed; }
+
+  /**
+   * Per-layer pixel revisions, for persistence: a layer whose revision is the
+   * one it had when it was stored still holds the stored pixels, so a save
+   * needn't read it back. Bumped when history records a pixel change to the
+   * layer, on undo and redo of one, and for every layer on structural changes
+   * (add, delete, crop, merge) and whenever a document is opened. Pixels that
+   * are only lifted into a float don't count; callers treat the float's layer
+   * as changed.
+   */
+  private _layerRevisions = new Map<string, number>();
+  private _revisionEpoch = 0;
+  public getLayerRevision(layerId: string): string {
+    return `${this._revisionEpoch}:${this._layerRevisions.get(layerId) ?? 0}`;
+  }
+  private _bumpLayerRevisions(entry: HistoryEntry) {
+    switch (entry.type) {
+      case 'draw':
+      case 'patch':
+      case 'transform':
+        this._layerRevisions.set(entry.layerId, (this._layerRevisions.get(entry.layerId) ?? 0) + 1);
+        break;
+      case 'visibility':
+      case 'opacity':
+      case 'rename':
+      case 'blend-mode':
+      case 'reorder':
+        break;
+      default:
+        this._revisionEpoch++;
+    }
+  }
   public setHistory(entries: HistoryEntry[], index: number) {
     // A document was opened or started: a drop still asking how to fit the
     // old one is dropped.
     this._documentGeneration++;
+    this._revisionEpoch++;
     this._resizeDialog?.dismiss();
     this._history = entries;
     this._historyIndex = Math.max(-1, Math.min(index, entries.length - 1));
@@ -1020,11 +1054,16 @@ export class DrawingCanvas extends LitElement {
   private _pushHistoryEntry(entry: HistoryEntry) {
     this._history = this._history.slice(0, this._historyIndex + 1);
     this._history.push(entry);
-    if (this._history.length > this._maxHistory) {
-      this._history.shift();
+    this._bumpLayerRevisions(entry);
+    this._historyIndex = this._history.length - 1;
+    // Drop the oldest entries past the count cap or the pixel-memory budget,
+    // always keeping the newest so the last change can be undone.
+    let bytes = this._history.reduce((n, e) => n + historyEntryBytes(e), 0);
+    const budget = historyByteBudget();
+    while (this._history.length > 1 && (this._history.length > this._maxHistory || bytes > budget)) {
+      bytes -= historyEntryBytes(this._history.shift()!);
+      this._historyIndex--;
       this._historyTrimmed++;
-    } else {
-      this._historyIndex++;
     }
     this._notifyHistory();
   }
@@ -1122,15 +1161,18 @@ export class DrawingCanvas extends LitElement {
       this._pushDrawHistory();
       this.composite();
     }
-    // Discard the active transform first — this counts as its own undo step.
+    // A live float is committed and that step undone, so nothing is lost for
+    // good: Redo puts it back. (A float that changed nothing just ends.)
     if (this._transformManager) {
-      this.cancelTransform();
-      return;
+      const before = this._history;
+      this.commitTransform();
+      if (this._history === before) return;
     }
     if (this._historyIndex < 0) return;
     const entry = this._history[this._historyIndex];
     this._historyIndex--;
     this._applyUndo(entry);
+    this._bumpLayerRevisions(entry);
     // A crop rectangle drawn on the other size of document no longer fits it.
     if (entry.type === 'crop' && this._cropRect) this.cancelCrop();
     this.composite();
@@ -1171,6 +1213,7 @@ export class DrawingCanvas extends LitElement {
     this._historyIndex++;
     const entry = this._history[this._historyIndex];
     this._applyRedo(entry);
+    this._bumpLayerRevisions(entry);
     if (entry.type === 'crop' && this._cropRect) this.cancelCrop();
     this.composite();
     this._notifyHistory();
