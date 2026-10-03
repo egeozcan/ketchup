@@ -1191,11 +1191,14 @@ export class DrawingApp extends LitElement {
         return;
       }
       if (this._projectLock !== held) return;
+      // Only content loaded under this very lock, with no load or stranded
+      // state since, may be made writable again below.
+      const contentIsHeld = this._contentLock === held && this._projectLoads === 0 && !this._stranded;
       this._releaseProjectLock();
       // The tab that asked is first in line; if it gave up since the check,
       // nobody holds the project, so this tab takes it back (saved: nothing
       // to reload) unless it has moved on meanwhile.
-      if (!this._projectLock && this._readOnly && this._currentProject?.id === id && !this._claiming
+      if (contentIsHeld && !this._projectLock && this._readOnly && this._currentProject?.id === id && !this._claiming
         && await this._lockProject(id) && this._currentProject?.id === id) {
         this._contentLock = this._projectLock;
         this._readOnly = this._noCanvas;
