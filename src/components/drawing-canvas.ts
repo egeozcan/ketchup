@@ -211,13 +211,13 @@ export class DrawingCanvas extends LitElement {
   private _lastPointerScreenY = 0;
   private _pointerOnCanvas = false;
 
+  /** When and where ✓/✗ last ended a float, to ignore the second press of a double-click. */
+  private _floatButtonEnd: { time: number; x: number; y: number } | null = null;
   /**
    * A touch on a tool that acts on a tap (stamp, fill, eyedropper, a new text
    * box), held until the finger lifts: a second finger first makes it a
    * pinch, which must leave nothing behind.
    */
-  /** When and where ✓/✗ last ended a float, to ignore the second press of a double-click. */
-  private _floatButtonEnd: { time: number; x: number; y: number } | null = null;
   private _pendingTap: { pointerId: number; down: PointerEvent } | null = null;
   /** The held tap is being carried out now, after its finger lifted. */
   private _replayingTap = false;
@@ -3347,7 +3347,6 @@ export class DrawingCanvas extends LitElement {
     this.composite();
   }
 
-  /** Cancel the active crop, clearing the overlay. */
   /**
    * Ends every gesture under way (a stroke, a drag, a pinch) as a cancelled
    * one, so what it started is undone and nothing is left half done for a
@@ -3361,6 +3360,7 @@ export class DrawingCanvas extends LitElement {
     this._pinching = false;
   }
 
+  /** Cancel the active crop, clearing the overlay. */
   public cancelCrop() {
     if (!this._cropRect) return;
     this._cropRect = null;

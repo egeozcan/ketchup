@@ -721,18 +721,23 @@ export class DrawingApp extends LitElement {
   /**
    * Make `meta` the current project and run `load` to bring its content in.
    * No save runs until the load finishes, since until then the canvas still
-   * holds the previous project. Once loaded, it reads as unmodified.
+   * holds the previous project. Once loaded, it reads as unmodified. `stored`
+   * says `load` brings in what storage holds (`_loadProject`): if that fails
+   * the project is never saved over. A fresh document's failure is rethrown.
    */
-  private async _enterProject(meta: StorageProjectMeta, load: () => Promise<void>) {
+  private async _enterProject(meta: StorageProjectMeta, load: () => Promise<void>, stored = false) {
     const generation = ++this._enterGeneration;
     // Another project was opened meanwhile: this one's load must not land,
     // nor wait any longer for another tab's save.
     const superseded = () => generation !== this._enterGeneration;
     this._enterAbort?.abort();
     const abort = this._enterAbort = new AbortController();
+    let loadError: unknown = null;
     this._projectLoads++;
     this._keptElsewhere = false;
     this._stranded = false;
+    this._keepError = '';
+    this._overlayProjects = false;
     this._projectGone = false;
     // A failure of the last project's saves isn't this one's.
     this._saveFailed = false;
@@ -753,6 +758,19 @@ export class DrawingApp extends LitElement {
         await load();
       } catch (err) {
         if (superseded()) return;
+        if (!stored) {
+          // Nothing of this project is stored, so nothing is at risk: carry
+          // on in a blank document of the default size and report the failure.
+          console.error('Could not make the document:', err);
+          loadError = err;
+          if (!this.embedded) this._notice = "Couldn't make a canvas that large.";
+          try {
+            await this._resetToFreshProject();
+          } catch (freshErr) {
+            console.error('Could not start a blank document:', freshErr);
+            noCanvas = true;
+          }
+        } else {
         // Whatever is on the canvas isn't this project's: it is never saved
         // over it. A fresh canvas carries on (unsaved), or none at all.
         console.error('Failed to open the project:', err);
@@ -762,6 +780,7 @@ export class DrawingApp extends LitElement {
         } catch (freshErr) {
           console.error('Could not start a blank document:', freshErr);
           noCanvas = true;
+        }
         }
       }
       if (superseded()) return;
@@ -774,7 +793,7 @@ export class DrawingApp extends LitElement {
       this._readOnly = noCanvas || !this._ownsProject(current.id);
     } finally {
       this._projectLoads--;
-      if (!superseded()) { this._opening = false; this._switching = false; }
+      if (!superseded()) this._opening = false;
       // Saves wait for loads to end; one may have come due meanwhile.
       if (this._projectLoads === 0 && this._dirty && !this._saveTimer && !this._savePromise) this._scheduleSave();
     }
@@ -784,6 +803,7 @@ export class DrawingApp extends LitElement {
     // the previous one no longer apply.
     this._markSaved();
     this._rememberTabProject();
+    if (loadError) throw loadError;
   }
 
   /** The project this tab had open before a reload (standalone). */
@@ -864,6 +884,12 @@ export class DrawingApp extends LitElement {
     // the float content (no hole from a pending selection lift).
     this.canvas?.clearSelection();
     if (this._savePromise || this._dirty) await this._flushPendingSaveAndWait();
+    // Unsaved work would be lost by going on: ask first.
+    if (this._saveFailed && this._hasUnsavedWork() && request === this._switchRequest
+        && !confirm("Changes couldn't be saved — discard them?")) {
+      this._endSwitch(request);
+      return false;
+    }
     return request === this._switchRequest;
   }
 
@@ -1096,7 +1122,7 @@ export class DrawingApp extends LitElement {
     this._notice = `"${gone}" was deleted in another tab.`;
     if (list.length > 0) {
       const next = list[0];
-      await this._enterProject(next, () => this._loadProject(next.id));
+      await this._enterProject(next, () => this._loadProject(next.id), true);
     } else {
       const meta = await backend.projects.create({ name: 'Untitled', thumbnailRef: null });
       this._projectList = [meta];
@@ -1191,7 +1217,7 @@ export class DrawingApp extends LitElement {
         if (this._ownsProject(meta.id)) this._releaseProjectLock();
         return;
       }
-      await this._enterProject(current, () => this._loadProject(current.id));
+      await this._enterProject(current, () => this._loadProject(current.id), true);
     } finally {
       this._claiming = false;
       claimEnd();
@@ -1236,6 +1262,7 @@ export class DrawingApp extends LitElement {
         else if (e.data.type === 'taken') { if (!stealing) this._cancelLockRequests(); }
         // Ends the wait below.
         else if (e.data.type === 'kept') {
+          if (stealing) return;
           this._keptElsewhere = true;
           this._cancelLockRequests();
         }
@@ -1297,6 +1324,10 @@ export class DrawingApp extends LitElement {
         this._contentLock = null;
         this._clearSaveError();
         this._saveFailed = false;
+        // The work is only on screen again: stranded, and not stored anywhere.
+        this._stranded = true;
+        this._storedContentVersion = -1;
+        this._dirty = true;
         this._trackedProjectId = null;
         this._trackingGeneration++;
         this._rememberTabProject();
@@ -1325,7 +1356,9 @@ export class DrawingApp extends LitElement {
       this._keepError = '';
       this._markDirty();
       await this._flushPendingSaveAndWait();
-      if (this._saveFailed || this._dirty) {
+      // Judged by whether the content is stored, not by how the save ended
+      // (a failure after the writes still left the copy holding the work).
+      if (this._hasUnsavedWork()) {
         this._keepError = this._lastSaveError instanceof StorageQuotaError
           ? 'Storage is full, so the copy could not be saved.'
           : 'The copy could not be saved.';
@@ -1334,6 +1367,7 @@ export class DrawingApp extends LitElement {
       }
       this._stranded = false;
       this._readOnly = false;
+      this._overlayProjects = false;
       this._rememberTabProject();
       this._announceProjects();
     } catch (err) {
@@ -1752,7 +1786,9 @@ export class DrawingApp extends LitElement {
           }
           this._clearSaveError();
 
-          this._projectList = await this._backend!.projects.list();
+          // Best-effort: the content is stored by now, so a failed listing
+          // mustn't read as a failed save.
+          await this._backend!.projects.list().then(list => { this._projectList = list; }).catch(() => undefined);
 
           // Keep saves at least this far apart (and the indicator, when shown,
           // up long enough not to flash), but skip the delay when flushing
@@ -2608,7 +2644,7 @@ export class DrawingApp extends LitElement {
           if (!(await this._beginSwitch(request))) return;
           const meta = this._projectList.find(p => p.id === id);
           if (!meta) return;
-          await this._enterProject(meta, () => this._loadProject(id));
+          await this._enterProject(meta, () => this._loadProject(id), true);
         };
         doSwitch()
           .catch(err => console.error('Switch project failed:', err))
@@ -2657,7 +2693,7 @@ export class DrawingApp extends LitElement {
             if (id === this._currentProject?.id) {
               if (this._projectList.length > 0) {
                 const next = this._projectList[0];
-                await this._enterProject(next, () => this._loadProject(next.id));
+                await this._enterProject(next, () => this._loadProject(next.id), true);
               } else {
                 const meta = await this._backend!.projects.create({ name: 'Untitled', thumbnailRef: null });
                 this._projectList = [meta];
@@ -3231,7 +3267,7 @@ export class DrawingApp extends LitElement {
       // the one saved last); a new tab opens the one saved last.
       const own = this.embedded ? null : this._readTabProject();
       const first = this._projectList.find(p => p.id === own) ?? this._projectList[0];
-      await this._enterProject(first, () => this._loadProject(first.id));
+      await this._enterProject(first, () => this._loadProject(first.id), true);
     } else {
       const meta = await this._backend!.projects.create({ name: 'Untitled', thumbnailRef: null });
       this._projectList = [meta];
