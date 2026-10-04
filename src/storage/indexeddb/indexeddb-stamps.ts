@@ -1,19 +1,20 @@
 // src/storage/indexeddb/indexeddb-stamps.ts
 import type { BlobRef, BlobStore, StampEntry, StampStore } from '../types.js';
-import { mapDOMException, txAbortError, txRequestError } from './error-utils.js';
+import { mapDOMException, txAbortError, txRequestError, openTx, type Connection } from './error-utils.js';
 import { generateUUID } from './migration.js';
 
 const STAMPS_STORE = 'project-stamps';
 
 export class IndexedDBStampStore implements StampStore {
   constructor(
-    private _db: IDBDatabase,
+    private _connection: Connection,
     private _blobs: BlobStore,
   ) {}
 
   async list(projectId: string): Promise<StampEntry[]> {
+    const db = await this._connection();
     return new Promise((resolve, reject) => {
-      const tx = this._db.transaction(STAMPS_STORE, 'readonly');
+      const tx = openTx(db, STAMPS_STORE, 'readonly');
       const index = tx.objectStore(STAMPS_STORE).index('projectId');
       const entries: StampEntry[] = [];
       const req = index.openCursor(IDBKeyRange.only(projectId));
@@ -40,8 +41,9 @@ export class IndexedDBStampStore implements StampStore {
       blobRef,
       createdAt,
     };
+    const db = await this._connection();
     await new Promise<void>((resolve, reject) => {
-      const tx = this._db.transaction(STAMPS_STORE, 'readwrite');
+      const tx = openTx(db, STAMPS_STORE, 'readwrite');
       tx.objectStore(STAMPS_STORE).add(entry);
       tx.oncomplete = () => resolve();
       tx.onerror = e => reject(txRequestError(e, tx));
@@ -52,8 +54,9 @@ export class IndexedDBStampStore implements StampStore {
 
   async delete(id: string): Promise<void> {
     // Read the stamp first to get the blobRef for cleanup
+    const readDb = await this._connection();
     const blobRef = await new Promise<BlobRef | null>((resolve, reject) => {
-      const tx = this._db.transaction(STAMPS_STORE, 'readonly');
+      const tx = openTx(readDb, STAMPS_STORE, 'readonly');
       const req = tx.objectStore(STAMPS_STORE).get(id);
       req.onsuccess = () => {
         const entry = req.result as StampEntry | undefined;
@@ -64,8 +67,9 @@ export class IndexedDBStampStore implements StampStore {
     });
 
     // Delete the stamp record
+    const db = await this._connection();
     await new Promise<void>((resolve, reject) => {
-      const tx = this._db.transaction(STAMPS_STORE, 'readwrite');
+      const tx = openTx(db, STAMPS_STORE, 'readwrite');
       tx.objectStore(STAMPS_STORE).delete(id);
       tx.oncomplete = () => resolve();
       tx.onerror = e => reject(txRequestError(e, tx));
@@ -81,8 +85,9 @@ export class IndexedDBStampStore implements StampStore {
   async deleteForProject(projectId: string): Promise<void> {
     // Collect blob refs and delete records in a single cursor pass
     const blobRefs: BlobRef[] = [];
+    const db = await this._connection();
     await new Promise<void>((resolve, reject) => {
-      const tx = this._db.transaction(STAMPS_STORE, 'readwrite');
+      const tx = openTx(db, STAMPS_STORE, 'readwrite');
       const index = tx.objectStore(STAMPS_STORE).index('projectId');
       const req = index.openCursor(IDBKeyRange.only(projectId));
       req.onsuccess = () => {

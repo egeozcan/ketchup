@@ -150,20 +150,35 @@ export class DrawingApp extends LitElement {
       text-align: center;
     }
 
-    .notice {
+    .notices {
       position: absolute;
       left: 50%;
       bottom: 16px;
       transform: translateX(-50%);
       z-index: 60;
       display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      width: max-content;
+      max-width: calc(100% - 32px);
+    }
+
+    .notice {
+      display: flex;
       align-items: center;
       gap: 10px;
-      max-width: calc(100% - 32px);
       padding: 8px 12px;
       border-radius: 6px;
       background: rgba(30, 30, 30, 0.92);
       color: #eee;
+      font-size: 13px;
+    }
+
+    .notice .notice-action {
+      padding: 4px 10px;
+      border-radius: 4px;
+      background: #4a90d9;
       font-size: 13px;
     }
 
@@ -286,6 +301,16 @@ export class DrawingApp extends LitElement {
   @state() private _storageState: 'loading' | 'ready' | 'error' = 'loading';
   /** Opening storage waits on another window still on an older build. */
   @state() private _storageBlocked = false;
+  /** Another window (a newer build) is upgrading storage: this one stores its work and steps aside. */
+  @state() private _updateRequired = false;
+  /** ...and has closed it: nothing is saved here any more, only a reload edits again. */
+  @state() private _storageClosed = false;
+  /** A newer build of the app is ready (`updateReady`): offered as a reload. */
+  @state() private _updateReady = false;
+  /** The offer was dismissed (the reload while hidden still happens). */
+  @state() private _updateNoticeDismissed = false;
+  /** Reloads the page (replaced in tests). */
+  private _reload = () => location.reload();
   @state() private _storageError?: string;
   @state() private _backend?: StorageBackend;
   /** True when we created the backend ourselves (not caller-supplied). Only dispose what we own. */
@@ -490,6 +515,11 @@ export class DrawingApp extends LitElement {
       e.preventDefault();
       return;
     }
+    // Storage closed for an upgrade before the work could be stored.
+    if (this._storageClosed) {
+      if (this._hasUnsavedWork()) e.preventDefault();
+      return;
+    }
     // Shown read-only, another tab has the work (one handing it over still saves).
     if (!this._ownsProject(this._currentProject?.id ?? '')) return;
     // Commit any active float so the layer canvas includes the selection content.
@@ -530,6 +560,8 @@ export class DrawingApp extends LitElement {
       if (this._dirty) {
         this._flushPendingSave();
       }
+      // An update waiting: a good moment to reload into it.
+      if (this._updateReady || this._storageClosed) void this._reloadWhileHidden();
     }
   };
 
@@ -608,7 +640,7 @@ export class DrawingApp extends LitElement {
 
   /** Whether this tab may save the project now (backend open, not stranded/gone/deleting, lock held for its content). */
   private _canSaveProject(id: string): boolean {
-    return !!this._backend && id !== this._unsavableProjectId && id !== this._deletingProject
+    return !!this._backend && !this._storageClosed && id !== this._unsavableProjectId && id !== this._deletingProject
       && !this._projectGone && this._ownsProject(id)
       && this._projectLock === this._contentLock;
   }
@@ -1253,9 +1285,16 @@ export class DrawingApp extends LitElement {
       this._releaseProjectLock();
       // The tab that asked is first in line; if it gave up since the check,
       // nobody holds the project, so this tab takes it back (saved: nothing
-      // to reload) unless it has moved on meanwhile.
+      // to reload) unless it has moved on meanwhile, or left the page (where
+      // it would hold the project for no one; a return reloads it).
       if (contentIsHeld && !this._projectLock && this._readOnly && this._currentProject?.id === id && !this._claiming
+        && !this._detached && !this._updateRequired
         && await this._lockProject(id) && this._currentProject?.id === id) {
+        // Left the page while the lock was asked for.
+        if (this._detached) {
+          this._releaseProjectLock();
+          return;
+        }
         this._contentLock = this._projectLock;
         this._readOnly = this._noCanvas;
       }
@@ -1275,7 +1314,7 @@ export class DrawingApp extends LitElement {
    */
   private async _editHere(takeOver: boolean) {
     const meta = this._currentProject;
-    if (!meta || !this._readOnly || this._projectLock || this._claiming) return;
+    if (!meta || !this._readOnly || this._projectLock || this._claiming || this._updateRequired) return;
     // Work kept from a take-over goes only by the user's choice (and work
     // not stored is kept, not reloaded away).
     if (!takeOver && (this._stranded || this._hasUnsavedWork())) {
@@ -1313,6 +1352,12 @@ export class DrawingApp extends LitElement {
       // Keep was chosen meanwhile: a lock got stays (Keep moves it to the copy),
       // and nothing is reloaded over the work Keep is saving.
       if (!got || this._claimCancelled) return;
+      // Taken out of the page during the wait (its storage may be closed):
+      // let go, and a return edits it again (`connectedCallback`).
+      if (this._detached || this._updateRequired) {
+        if (this._ownsProject(meta.id)) this._releaseProjectLock();
+        return;
+      }
       // Opened as it is now (renamed meanwhile, say). Another project opened
       // meanwhile has its own lock; one got for this project but not loaded
       // under is let go.
@@ -2013,8 +2058,9 @@ export class DrawingApp extends LitElement {
           flushingThisRun = false;
         }
       } catch (err) {
-        // A project since replaced is no news about this one.
-        if (this._currentProject?.id === savingId && this._enterGeneration === enterGeneration) {
+        // A project since replaced is no news about this one; storage closed
+        // for an upgrade can't be retried (its overlay says so).
+        if (this._currentProject?.id === savingId && this._enterGeneration === enterGeneration && !this._storageClosed) {
           this._saveFailed = true;
           this._lastSaveError = err;
           this._saveError = true;
@@ -2995,6 +3041,9 @@ export class DrawingApp extends LitElement {
   }
 
   override willUpdate() {
+    // Nothing edits again here after storage was upgraded elsewhere (a load
+    // or hand-over under way may have made the tab editable since).
+    if (this._updateRequired && !this._readOnly) this._readOnly = true;
     this._provider.setValue(this._buildContextValue());
     this.toggleAttribute('mobile', this._isMobile);
     // The overlay's project list belongs to one showing of the overlay.
@@ -3471,6 +3520,7 @@ export class DrawingApp extends LitElement {
 
   override connectedCallback() {
     super.connectedCallback();
+    this._detached = false;
     // Standalone, the page is the editor: keys typed before any click are its.
     if (!this.embedded) this._strayKeysOurs = true;
     this._initStorage();
@@ -3543,7 +3593,10 @@ export class DrawingApp extends LitElement {
   private async _doInitStorage() {
     try {
       const callerSupplied = !!this.storageBackend;
-      const backend = this.storageBackend ?? (this.embedded ? new MemoryBackend() : new IndexedDBBackend({ onBlocked: (b) => { this._storageBlocked = b; } }));
+      const backend = this.storageBackend ?? (this.embedded ? new MemoryBackend() : new IndexedDBBackend({
+        onBlocked: (b) => { this._storageBlocked = b; },
+        onVersionChange: () => this._onStorageVersionChange(),
+      }));
       await backend.init();
       this._backend = backend;
       this._ownsBackend = !callerSupplied;
@@ -3601,6 +3654,7 @@ export class DrawingApp extends LitElement {
 
   override disconnectedCallback() {
     super.disconnectedCallback();
+    this._detached = true;
     // Work in progress goes onto its layer while the canvas can still put it
     // there (it lets go of a float, a text box and a stroke as it leaves), and
     // in time for the save below. A crop being set up stays for a return.
@@ -3667,6 +3721,8 @@ export class DrawingApp extends LitElement {
     this._readOnly = true;
   }
 
+  /** Taken out of the document (and not back yet). */
+  private _detached = false;
   /** Whether leaving the document closed our backend, which a return reopens. */
   private _backendClosed = false;
   private _backendReopen: Promise<void> | null = null;
@@ -3690,6 +3746,81 @@ export class DrawingApp extends LitElement {
     }
     if (backend === this._backend) this._backendClosed = true;
     void backend.dispose();
+  }
+
+  /**
+   * Another window (a newer build) wants to upgrade storage. Stops edits here,
+   * stores what is under way, then (once this resolves the backend closes
+   * the database) saves nothing more and lets go of the project, so the
+   * upgrade goes ahead and that window can edit it. Only a reload, into the
+   * newer build, edits here again.
+   */
+  private async _onStorageVersionChange() {
+    if (this._updateRequired) return;
+    this._updateRequired = true;
+    this._readOnly = true;
+    // Work in progress onto its layer, for the save below.
+    this.canvas?.clearSelection({ keepCrop: true });
+    this.canvas?.flushViewportChange?.();
+    try {
+      if (this._dirty || this._savePromise) await this._flushPendingSaveAndWait();
+      await this._savesDone();
+    } finally {
+      this._storageClosed = true;
+      this._clearSaveError();
+      if (this._saveTimer) {
+        clearTimeout(this._saveTimer);
+        this._saveTimer = null;
+      }
+      this._releaseProjectLock();
+      if (document.hidden) this._reloadIfIdle();
+    }
+  }
+
+  /**
+   * A newer build of the app has taken over this page's service worker (the
+   * standalone app's entry calls this). Reloads into it while the page is
+   * hidden with nothing to lose (now, or the next time it is hidden);
+   * meanwhile offers a reload.
+   */
+  updateReady() {
+    if (this.embedded) return;
+    this._updateReady = true;
+    if (document.hidden) void this._reloadWhileHidden();
+  }
+
+  private get _showUpdateNotice() {
+    return this._updateReady && !this._updateNoticeDismissed && !this._updateRequired;
+  }
+
+  /** Settles once no save of this tab's is under way. */
+  private async _savesDone() {
+    while (this._savePromise) await this._savePromise.catch(() => undefined);
+  }
+
+  /** The page was hidden with an update waiting: stores what is pending, then reloads if still hidden and idle. */
+  private async _reloadWhileHidden() {
+    if (!this._storageClosed && this._dirty) await this._flushPendingSaveAndWait();
+    await this._savesDone();
+    if (document.hidden) this._reloadIfIdle();
+  }
+
+  /** Reloads for an update if nothing would be lost or cut short by it. */
+  private _reloadIfIdle() {
+    if (!this._updateReady && !this._storageClosed) return;
+    if (this._hasUnsavedWork() || this._savePromise || this._stranded || this._claiming || this._keeping
+      || this._handingOver || this._projectLoads > 0 || (this._dirty && !this._storageClosed)) return;
+    this._reload();
+  }
+
+  /** The update banner's and overlay's Reload: stores what it can first. */
+  private async _reloadForUpdate() {
+    this.canvas?.clearSelection({ keepCrop: true });
+    this.canvas?.flushViewportChange?.();
+    if (!this._storageClosed && this._dirty) await this._flushPendingSaveAndWait();
+    await this._savesDone();
+    // Work that couldn't be stored: the browser asks first (beforeunload).
+    this._reload();
   }
 
   /** A file dropped on the read-only overlay isn't opened by the browser in place of the app. */
@@ -3733,11 +3864,19 @@ export class DrawingApp extends LitElement {
     }
     return html`<div class="app">
       ${this._saveError ? html`<div class="save-banner" role="alert">Couldn't save your work${this._lastSaveError instanceof StorageQuotaError ? ': storage is full' : ''}. Trying again…</div>` : ''}
-      ${!this._isMobile ? html`<tool-settings ?inert=${this._stranded || (this._switching && !this._opening)}></tool-settings>` : ''}
+      ${!this._isMobile ? html`<tool-settings ?inert=${this._stranded || this._updateRequired || (this._switching && !this._opening)}></tool-settings>` : ''}
       <div class="main-area">
         ${this._readOnly || this._switching ? html`
           <div class="read-only" role="alert" @dragover=${this._ignoreDrop} @drop=${this._ignoreDrop}>
-            ${this._opening || this._switching ? html`
+            ${this._updateRequired ? html`
+              ${this._storageClosed ? html`
+                <p>Ketchup was updated in another window. Reload this one to keep editing.</p>
+                ${this._hasUnsavedWork() ? html`<p class="save-error">Changes made here since the last save couldn't be stored.</p>` : ''}
+                <div class="read-only-actions">
+                  <button @click=${() => { void this._reloadForUpdate(); }}>Reload</button>
+                </div>
+              ` : html`<p>Ketchup was updated in another window. Saving your changes…</p>`}
+            ` : this._opening || this._switching ? html`
               <p>Opening the project…</p>
               ${this._opening && this._isMobile ? this._renderOverlayProjects() : ''}
             ` : this._projectGone ? html`
@@ -3773,10 +3912,21 @@ export class DrawingApp extends LitElement {
             `}
           </div>
         ` : ''}
-        ${this._notice ? html`
-          <div class="notice" role="status">
-            <span>${this._notice}</span>
-            <button aria-label="Dismiss" @click=${() => { this._notice = ''; }}>×</button>
+        ${this._notice || this._showUpdateNotice ? html`
+          <div class="notices">
+            ${this._showUpdateNotice ? html`
+              <div class="notice" role="status">
+                <span>A new version of Ketchup is ready.</span>
+                <button class="notice-action" @click=${() => { void this._reloadForUpdate(); }}>Reload</button>
+                <button aria-label="Dismiss" @click=${() => { this._updateNoticeDismissed = true; }}>×</button>
+              </div>
+            ` : ''}
+            ${this._notice ? html`
+              <div class="notice" role="status">
+                <span>${this._notice}</span>
+                <button aria-label="Dismiss" @click=${() => { this._notice = ''; }}>×</button>
+              </div>
+            ` : ''}
           </div>
         ` : ''}
         <app-toolbar ?inert=${this._readOnly || this._switching}></app-toolbar>

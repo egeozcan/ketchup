@@ -1,6 +1,6 @@
 // src/storage/indexeddb/indexeddb-backend.ts
 import type { StorageBackend, BlobStore, ProjectStore, ProjectStateStore, ProjectHistoryStore, StampStore } from '../types.js';
-import { StorageError } from '../errors.js';
+import { StorageError, StorageClosedError } from '../errors.js';
 import { IndexedDBBlobStore } from './indexeddb-blobs.js';
 import { IndexedDBProjectStore } from './indexeddb-projects.js';
 import { IndexedDBStateStore } from './indexeddb-state.js';
@@ -13,7 +13,17 @@ export interface IndexedDBBackendOptions {
   version?: number;
   /** Called with true while opening waits on another connection, false once it proceeds or fails. */
   onBlocked?: (blocked: boolean) => void;
+  /**
+   * Called when another window wants to upgrade the database (a newer build).
+   * The connection stays open until what it returns settles (at most
+   * `VERSION_CHANGE_WAIT`), so work under way can be stored, then closes;
+   * calls after that fail with a `StorageClosedError` whose `versionChange` is set.
+   */
+  onVersionChange?: () => Promise<void> | void;
 }
+
+/** How long a version change waits for `onVersionChange` before closing anyway. */
+const VERSION_CHANGE_WAIT = 10000;
 
 const DEFAULT_DB_NAME = 'ketchup-projects';
 // v5 is a format gate, with no schema change from v4: layer and history blobs
@@ -58,23 +68,98 @@ export class IndexedDBBackend implements StorageBackend {
   private _dbName: string;
   private _version: number;
   private _onBlocked?: (blocked: boolean) => void;
+  private _onVersionChange?: () => Promise<void> | void;
+  /** The open under way (`init`), which calls made meanwhile wait for. */
+  private _opening: Promise<IDBDatabase> | null = null;
+  /** Closed for another window's upgrade: only a reload opens it again. */
+  private _versionChanged = false;
 
   constructor(opts?: IndexedDBBackendOptions) {
     this._dbName = opts?.dbName ?? DEFAULT_DB_NAME;
     this._version = opts?.version ?? DEFAULT_VERSION;
     this._onBlocked = opts?.onBlocked;
+    this._onVersionChange = opts?.onVersionChange;
+  }
+
+  /**
+   * How the stores reach the database for each call: the open one, the one
+   * being reopened (an editor back in the page), or a typed error once closed.
+   */
+  private _connection = (): Promise<IDBDatabase> => {
+    if (this._db) return Promise.resolve(this._db);
+    if (this._opening) return this._opening;
+    return Promise.reject(this._closedError());
+  };
+
+  private _closedError() {
+    return this._versionChanged
+      ? new StorageClosedError('Storage was upgraded by another window; reload to use it', true)
+      : new StorageClosedError('Storage is closed');
   }
 
   async init(): Promise<void> {
     // Reopened (an editor back in the document): one connection, not two.
     this._db?.close();
     this._db = null;
+    // This build may not read what the newer one that upgraded it writes.
+    if (this._versionChanged) throw this._closedError();
+    const opening = this._open();
+    this._opening = opening;
+    try {
+      this._db = await opening;
+    } finally {
+      if (this._opening === opening) this._opening = null;
+    }
+    const db = this._db;
+
+    // Let a later upgrade (a newer build in another tab) go ahead, once work
+    // under way here is stored (`onVersionChange`).
+    db.onversionchange = () => {
+      let closed = false;
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        db.close();
+        if (this._db === db) {
+          this._db = null;
+          this._versionChanged = true;
+        }
+      };
+      let wait: Promise<void> | void = undefined;
+      try {
+        wait = this._onVersionChange?.();
+      } catch (e) {
+        console.error('onVersionChange failed:', e);
+      }
+      if (!wait) {
+        close();
+        return;
+      }
+      const timer = setTimeout(close, VERSION_CHANGE_WAIT);
+      void Promise.resolve(wait)
+        .catch(e => console.error('onVersionChange failed:', e))
+        .then(() => { clearTimeout(timer); close(); });
+    };
+
+    // Wired once: they reach the database through `_connection`, so stores
+    // held across a close and a reopen keep working.
+    if (!this._blobs) {
+      const blobs = new IndexedDBBlobStore(this._connection);
+      this._blobs = blobs;
+      this._projects = new IndexedDBProjectStore(this._connection);
+      this._state = new IndexedDBStateStore(this._connection);
+      this._history = new IndexedDBHistoryStore(this._connection);
+      this._stamps = new IndexedDBStampStore(this._connection, blobs);
+    }
+  }
+
+  private _open(): Promise<IDBDatabase> {
     // One-time cleanup of legacy stamps database
     const legacyReq = indexedDB.deleteDatabase('ketchup-stamps');
     legacyReq.onerror = () => {};
     legacyReq.onblocked = () => {};
 
-    this._db = await new Promise<IDBDatabase>((resolve, reject) => {
+    return new Promise<IDBDatabase>((resolve, reject) => {
       const req = indexedDB.open(this._dbName, this._version);
       req.onupgradeneeded = (event) => {
         const db = req.result;
@@ -107,7 +192,8 @@ export class IndexedDBBackend implements StorageBackend {
         }
       };
       // Another tab still on an older build (holding v4 open, not closing on
-      // versionchange) delays the upgrade until it goes away.
+      // versionchange) delays the upgrade until it goes away; one on this
+      // build or later, until it has stored its work (`onVersionChange`).
       req.onblocked = () => {
         console.warn('Storage upgrade is waiting for another tab to close');
         this._onBlocked?.(true);
@@ -115,21 +201,6 @@ export class IndexedDBBackend implements StorageBackend {
       req.onsuccess = () => { this._onBlocked?.(false); resolve(req.result); };
       req.onerror = () => { this._onBlocked?.(false); reject(req.error); };
     });
-
-    // Let a later upgrade (a newer build in another tab) go ahead.
-    const db = this._db;
-    db.onversionchange = () => {
-      db.close();
-      if (this._db === db) this._db = null;
-    };
-
-    // Wire sub-stores
-    const blobs = new IndexedDBBlobStore(db);
-    this._blobs = blobs;
-    this._projects = new IndexedDBProjectStore(db);
-    this._state = new IndexedDBStateStore(db);
-    this._history = new IndexedDBHistoryStore(db);
-    this._stamps = new IndexedDBStampStore(db, blobs);
   }
 
   async dispose(): Promise<void> {

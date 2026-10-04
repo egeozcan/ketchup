@@ -26,3 +26,15 @@ export class StorageConflictError extends StorageError {
 export class StorageNotSupportedError extends StorageError {
   override name = 'StorageNotSupportedError';
 }
+
+/**
+ * Storage isn't open: the editor closed it (it left the page), or another
+ * window is upgrading the database to a newer version (`versionChange`), which
+ * only a reload of this window can use.
+ */
+export class StorageClosedError extends StorageError {
+  override name = 'StorageClosedError';
+  constructor(message: string, public readonly versionChange = false, cause?: unknown) {
+    super(message, cause);
+  }
+}

@@ -1,15 +1,16 @@
 // src/storage/indexeddb/indexeddb-history.ts
 import type { ProjectHistoryRecord, ProjectHistoryStore } from '../types.js';
-import { mapDOMException, txAbortError, txRequestError } from './error-utils.js';
+import { mapDOMException, txAbortError, txRequestError, openTx, type Connection } from './error-utils.js';
 
 const HISTORY_STORE = 'project-history';
 
 export class IndexedDBHistoryStore implements ProjectHistoryStore {
-  constructor(private _db: IDBDatabase) {}
+  constructor(private _connection: Connection) {}
 
   async getEntries(projectId: string): Promise<ProjectHistoryRecord[]> {
+    const db = await this._connection();
     return new Promise((resolve, reject) => {
-      const tx = this._db.transaction(HISTORY_STORE, 'readonly');
+      const tx = openTx(db, HISTORY_STORE, 'readonly');
       const index = tx.objectStore(HISTORY_STORE).index('projectId');
       const entries: ProjectHistoryRecord[] = [];
       const req = index.openCursor(IDBKeyRange.only(projectId));
@@ -30,8 +31,9 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
 
   async putEntries(projectId: string, entries: ProjectHistoryRecord[]): Promise<void> {
     if (entries.length === 0) return;
+    const db = await this._connection();
     await new Promise<void>((resolve, reject) => {
-      const tx = this._db.transaction(HISTORY_STORE, 'readwrite');
+      const tx = openTx(db, HISTORY_STORE, 'readwrite');
       const store = tx.objectStore(HISTORY_STORE);
       for (const entry of entries) {
         // Strip the auto-increment `id` to avoid ConstraintError on re-insert
@@ -45,8 +47,9 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
   }
 
   async replaceAll(projectId: string, entries: ProjectHistoryRecord[]): Promise<void> {
+    const db = await this._connection();
     await new Promise<void>((resolve, reject) => {
-      const tx = this._db.transaction(HISTORY_STORE, 'readwrite');
+      const tx = openTx(db, HISTORY_STORE, 'readwrite');
       const store = tx.objectStore(HISTORY_STORE);
       const index = store.index('projectId');
       const cursorReq = index.openCursor(IDBKeyRange.only(projectId));
@@ -71,8 +74,9 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
 
   async updateEntries(projectId: string, removeIndices: number[], entries: ProjectHistoryRecord[]): Promise<void> {
     if (removeIndices.length === 0 && entries.length === 0) return;
+    const db = await this._connection();
     await new Promise<void>((resolve, reject) => {
-      const tx = this._db.transaction(HISTORY_STORE, 'readwrite');
+      const tx = openTx(db, HISTORY_STORE, 'readwrite');
       const store = tx.objectStore(HISTORY_STORE);
       if (removeIndices.length > 0) {
         const remove = new Set(removeIndices);
@@ -97,8 +101,9 @@ export class IndexedDBHistoryStore implements ProjectHistoryStore {
   }
 
   async deleteForProject(projectId: string): Promise<void> {
+    const db = await this._connection();
     await new Promise<void>((resolve, reject) => {
-      const tx = this._db.transaction(HISTORY_STORE, 'readwrite');
+      const tx = openTx(db, HISTORY_STORE, 'readwrite');
       const index = tx.objectStore(HISTORY_STORE).index('projectId');
       const req = index.openCursor(IDBKeyRange.only(projectId));
       req.onsuccess = () => {

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DrawingApp } from '../src/components/drawing-app.ts';
 import { MockBackend } from '../src/storage/testing/mock-backend.ts';
+import { IndexedDBBackend } from '../src/storage/indexeddb/indexeddb-backend.ts';
 import { makeAppCanvasStub, makeCanvas, makeLayer, makeState } from './helpers.ts';
 
 /**
@@ -892,5 +893,237 @@ describe('one tab edits a project at a time', () => {
     app.remove();
     await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(2), { timeout: 5000 });
     await vi.waitFor(() => expect((app as any)._dirty).toBe(false), { timeout: 5000 });
+  });
+});
+
+describe('an editor taken out of the page', () => {
+  beforeEach(() => { vi.stubGlobal('BroadcastChannel', FakeChannel); });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    FakeChannel.open.clear();
+    document.body.replaceChildren();
+  });
+
+  it('during a "Use here" wait loads nothing (its storage may be closed), lets the project go, and edits it on return', async () => {
+    const locks = fakeLocks();
+    const { app: editing } = makeApp();
+    await (editing as any)._enterProject(meta('p'), async () => {});
+    (editing as any)._dirty = true;
+    (editing as any)._flushPendingSaveAndWait = vi.fn(async () => {
+      await new Promise(r => setTimeout(r, 3000));
+      (editing as any)._dirty = false;
+    });
+    const { app: shown } = makeApp();
+    await (shown as any)._enterProject(meta('p'), async () => {});
+    const load = vi.fn(async () => {});
+    (shown as any)._loadProject = load;
+
+    vi.useFakeTimers();
+    const done = (shown as any)._editHere(true);
+    await vi.advanceTimersByTimeAsync(10);
+    (shown as any)._detached = true;
+    await vi.advanceTimersByTimeAsync(5000);
+    await done;
+    vi.useRealTimers();
+
+    expect(load).not.toHaveBeenCalled();
+    expect((shown as any)._projectLock).toBeNull();
+    expect((shown as any)._readOnly).toBe(true);
+    await settle();
+    expect(locks.held.has('ketchup-project:p')).toBe(false);
+
+    (shown as any)._detached = false;
+    await (shown as any)._editHere(false);
+    expect(load).toHaveBeenCalledWith('p');
+    expect((shown as any)._projectLock?.id).toBe('p');
+  });
+
+  it('does not take its project back after a hand-over nobody waited for', async () => {
+    const locks = fakeLocks();
+    const handOver = async (leave: boolean) => {
+      const { app } = makeApp();
+      await (app as any)._enterProject(meta('p'), async () => {});
+      (app as any)._dirty = true;
+      (app as any)._flushPendingSaveAndWait = vi.fn(async () => {
+        (app as any)._dirty = false;
+        if (leave) (app as any)._detached = true;
+      });
+      // Asked, but the asking tab gave up between the check and the release.
+      (app as any)._projectWanted = vi.fn(async () => true);
+      await (app as any)._handOver('p');
+      await settle();
+      return app;
+    };
+
+    const stayed = await handOver(false);
+    expect((stayed as any)._projectLock?.id).toBe('p');
+    expect((stayed as any)._readOnly).toBe(false);
+    (stayed as any)._releaseProjectLock();
+    await settle();
+
+    const left = await handOver(true);
+    expect((left as any)._projectLock).toBeNull();
+    expect(locks.held.has('ketchup-project:p')).toBe(false);
+  });
+});
+
+describe('a newer build', () => {
+  let hidden = false;
+  beforeEach(() => {
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    hidden = false;
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    FakeChannel.open.clear();
+    document.body.replaceChildren();
+    delete (document as any).hidden;
+  });
+
+  it('upgrading storage in another window: stores the work, lets go of the project, saves nothing more, offers a reload', async () => {
+    const locks = fakeLocks();
+    const { app, backend, project } = await makeSavingApp();
+    const reload = vi.fn();
+    (app as any)._reload = reload;
+    const save = vi.spyOn(backend.state, 'save');
+    (app as any)._markDirty();
+
+    await (app as any)._onStorageVersionChange();
+    expect(save).toHaveBeenCalledTimes(1);
+    expect((app as any)._dirty).toBe(false);
+    expect((app as any)._storageClosed).toBe(true);
+    expect((app as any)._readOnly).toBe(true);
+    expect((app as any)._projectLock).toBeNull();
+    await settle();
+    expect(locks.held.has(`ketchup-project:${project.id}`)).toBe(false);
+    // Shown, so not reloaded under the user.
+    expect(reload).not.toHaveBeenCalled();
+
+    (app as any)._markDirty('viewport');
+    await (app as any)._save(true);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect((app as any)._saveError).toBe(false);
+    // Not taken up again by coming back into view.
+    await (app as any)._editHere(false);
+    expect((app as any)._projectLock).toBeNull();
+
+    hidden = true;
+    (app as any)._onVisibilityChange();
+    await settle();
+    expect(reload).toHaveBeenCalled();
+  });
+
+  it('upgrading storage: a real window of the app steps aside so the upgrade goes ahead', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    fakeLocks();
+    const { app } = makeApp();
+    (app as any)._reload = vi.fn();
+    document.body.append(app);
+    await app.whenReady();
+    await settle();
+    expect((app as any)._backend).toBeInstanceOf(IndexedDBBackend);
+
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = indexedDB.open('ketchup-projects', 6);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    expect((app as any)._storageClosed).toBe(true);
+    await app.updateComplete;
+    const overlay = app.shadowRoot!.querySelector('.read-only')!;
+    expect(overlay.textContent).toContain('Ketchup was updated in another window');
+    expect([...overlay.querySelectorAll('button')].map(b => b.textContent!.trim())).toEqual(['Reload']);
+    // Back in the page, it stays closed.
+    app.remove();
+    document.body.append(app);
+    await settle();
+    expect((app as any)._readOnly).toBe(true);
+    await new Promise<void>(resolve => {
+      const req = indexedDB.deleteDatabase('ketchup-projects');
+      req.onsuccess = () => resolve();
+      req.onerror = () => resolve();
+    });
+  });
+
+  it('taking over the service worker: reloads once the page is hidden with its work stored, and offers it meanwhile', async () => {
+    fakeLocks();
+    const { app } = await makeSavingApp();
+    const reload = vi.fn();
+    (app as any)._reload = reload;
+    app.updateReady();
+    expect((app as any)._updateReady).toBe(true);
+    expect(reload).not.toHaveBeenCalled();
+
+    (app as any)._markDirty();
+    hidden = true;
+    (app as any)._onVisibilityChange();
+    await vi.waitFor(() => expect(reload).toHaveBeenCalled());
+    expect((app as any)._dirty).toBe(false);
+  });
+
+  it('taking over the service worker: never reloads away work that could not be stored', async () => {
+    fakeLocks();
+    const { app, backend } = await makeSavingApp();
+    const reload = vi.fn();
+    (app as any)._reload = reload;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(backend.state, 'save').mockRejectedValue(new Error('QuotaExceededError'));
+    (app as any)._markDirty();
+    hidden = true;
+    app.updateReady();
+    await settle(30);
+    expect((app as any)._saveError).toBe(true);
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('offers the reload in a notice, which reloads once the work is stored', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    fakeLocks();
+    const backend = new MockBackend();
+    const { app } = makeApp();
+    app.storageBackend = backend;
+    const reload = vi.fn();
+    (app as any)._reload = reload;
+    document.body.append(app);
+    await app.whenReady();
+    await settle();
+    app.updateReady();
+    await app.updateComplete;
+    const notice = [...app.shadowRoot!.querySelectorAll('.notice')].find(n => n.textContent!.includes('new version'))!;
+    expect(notice).toBeTruthy();
+    const save = vi.spyOn(backend.state, 'save');
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb) {
+      cb(new Blob(['png'], { type: 'image/png' }));
+    });
+    (app as any)._markDirty();
+    notice.querySelector<HTMLButtonElement>('.notice-action')!.click();
+    await vi.waitFor(() => expect(reload).toHaveBeenCalled());
+    expect(save).toHaveBeenCalled();
+
+    // Dismissed, it still reloads the next time the page is hidden.
+    (notice.querySelector('[aria-label="Dismiss"]') as HTMLButtonElement).click();
+    await app.updateComplete;
+    expect([...app.shadowRoot!.querySelectorAll('.notice')].some(n => n.textContent!.includes('new version'))).toBe(false);
+    reload.mockClear();
+    hidden = true;
+    (app as any)._onVisibilityChange();
+    await vi.waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('is not reloaded into by an embedded editor (the host owns the page)', () => {
+    const { app } = makeApp();
+    app.embedded = true;
+    const reload = vi.fn();
+    (app as any)._reload = reload;
+    hidden = true;
+    app.updateReady();
+    expect((app as any)._updateReady).toBe(false);
+    expect(reload).not.toHaveBeenCalled();
   });
 });

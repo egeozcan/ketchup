@@ -2,13 +2,13 @@
 import type { BlobRef, BlobStore } from '../types.js';
 import { createBlobRef } from '../types.js';
 import { StorageNotFoundError } from '../errors.js';
-import { mapDOMException, txAbortError, txRequestError } from './error-utils.js';
+import { mapDOMException, txAbortError, txRequestError, openTx, type Connection } from './error-utils.js';
 import { generateUUID } from './migration.js';
 
 const BLOBS_STORE = 'blobs';
 
 export class IndexedDBBlobStore implements BlobStore {
-  constructor(private _db: IDBDatabase) {}
+  constructor(private _connection: Connection) {}
 
   async put(data: Blob | ArrayBuffer): Promise<BlobRef> {
     const ref = createBlobRef(generateUUID());
@@ -30,8 +30,9 @@ export class IndexedDBBlobStore implements BlobStore {
 
   async deleteMany(refs: BlobRef[]): Promise<void> {
     if (refs.length === 0) return;
+    const db = await this._connection();
     await new Promise<void>((resolve, reject) => {
-      const tx = this._db.transaction(BLOBS_STORE, 'readwrite');
+      const tx = openTx(db, BLOBS_STORE, 'readwrite');
       const store = tx.objectStore(BLOBS_STORE);
       for (const ref of refs) {
         store.delete(ref);
@@ -45,8 +46,9 @@ export class IndexedDBBlobStore implements BlobStore {
   async gc(activeRefs: Set<BlobRef>): Promise<number> {
     let deleted = 0;
     const orphaned: BlobRef[] = [];
+    const db = await this._connection();
     await new Promise<void>((resolve, reject) => {
-      const tx = this._db.transaction(BLOBS_STORE, 'readonly');
+      const tx = openTx(db, BLOBS_STORE, 'readonly');
       const req = tx.objectStore(BLOBS_STORE).openKeyCursor();
       req.onsuccess = () => {
         const cursor = req.result;
@@ -67,12 +69,13 @@ export class IndexedDBBlobStore implements BlobStore {
     return deleted;
   }
 
-  private _tx<T>(
+  private async _tx<T>(
     mode: IDBTransactionMode,
     fn: (store: IDBObjectStore) => IDBRequest<T>,
   ): Promise<T> {
+    const db = await this._connection();
     return new Promise((resolve, reject) => {
-      const tx = this._db.transaction(BLOBS_STORE, mode);
+      const tx = openTx(db, BLOBS_STORE, mode);
       const req = fn(tx.objectStore(BLOBS_STORE));
       // A write is stored only once its transaction completes: a quota abort
       // comes after the request's success.
