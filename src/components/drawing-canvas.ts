@@ -416,8 +416,14 @@ export class DrawingCanvas extends LitElement {
 
     const layerCtx = layer.canvas.getContext('2d')!;
     const isInsertion = this._transformContentMode === 'inserted';
+    // Worked out already (a save stored the float merged): the same entry,
+    // so the stack matches what is stored.
+    const cached = this._floatCommitCache && this._floatCommitCache.key === this._floatCommitKey() ? this._floatCommitCache : null;
+    this._floatCommitCache = null;
     let patch: { x: number; y: number; w: number; h: number; before: ImageData } | null = null;
-    if (isInsertion) {
+    if (cached) {
+      // Nothing to read: the entry is known.
+    } else if (isInsertion) {
       const bounds = this._transformManager.getBounds();
       const x = Math.max(0, bounds.x);
       const y = Math.max(0, bounds.y);
@@ -433,7 +439,11 @@ export class DrawingCanvas extends LitElement {
     // Always commit the image back to the layer (or add it for an insertion).
     this._transformManager.commit(layer.canvas);
 
-    if (isInsertion && patch) {
+    // The history events below say so: a save may have stored just this.
+    this._committingAsPreviewed = !!cached;
+    if (cached) {
+      if (cached.entry) this._pushHistoryEntry(cached.entry);
+    } else if (isInsertion && patch) {
       const after = layerCtx.getImageData(patch.x, patch.y, patch.w, patch.h);
       const changed = diffBounds(patch.before, after);
       if (changed) {
@@ -465,7 +475,11 @@ export class DrawingCanvas extends LitElement {
     // A no-op or fully off-canvas insertion does not push history, but ending
     // the transform still changes whether Undo/Redo should be enabled.
     this._notifyHistory();
+    this._committingAsPreviewed = false;
   }
+
+  /** Set while a commit pushes what `previewFloatCommit` worked out (see history-change). */
+  private _committingAsPreviewed = false;
 
   cancelTransform(): void {
     if (!this._transformManager) return;
@@ -493,6 +507,7 @@ export class DrawingCanvas extends LitElement {
 
     this._transformManager.dispose();
     this._transformManager = null;
+    this._floatCommitCache = null;
     this._beforeDrawCanvas = null;
     this._transformContentMode = 'lifted';
     this.previewCanvas.getContext('2d')!.clearRect(
@@ -1121,20 +1136,127 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _pushHistoryEntry(entry: HistoryEntry) {
-    this._history = this._history.slice(0, this._historyIndex + 1);
-    this._history.push(entry);
+    const { history, trimmed } = this._historyWith(entry);
+    this._history = history;
     this._bumpLayerRevisions(entry);
-    this._historyIndex = this._history.length - 1;
-    // Drop the oldest entries past the count cap or the pixel-memory budget,
-    // always keeping the newest so the last change can be undone.
-    let bytes = this._history.reduce((n, e) => n + historyEntryBytes(e), 0);
-    const budget = historyByteBudget();
-    while (this._history.length > 1 && (this._history.length > this._maxHistory || bytes > budget)) {
-      bytes -= historyEntryBytes(this._history.shift()!);
-      this._historyIndex--;
-      this._historyTrimmed++;
-    }
+    this._historyIndex = history.length - 1;
+    this._historyTrimmed += trimmed;
     this._notifyHistory();
+  }
+
+  /**
+   * The stack as pushing `entry` leaves it: redo entries go, and the oldest
+   * past the count cap or the pixel-memory budget, always keeping the newest
+   * so the last change can be undone.
+   */
+  private _historyWith(entry: HistoryEntry): { history: HistoryEntry[]; trimmed: number } {
+    const history = this._history.slice(0, this._historyIndex + 1);
+    history.push(entry);
+    let bytes = history.reduce((n, e) => n + historyEntryBytes(e), 0);
+    const budget = historyByteBudget();
+    let trimmed = 0;
+    while (history.length > 1 && (history.length > this._maxHistory || bytes > budget)) {
+      bytes -= historyEntryBytes(history.shift()!);
+      trimmed++;
+    }
+    return { history, trimmed };
+  }
+
+  /**
+   * What committing the float would push, worked out once per float state
+   * (layer revision, document size and `TransformManager.getStateKey`), so a
+   * save that stores the float merged into its layer stores this entry with
+   * it, and a commit of the float as saved pushes this very entry.
+   */
+  private _floatCommitCache: { key: string; entry: HistoryEntry | null } | null = null;
+
+  private _floatCommitKey(): string | null {
+    const layerId = this._ctx.value?.state.activeLayerId;
+    if (!this._transformManager || !layerId) return null;
+    return `${layerId}|${this.getLayerRevision(layerId)}|${this._docWidth}x${this._docHeight}`
+      + `|${this._transformContentMode}|${this._transformManager.getStateKey()}`;
+  }
+
+  /**
+   * The history entry committing the float would push, given its whole layer
+   * as the commit leaves it (`after`); mirrors `commitTransform`.
+   */
+  private _floatCommitEntry(layer: Layer, after: ImageData): HistoryEntry | null {
+    const tm = this._transformManager!;
+    if (this._transformContentMode === 'inserted') {
+      const bounds = tm.getBounds();
+      const x = Math.max(0, bounds.x);
+      const y = Math.max(0, bounds.y);
+      const w = Math.min(this._docWidth, bounds.x + bounds.w) - x;
+      const h = Math.min(this._docHeight, bounds.y + bounds.h) - y;
+      if (w <= 0 || h <= 0) return null;
+      // The layer under an inserted float is as it was before it.
+      const before = layer.canvas.getContext('2d')!.getImageData(x, y, w, h);
+      const region = cropImageData(after, { x, y, w, h });
+      const changed = diffBounds(before, region);
+      if (!changed) return null;
+      return {
+        type: 'patch', layerId: layer.id, x: x + changed.x, y: y + changed.y,
+        before: cropImageData(before, changed), after: cropImageData(region, changed),
+      };
+    }
+    const snapshot = this._beforeDrawCanvas;
+    if (!tm.hasChanged() || !snapshot) return null;
+    // As _readChangedPatch(ctx, undefined, true): the whole layer, and a
+    // no-op 1x1 entry when nothing differs.
+    const width = Math.min(snapshot.width, after.width);
+    const height = Math.min(snapshot.height, after.height);
+    if (width <= 0 || height <= 0) return null;
+    const before = snapshot.getContext('2d')!.getImageData(0, 0, width, height);
+    const region = cropImageData(after, { x: 0, y: 0, w: width, h: height });
+    const changed = diffBounds(before, region) ?? { x: 0, y: 0, w: 1, h: 1 };
+    return {
+      type: 'patch', layerId: layer.id, x: changed.x, y: changed.y,
+      before: cropImageData(before, changed), after: cropImageData(region, changed),
+    };
+  }
+
+  /**
+   * The float's layer as committing the float would leave it (read back
+   * whole, the live layer untouched), with the history entry that commit
+   * would push; null without a float. Throws if the layer can't be had.
+   */
+  public previewFloatCommit(): { layerId: string; imageData: ImageData; entry: HistoryEntry | null } | null {
+    const key = this._floatCommitKey();
+    const state = this._ctx.value?.state;
+    const layer = state?.layers.find(l => l.id === state.activeLayerId);
+    if (!key || !layer) return null;
+    const merged = document.createElement('canvas');
+    merged.width = layer.canvas.width;
+    merged.height = layer.canvas.height;
+    const mergedCtx = merged.getContext('2d')!;
+    mergedCtx.drawImage(layer.canvas, 0, 0);
+    // The very drawing commitTransform does, so the pixels are the same.
+    this._transformManager!.commit(merged);
+    const imageData = mergedCtx.getImageData(0, 0, merged.width, merged.height);
+    merged.width = merged.height = 0;
+    const entry = this._floatCommitCache?.key === key
+      ? this._floatCommitCache.entry
+      : this._floatCommitEntry(layer, imageData);
+    this._floatCommitCache = { key, entry };
+    return { layerId: layer.id, imageData, entry };
+  }
+
+  /**
+   * History and index as committing the float would leave them (as they are,
+   * without a float or when its commit pushes nothing): what a save storing
+   * the float merged into its layer stores, so stored layers and history
+   * agree should the page never get to commit it.
+   */
+  public getHistoryAsCommitted(): { history: HistoryEntry[]; index: number } {
+    const key = this._floatCommitKey();
+    let entry: HistoryEntry | null | undefined;
+    if (key) {
+      entry = this._floatCommitCache?.key === key ? this._floatCommitCache.entry : this.previewFloatCommit()?.entry;
+    }
+    if (!entry) return { history: this.getHistory(), index: this._historyIndex };
+    const { history } = this._historyWith(entry);
+    return { history, index: history.length - 1 };
   }
 
   /** Extract the layer ID referenced by a history entry, or null if not layer-specific. */
@@ -1169,6 +1291,9 @@ export class DrawingCanvas extends LitElement {
           canUndo: this._historyIndex >= 0 || this._transformManager !== null,
           canRedo: this._historyIndex < this._history.length - 1 && !this.hasPendingText() && !this._floatHoldsWork(),
           stackChanged,
+          // The float was committed exactly as previewFloatCommit merged it,
+          // its entry (if any) the one getHistoryAsCommitted gave.
+          committedAsPreviewed: this._committingAsPreviewed,
         },
       }),
     );
@@ -3908,6 +4033,7 @@ export class DrawingCanvas extends LitElement {
     // Discard the transform content by NOT putting it back on the layer.
     this._transformManager.dispose();
     this._transformManager = null;
+    this._floatCommitCache = null;
     this._transformContentMode = 'lifted';
     // Push history so the deletion is undoable.
     this._pushDrawHistory(true);
@@ -3974,6 +4100,7 @@ export class DrawingCanvas extends LitElement {
     const layerId = this.ctx.state.activeLayerId;
     this._transformManager.dispose();
     this._transformManager = null;
+    this._floatCommitCache = null;
     this._floatIsExternalImage = false;
     this._transformContentMode = 'lifted';
     this._selectionDrawing = false;
