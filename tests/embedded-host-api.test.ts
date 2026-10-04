@@ -348,6 +348,156 @@ describe('embedded host API', () => {
     expect((await ((app as any)._backend as MemoryBackend).projects.list()).map(p => p.id)).toEqual([project.id]);
   });
 
+  it('brings back the previous document\'s history and saved mark when making the new one fails', async () => {
+    const app = new DrawingApp();
+    app.embedded = true;
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    let history: HistoryEntry[] = [];
+    let index = -1;
+    const stub = makeAppCanvasStub({
+      getHistory: vi.fn(() => [...history]),
+      getHistoryIndex: vi.fn(() => index),
+      setHistory: vi.fn((entries: HistoryEntry[], i: number) => { history = [...entries]; index = i; }),
+    });
+    Object.defineProperty(app, 'canvas', { configurable: true, value: stub });
+    document.body.append(app);
+    await app.whenReady();
+    await app.newDocument(64, 32, { name: 'Keep' });
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb, type) {
+      cb(new Blob(['x'], { type: type ?? 'image/png' }));
+    });
+    const [a, b, c] = [patch(1), patch(2), patch(3)];
+    history = [a, b];
+    index = 1;
+    // The host is still storing this export when the replacement is tried.
+    const exported = await app.exportImage();
+    history = [a, b, c];
+    index = 2;
+    expect(app.modified).toBe(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect((app as any)._replaceDocument(16, 8, null, 'Failing', () => { throw new Error('paint'); }))
+      .rejects.toThrow('paint');
+
+    // The attempt cleared it; the way back put it back as it was.
+    expect(stub.setHistory).toHaveBeenCalledWith([], -1);
+    expect(stub.setHistory).toHaveBeenLastCalledWith([a, b, c], 2);
+    expect(app.modified).toBe(true);
+    // The export from before the attempt is of this document still: once it
+    // lands, undoing to what it rendered is unmodified.
+    app.markSaved(exported);
+    expect(app.modified).toBe(true);
+    index = 1;
+    expect(app.modified).toBe(false);
+  });
+
+  it('a standalone editor goes back to the stored previous project when making the new one fails', async () => {
+    const app = new DrawingApp();
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    Object.defineProperty(app, 'canvas', { configurable: true, value: makeAppCanvasStub() });
+    const backend = new MemoryBackend();
+    app.storageBackend = backend;
+    document.body.append(app);
+    await app.whenReady();
+    const previous = (app as any)._currentProject;
+    expect((app as any)._autosave).toBe(true);
+    const load = vi.spyOn(app as any, '_loadProject');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect((app as any)._replaceDocument(16, 8, null, 'Failing', () => { throw new Error('paint'); }))
+      .rejects.toThrow('paint');
+
+    // Not from memory: autosave stored it, so it is loaded again.
+    expect(load).toHaveBeenLastCalledWith(previous.id);
+    expect((app as any)._currentProject.id).toBe(previous.id);
+    expect((await backend.projects.list()).map(p => p.id)).toEqual([previous.id]);
+  });
+
+  it('brings back the view and layout the previous document had when making the new one fails', async () => {
+    const app = new DrawingApp();
+    app.embedded = true;
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    const stub = makeAppCanvasStub({
+      getViewport: vi.fn(() => ({ zoom: 2.5, panX: -40, panY: 12 })),
+      getViewportSize: vi.fn(() => ({ width: 900, height: 700 })),
+    });
+    Object.defineProperty(app, 'canvas', { configurable: true, value: stub });
+    document.body.append(app);
+    await app.whenReady();
+    // A child-mode document at desktop width: the compact layout, with the
+    // desktop layers panel (open) set aside for when child mode ends.
+    (app as any)._layoutWidth = 1400;
+    (app as any)._state = { ...(app as any)._state, childMode: true, layersPanelOpen: true };
+    (app as any)._updateMobileLayout(1400);
+    expect((app as any)._isMobile).toBe(true);
+    expect((app as any)._desktopLayersPanelOpen).toBe(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    stub.resetView.mockClear();
+
+    await expect((app as any)._replaceDocument(16, 8, null, 'Failing', () => { throw new Error('paint'); }))
+      .rejects.toThrow('paint');
+
+    expect(stub.restoreViewport).toHaveBeenLastCalledWith(2.5, -40, 12, { width: 900, height: 700 });
+    expect(stub.resetView).not.toHaveBeenCalled();
+    expect((app as any)._state.childMode).toBe(true);
+    expect((app as any)._isMobile).toBe(true);
+    expect((app as any)._desktopLayersPanelOpen).toBe(true);
+    (app as any)._buildContextValue().setChildMode(false);
+    expect((app as any)._state.layersPanelOpen).toBe(true);
+  });
+
+  it('takes no input while the document is replaced, and ends a press begun before', async () => {
+    const app = new DrawingApp();
+    app.embedded = true;
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    const stub = makeAppCanvasStub();
+    Object.defineProperty(app, 'canvas', { configurable: true, value: stub });
+    document.body.append(app);
+    await app.whenReady();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    stub.cancelGesture.mockClear();
+    let replacingDuring = false;
+    let keyDuring: KeyboardEvent | null = null;
+
+    await expect((app as any)._replaceDocument(16, 8, null, 'Failing', () => {
+      replacingDuring = (app as any)._replacing;
+      keyDuring = keydown(app, 'z');
+      throw new Error('paint');
+    })).rejects.toThrow('paint');
+
+    expect(replacingDuring).toBe(true);
+    expect(stub.undo).not.toHaveBeenCalled();
+    expect(keyDuring!.preventDefault).not.toHaveBeenCalled();
+    // Once before the attempt, once before going back to the previous document.
+    expect(stub.cancelGesture).toHaveBeenCalledTimes(2);
+    expect((app as any)._replacing).toBe(false);
+  });
+
+  it('leaves the marks alone when another opening replaced the way back', async () => {
+    const app = new DrawingApp();
+    app.embedded = true;
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    Object.defineProperty(app, 'canvas', { configurable: true, value: makeAppCanvasStub() });
+    document.body.append(app);
+    await app.whenReady();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const keptGeneration = (app as any)._documentGeneration;
+    const enter = (app as any)._enterProject.bind(app);
+    let calls = 0;
+    vi.spyOn(app as any, '_enterProject').mockImplementation(async (...args: unknown[]) => {
+      calls++;
+      const done = enter(...args);
+      // Going back: another opening starts meanwhile.
+      if (calls === 2) void Promise.resolve().then(() => { (app as any)._enterGeneration++; });
+      return done;
+    });
+
+    await expect((app as any)._replaceDocument(16, 8, null, 'Failing', () => { throw new Error('paint'); }))
+      .rejects.toThrow('paint');
+
+    expect((app as any)._documentGeneration).not.toBe(keptGeneration);
+  });
+
   it('replaces the document one call at a time, in the order the calls were made', async () => {
     const app = new DrawingApp();
     app.embedded = true;
@@ -379,6 +529,20 @@ describe('embedded host API', () => {
     (stub.hasPendingText as any).mockReturnValue(false);
     (app as any)._reportModified();
     expect(changes).toEqual([true, false]);
+  });
+
+  it('keeps Ctrl+S from the browser\'s "Save page as" while a document is being replaced, asking nothing of the host', () => {
+    const { app } = appWithHistory(true);
+    const requests: Event[] = [];
+    app.addEventListener('save-request', (e) => requests.push(e));
+    (app as any)._replacing = true;
+    const e = keydown(app, 's');
+    expect(e.preventDefault).toHaveBeenCalled();
+    expect(requests).toHaveLength(0);
+    // Standalone, the browser's own Ctrl+S is left alone.
+    const standalone = appWithHistory(false);
+    (standalone.app as any)._replacing = true;
+    expect(keydown(standalone.app, 's').preventDefault).not.toHaveBeenCalled();
   });
 
   it('ignores Ctrl+Shift+S and Ctrl+Alt+S when embedded', () => {

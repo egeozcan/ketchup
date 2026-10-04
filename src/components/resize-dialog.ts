@@ -83,6 +83,11 @@ export class ResizeDialog extends LitElement {
     this._resolve = null;
   }
 
+  /** Whether it is asking (shown, or waiting to be shown again on the editor's return). */
+  get asking(): boolean {
+    return this._resolve !== null;
+  }
+
   /** Closes an open dialog unanswered (its document went away); `show` resolves false. */
   dismiss() {
     this._onKeep();

@@ -43,6 +43,15 @@ export function containsAcrossShadows(ancestor: Node, node: Node): boolean {
  */
 export function keyIsForEditorOf(el: Node, e: KeyboardEvent): boolean {
   const editor = editorOf(el);
-  return !editor || e.composedPath().includes(editor)
-    || e.target === document.body || e.target === document.documentElement;
+  if (!editor) return true;
+  const path = e.composedPath();
+  const at = path.indexOf(editor);
+  // A modal dialog of the editor's own (a question it asks) takes its keys:
+  // Escape answers it rather than closing a menu behind it. A host's dialog
+  // around the editor (past it in the path) doesn't count.
+  for (let i = 0; i < (at >= 0 ? at : path.length); i++) {
+    const node = path[i];
+    if (node instanceof HTMLDialogElement && node.open && editorOf(node) === editor) return false;
+  }
+  return at >= 0 || e.target === document.body || e.target === document.documentElement;
 }

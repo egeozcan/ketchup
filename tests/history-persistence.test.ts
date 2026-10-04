@@ -201,6 +201,72 @@ describe('incremental history persistence', () => {
     expect((await backend.state.get(project.id))!.layers[0].imageBlobRef).toBe(ref);
   });
 
+  it('takes the entry at the stored index as the stored top after a load, not the last one', async () => {
+    const { app, project, save } = await setupApp();
+    const canvas = (app as any).canvas;
+    Object.defineProperty(app, 'updateComplete', { get: () => Promise.resolve(true) });
+    // Two entries undone: the stored index is 0, with redo entries after it.
+    canvas.getHistoryIndex.mockImplementation(() => 0);
+    await save([patch(1), patch(2), patch(3)]);
+
+    await (app as any)._loadProject(project.id);
+
+    const [loaded, index] = canvas.setHistory.mock.calls.at(-1);
+    expect(loaded).toHaveLength(3);
+    expect(index).toBe(0);
+    expect((app as any)._storedHistoryTop).toBe(loaded[0]);
+
+    // Everything undone: nothing is the top.
+    canvas.getHistoryIndex.mockImplementation(() => -1);
+    await save([patch(4)]);
+    await (app as any)._loadProject(project.id);
+    expect(canvas.setHistory.mock.calls.at(-1)[1]).toBe(-1);
+    expect((app as any)._storedHistoryTop).toBeNull();
+  });
+
+  it('counts snapshot restarts per write, not across a run of many writes', async () => {
+    const { app, backend, save } = await setupApp();
+    const canvas = (app as any).canvas;
+    let rev = 0;
+    canvas.getLayerRevision.mockImplementation(() => rev);
+    await save([]);
+    expect((app as any)._saveError).toBe(false);
+
+    // Stored state no longer references this tab's blob (another tab saved),
+    // so an unchanged layer is re-read live, and a layer that changed
+    // meanwhile restarts the snapshot.
+    const getState = backend.state.get.bind(backend.state);
+    vi.spyOn(backend.state, 'get').mockImplementation(async (id: string) => {
+      const state = await getState(id);
+      return state && { ...state, layers: state.layers.map(l => ({ ...l, imageBlobRef: 'elsewhere' as BlobRef })) };
+    });
+    // Every other pass edits the layer while it waits (one restart); the pass
+    // after it stores, and asks for another save, five times over.
+    let calls = 0;
+    const getProject = backend.projects.get.bind(backend.projects);
+    vi.spyOn(backend.projects, 'get').mockImplementation(async (id: string) => {
+      calls++;
+      if (calls <= 10) {
+        if (calls % 2 === 1) {
+          rev++;
+          (app as any)._contentVersion++;
+        } else {
+          (app as any)._dirtyVersion++;
+          (app as any)._saveRequested = true;
+          (app as any)._forceFlushNextSave = true;
+        }
+      }
+      return getProject(id);
+    });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await save([]);
+
+    expect(calls).toBeGreaterThan(10);
+    expect(errors).not.toHaveBeenCalled();
+    expect((app as any)._saveError).toBe(false);
+  });
+
   it('does not save while the next project is still loading', async () => {
     const { app, backend, save, stored } = await setupApp();
     const [a, b, c, d] = [patch(1), patch(2), patch(3), patch(4)];

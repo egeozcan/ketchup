@@ -39,7 +39,7 @@ export class ProjectService {
 
     if (project?.thumbnailRef) blobRefs.add(project.thumbnailRef);
     state?.layers.forEach((l) => blobRefs.add(l.imageBlobRef));
-    for (const h of history) collectBlobRefsFromEntry(h.entry, blobRefs);
+    for (const h of history) collectBlobRefsFromEntry(h?.entry, blobRefs);
     stamps.forEach((s) => blobRefs.add(s.blobRef));
 
     // Delete root record first — prevents "zombie" projects on partial failure.
@@ -90,7 +90,7 @@ export class ProjectService {
       ]);
       if (p.thumbnailRef) activeRefs.add(p.thumbnailRef);
       state?.layers.forEach((l) => activeRefs.add(l.imageBlobRef));
-      history.forEach((h) => collectBlobRefsFromEntry(h.entry, activeRefs));
+      history.forEach((h) => collectBlobRefsFromEntry(h?.entry, activeRefs));
       stamps.forEach((s) => activeRefs.add(s.blobRef));
 
       // Yield to main thread between projects
@@ -101,26 +101,44 @@ export class ProjectService {
   }
 }
 
+/**
+ * Adds every blob ref a stored history entry points at to `refs`. Tolerates
+ * malformed records (a field missing or of the wrong type), which a load
+ * drops but cleanup and project deletion still walk: only string refs are
+ * collected.
+ */
 export function collectBlobRefsFromEntry(
   entry: SerializedHistoryEntry,
   refs: Set<BlobRef>,
 ): void {
-  switch (entry.type) {
+  if (!isObject(entry)) return;
+  const e = entry as unknown as Record<string, unknown>;
+  const addRef = (data: unknown) => {
+    if (isObject(data) && typeof data.blobRef === 'string') refs.add(data.blobRef as BlobRef);
+  };
+  const addLayer = (layer: unknown) => {
+    if (isObject(layer)) addRef(layer.imageData);
+  };
+  switch (e.type) {
     case 'draw':
     case 'patch':
     case 'transform':
-      refs.add(entry.before.blobRef);
-      refs.add(entry.after.blobRef);
+      addRef(e.before);
+      addRef(e.after);
       break;
     case 'add-layer':
     case 'delete-layer':
-      refs.add(entry.layer.imageData.blobRef);
+      addLayer(e.layer);
       break;
     case 'crop':
     case 'merge':
-      for (const l of entry.beforeLayers) refs.add(l.imageData.blobRef);
-      for (const l of entry.afterLayers) refs.add(l.imageData.blobRef);
+      if (Array.isArray(e.beforeLayers)) e.beforeLayers.forEach(addLayer);
+      if (Array.isArray(e.afterLayers)) e.afterLayers.forEach(addLayer);
       break;
     // reorder, visibility, opacity, rename, blend-mode — no blobs
   }
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }

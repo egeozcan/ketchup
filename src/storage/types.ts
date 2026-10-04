@@ -197,6 +197,13 @@ export interface StorageBackend {
   readonly blobs: BlobStore;
   init(): Promise<void>;
   dispose(): Promise<void>;
+  /**
+   * Optional: runs writes that belong together (a project's state and its
+   * history) so that the backend doesn't close storage between them (for
+   * another window's upgrade, say); it waits for them to settle first, and
+   * refuses to start new ones once closing.
+   */
+  writeTogether?<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 export interface ProjectServiceOptions {

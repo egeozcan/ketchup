@@ -77,18 +77,31 @@ function canCompress(): Promise<boolean> {
   if (!hasCompressionApis()) return Promise.resolve(false);
   if (!compressionTest) {
     if (Date.now() - compressionTimedOutAt < COMPRESSION_RETRY_AFTER_MS) return Promise.resolve(false);
-    // A stream that never resolves must not stall saves: past the timeout this
-    // call falls back to PNG without caching a verdict.
     const test = new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => {
-        compressionTimedOutAt = Date.now();
-        resolve(false);
-      }, COMPRESSION_TEST_TIMEOUT_MS);
-      runCompressionSelfTest().then((verdict) => {
-        clearTimeout(timer);
-        if (verdict !== null) compressionVerdict = verdict;
-        else compressionTimedOutAt = Date.now();
-        resolve(verdict === true);
+      // The test starts (and its timeout with it) once the caller's
+      // synchronous work is done, so that doesn't count against it. A
+      // microtask, not a timer: hidden tabs throttle timers (to ~1 s), which
+      // would slow the save made as the page is hidden.
+      queueMicrotask(() => {
+        const abort = new AbortController();
+        let settled = false;
+        // A stream that never resolves must not stall saves: past the timeout
+        // the test is cancelled and this call falls back to PNG without
+        // caching a verdict.
+        const timer = setTimeout(() => {
+          settled = true;
+          compressionTimedOutAt = Date.now();
+          abort.abort();
+          resolve(false);
+        }, COMPRESSION_TEST_TIMEOUT_MS);
+        void runCompressionSelfTest(abort.signal).then((verdict) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (verdict !== null) compressionVerdict = verdict;
+          else compressionTimedOutAt = Date.now();
+          resolve(verdict === true);
+        });
       });
     });
     compressionTest = test;
@@ -97,8 +110,34 @@ function canCompress(): Promise<boolean> {
   return compressionTest;
 }
 
-/** true/false is a verdict on the round trip; null means the test itself failed to run. */
-async function runCompressionSelfTest(): Promise<boolean | null> {
+/** Reads a stream to the end; aborting `signal` cancels it (and what feeds it). */
+async function readAll(stream: ReadableStream<Uint8Array>, signal: AbortSignal): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const cancel = () => { void reader.cancel().catch(() => undefined); };
+  signal.addEventListener('abort', cancel);
+  try {
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      length += value.length;
+    }
+    const out = new Uint8Array(length);
+    let off = 0;
+    for (const c of chunks) { out.set(c, off); off += c.length; }
+    return out;
+  } finally {
+    signal.removeEventListener('abort', cancel);
+  }
+}
+
+/**
+ * true/false is a verdict on the round trip; null means the test itself failed
+ * to run or was cancelled (a cancelled read ends early, which is no verdict).
+ */
+async function runCompressionSelfTest(signal: AbortSignal): Promise<boolean | null> {
   try {
     const n = 1 << 16;
     const data = new Uint8Array(n);
@@ -113,17 +152,19 @@ async function runCompressionSelfTest(): Promise<boolean | null> {
       const src = i - 1 - (next() % Math.min(i - 1, 30000));
       for (let k = 0; k < len && i < n; k++) data[i++] = data[src + k];
     }
-    const packed = await new Response(
-      new Blob([data]).stream().pipeThrough(new CompressionStream('deflate')),
-    ).blob();
+    const packed = await readAll(
+      new Blob([data]).stream().pipeThrough(new CompressionStream('deflate'), { signal }), signal);
+    if (signal.aborted) return null;
     let back: Uint8Array;
     try {
-      back = new Uint8Array(await new Response(
-        packed.stream().pipeThrough(new DecompressionStream('deflate')),
-      ).arrayBuffer());
+      back = await readAll(
+        new Blob([packed as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate'), { signal }),
+        signal);
     } catch {
+      if (signal.aborted) return null;
       return false; // a stream that can't read back what it wrote is untrustworthy
     }
+    if (signal.aborted) return null;
     if (back.length !== n) return false;
     for (let j = 0; j < n; j++) if (back[j] !== data[j]) return false;
     return true;
@@ -247,13 +288,41 @@ export async function blobToCanvas(
   return canvas;
 }
 
-/** Encode ImageData for storage: lossless raw+deflate where available, else PNG. */
+// Raw deflate output above this share of the pixel bytes means photo-like
+// content, where PNG's per-row filters usually compress much better.
+const PNG_TRY_RATIO = 0.25;
+
+/** Every pixel fully opaque: then a canvas round trip (premultiplied) is exact. */
+function isOpaque(imageData: ImageData): boolean {
+  const d = imageData.data;
+  for (let i = 3; i < d.length; i += 4) if (d[i] !== 255) return false;
+  return true;
+}
+
+/**
+ * Encode ImageData for storage: lossless raw+deflate where available, else PNG.
+ * An opaque image that deflates poorly is stored as PNG when that is smaller;
+ * PNG is lossless only without transparency, and loading reads both.
+ */
 export async function imageDataToBlob(imageData: ImageData): Promise<Blob> {
-  if (await canCompress()) return encodeRaw(imageData);
+  if (await canCompress()) {
+    const raw = await encodeRaw(imageData);
+    if (raw.size > imageData.data.length * PNG_TRY_RATIO && isOpaque(imageData)) {
+      const png = await encodePng(imageData).catch(() => null);
+      if (png && png.size < raw.size) return png;
+    }
+    return raw;
+  }
+  return encodePng(imageData);
+}
+
+function encodePng(imageData: ImageData): Promise<Blob> {
   const canvas = document.createElement('canvas');
   canvas.width = imageData.width;
   canvas.height = imageData.height;
   const ctx = canvas.getContext('2d')!;
   ctx.putImageData(imageData, 0, 0);
-  return canvasToBlob(canvas);
+  // Its pixels are freed at once rather than whenever it is collected.
+  const release = () => { canvas.width = 0; canvas.height = 0; };
+  return canvasToBlob(canvas).finally(release);
 }

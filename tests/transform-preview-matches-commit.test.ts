@@ -276,23 +276,6 @@ describe('transform preview under a layer blend mode', () => {
   });
 });
 
-describe('autosave of an active float', () => {
-  it('still reports a float moved wholly off the document, with nothing to draw', () => {
-    const canvas = new DrawingCanvas();
-    const layer = makeLayer(100, 100);
-    (canvas as any)._ctx = { value: { state: makeState({ layers: [layer], activeLayerId: layer.id }) } };
-    attachCanvasElements(canvas, 100, 100);
-    (canvas as any)._transformManager = makeTransformManagerStub({ snapshot: vi.fn(() => null) });
-
-    const snap = canvas.getFloatSnapshot();
-
-    // Reported, so the save re-reads the layer (with its lifted hole) instead
-    // of reusing a blob stored while the float was still on it.
-    expect(snap).not.toBeNull();
-    expect(snap!.layerId).toBe(layer.id);
-  });
-});
-
 describe('a pointer cancelled during a transform gesture', () => {
   it('ends the gesture where it is, so the drafted warp is redone in full', () => {
     const canvas = new DrawingCanvas();

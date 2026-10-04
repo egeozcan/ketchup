@@ -1453,10 +1453,14 @@ export class ToolSettings extends LitElement {
     }
   }
 
-  private _onDeleteProject(e: Event, id: string) {
+  private async _onDeleteProject(e: Event, id: string) {
     e.stopPropagation();
     const name = this.ctx.projectList.find(p => p.id === id)?.name ?? 'this project';
-    if (confirm(`Delete \u201c${name}\u201d? This cannot be undone.`)) {
+    if (await this.ctx.confirm({
+      message: `Delete \u201c${name}\u201d? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })) {
       this._closeDropdown();
       this.ctx.deleteProject(id);
     }

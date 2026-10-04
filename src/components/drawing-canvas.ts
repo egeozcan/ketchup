@@ -21,6 +21,7 @@ import { detectContentBounds } from '../transform/transform-math.js';
 import { diffBounds, cropImageData, type PixelRect } from '../utils/image-diff.js';
 import { historyEntryBytes, historyByteBudget } from '../utils/history-size.js';
 import { focusEditor } from '../utils/focus-editor.js';
+import { sizeViewCanvas, viewBackingSize, viewCanvasSize } from '../utils/view-canvas.js';
 import './resize-dialog.js';
 import type { ResizeDialog } from './resize-dialog.js';
 
@@ -415,8 +416,14 @@ export class DrawingCanvas extends LitElement {
 
     const layerCtx = layer.canvas.getContext('2d')!;
     const isInsertion = this._transformContentMode === 'inserted';
+    // Worked out already (a save stored the float merged): the same entry,
+    // so the stack matches what is stored.
+    const cached = this._floatCommitCache && this._floatCommitCache.key === this._floatCommitKey() ? this._floatCommitCache : null;
+    this._floatCommitCache = null;
     let patch: { x: number; y: number; w: number; h: number; before: ImageData } | null = null;
-    if (isInsertion) {
+    if (cached) {
+      // Nothing to read: the entry is known.
+    } else if (isInsertion) {
       const bounds = this._transformManager.getBounds();
       const x = Math.max(0, bounds.x);
       const y = Math.max(0, bounds.y);
@@ -432,39 +439,50 @@ export class DrawingCanvas extends LitElement {
     // Always commit the image back to the layer (or add it for an insertion).
     this._transformManager.commit(layer.canvas);
 
-    if (isInsertion && patch) {
-      const after = layerCtx.getImageData(patch.x, patch.y, patch.w, patch.h);
-      const changed = diffBounds(patch.before, after);
-      if (changed) {
-        this._pushHistoryEntry({
-          type: 'patch',
-          layerId: layer.id,
-          x: patch.x + changed.x,
-          y: patch.y + changed.y,
-          before: cropImageData(patch.before, changed),
-          after: cropImageData(after, changed),
-        });
+    // The history events below say so: a save may have stored just this.
+    this._committingAsPreviewed = !!cached;
+    try {
+      if (cached) {
+        if (cached.entry) this._pushHistoryEntry(cached.entry);
+      } else if (isInsertion && patch) {
+        const after = layerCtx.getImageData(patch.x, patch.y, patch.w, patch.h);
+        const changed = diffBounds(patch.before, after);
+        if (changed) {
+          this._pushHistoryEntry({
+            type: 'patch',
+            layerId: layer.id,
+            x: patch.x + changed.x,
+            y: patch.y + changed.y,
+            before: cropImageData(patch.before, changed),
+            after: cropImageData(after, changed),
+          });
+        }
+      } else if (this._transformManager.hasChanged() && this._beforeDrawCanvas) {
+        const changed = this._readChangedPatch(layerCtx, undefined, true);
+        if (changed) this._pushHistoryEntry({ type: 'patch', layerId: layer.id, ...changed });
       }
-    } else if (this._transformManager.hasChanged() && this._beforeDrawCanvas) {
-      const changed = this._readChangedPatch(layerCtx, undefined, true);
-      if (changed) this._pushHistoryEntry({ type: 'patch', layerId: layer.id, ...changed });
-    }
-    this._beforeDrawCanvas = null;
-    this._transformContentMode = 'lifted';
-    this._floatIsExternalImage = false;
+      this._beforeDrawCanvas = null;
+      this._transformContentMode = 'lifted';
+      this._floatIsExternalImage = false;
 
-    this._transformManager.dispose();
-    this._transformManager = null;
-    this.previewCanvas.getContext('2d')!.clearRect(
-      0, 0, this.previewCanvas.width, this.previewCanvas.height,
-    );
-    this.composite();
-    this.requestUpdate();
-    this._dispatchTransformChange();
-    // A no-op or fully off-canvas insertion does not push history, but ending
-    // the transform still changes whether Undo/Redo should be enabled.
-    this._notifyHistory();
+      this._transformManager.dispose();
+      this._transformManager = null;
+      this.previewCanvas.getContext('2d')!.clearRect(
+        0, 0, this.previewCanvas.width, this.previewCanvas.height,
+      );
+      this.composite();
+      this.requestUpdate();
+      this._dispatchTransformChange();
+      // A no-op or fully off-canvas insertion does not push history, but ending
+      // the transform still changes whether Undo/Redo should be enabled.
+      this._notifyHistory();
+    } finally {
+      this._committingAsPreviewed = false;
+    }
   }
+
+  /** Set while a commit pushes what `previewFloatCommit` worked out (see history-change). */
+  private _committingAsPreviewed = false;
 
   cancelTransform(): void {
     if (!this._transformManager) return;
@@ -492,6 +510,7 @@ export class DrawingCanvas extends LitElement {
 
     this._transformManager.dispose();
     this._transformManager = null;
+    this._floatCommitCache = null;
     this._beforeDrawCanvas = null;
     this._transformContentMode = 'lifted';
     this.previewCanvas.getContext('2d')!.clearRect(
@@ -504,8 +523,9 @@ export class DrawingCanvas extends LitElement {
   }
 
   // --- Viewport helpers ---
-  private get _vw(): number { return this.mainCanvas?.width ?? 800; }
-  private get _vh(): number { return this.mainCanvas?.height ?? 600; }
+  /** The view's size in CSS pixels: what pan, zoom and everything drawn on the view canvases are measured in. */
+  private get _vw(): number { return this.mainCanvas ? viewCanvasSize(this.mainCanvas).width : 800; }
+  private get _vh(): number { return this.mainCanvas ? viewCanvasSize(this.mainCanvas).height : 600; }
 
   // --- Layer-aware helpers ---
 
@@ -783,15 +803,11 @@ export class DrawingCanvas extends LitElement {
   }
 
   override firstUpdated() {
-    const rect = this.getBoundingClientRect();
-    const vw = rect.width > 0 ? Math.floor(rect.width) : 800;
-    const vh = rect.height > 0 ? Math.floor(rect.height) : 600;
-    this._laidOut = rect.width > 0 && rect.height > 0;
-
-    this.mainCanvas.width = vw;
-    this.mainCanvas.height = vh;
-    this.previewCanvas.width = vw;
-    this.previewCanvas.height = vh;
+    const view = this._measureView();
+    const vw = view?.width ?? 800;
+    const vh = view?.height ?? 600;
+    this._laidOut = view !== null;
+    this._sizeViewCanvases(vw, vh, view?.scale ?? DrawingCanvas._devicePixelRatio());
 
     // Center document in viewport, shrinking it to fit small screens
     this._zoom = Math.max(DrawingCanvas.MIN_ZOOM, Math.min(this._zoom, this._fitZoom()));
@@ -825,6 +841,64 @@ export class DrawingCanvas extends LitElement {
       this._resizeToFit();
     });
     this._resizeObserver.observe(this);
+    this._watchDevicePixelRatio();
+  }
+
+  private static _devicePixelRatio(): number {
+    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio : 1;
+    return Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  }
+
+  private _dprQuery: MediaQueryList | null = null;
+
+  /**
+   * Re-measures when the device pixel ratio changes (the window moved to
+   * another screen, or the page zoomed without resizing this element),
+   * which no size observer reports.
+   */
+  private _watchDevicePixelRatio() {
+    this._unwatchDevicePixelRatio();
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const query = window.matchMedia(`(resolution: ${DrawingCanvas._devicePixelRatio()}dppx)`);
+    query.addEventListener?.('change', this._onDevicePixelRatioChange);
+    this._dprQuery = query;
+  }
+
+  private _unwatchDevicePixelRatio() {
+    this._dprQuery?.removeEventListener?.('change', this._onDevicePixelRatioChange);
+    this._dprQuery = null;
+  }
+
+  private _onDevicePixelRatioChange = () => {
+    if (!this.isConnected) return;
+    this._watchDevicePixelRatio();
+    this._invalidateCanvasRect();
+    this._resizeToFit();
+  };
+
+  /**
+   * The element's size in its own CSS pixels, and how many device pixels
+   * each covers. A host's CSS `zoom` scales the client rect, not the
+   * element's own pixels (the computed size), so the two are measured apart.
+   */
+  private _measureView(): { width: number; height: number; scale: number } | null {
+    const rect = this.getBoundingClientRect();
+    if (!(rect.width > 0 && rect.height > 0)) return null;
+    let cssW = rect.width, cssH = rect.height;
+    if (this.isConnected) {
+      const cs = getComputedStyle(this);
+      const w = parseFloat(cs.width), h = parseFloat(cs.height);
+      if (w > 0 && h > 0) { cssW = w; cssH = h; }
+    }
+    const width = Math.floor(cssW), height = Math.floor(cssH);
+    if (width <= 0 || height <= 0) return null;
+    return { width, height, scale: DrawingCanvas._devicePixelRatio() * (rect.width / cssW) };
+  }
+
+  /** Sizes the display and preview canvases to the view, at device resolution. */
+  private _sizeViewCanvases(width: number, height: number, scale: number) {
+    sizeViewCanvas(this.mainCanvas, width, height, scale);
+    sizeViewCanvas(this.previewCanvas, width, height, scale);
   }
 
   /** Center the document in the viewport */
@@ -840,21 +914,26 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _resizeToFit() {
-    const rect = this.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
+    const view = this._measureView();
+    if (!view) return;
 
-    const newWidth = Math.floor(rect.width);
-    const newHeight = Math.floor(rect.height);
+    const newWidth = view.width;
+    const newHeight = view.height;
     this._laidOut = true;
-    const oldWidth = this.mainCanvas.width;
-    const oldHeight = this.mainCanvas.height;
-    if (oldWidth === newWidth && oldHeight === newHeight) return;
+    const oldWidth = this._vw;
+    const oldHeight = this._vh;
+    const sameSize = oldWidth === newWidth && oldHeight === newHeight;
+    const backing = viewBackingSize(newWidth, newHeight, view.scale);
+    if (sameSize && backing.width === this.mainCanvas.width && backing.height === this.mainCanvas.height) return;
 
     // Resize display and preview canvases to viewport size only
-    this.mainCanvas.width = newWidth;
-    this.mainCanvas.height = newHeight;
-    this.previewCanvas.width = newWidth;
-    this.previewCanvas.height = newHeight;
+    this._sizeViewCanvases(newWidth, newHeight, view.scale);
+    if (sameSize) {
+      // Only the resolution changed (another screen): the view stays put.
+      this._checkerboardPattern = null;
+      this._redrawView(false);
+      return;
+    }
 
     // Adjust pan to keep the center stable, on whole pixels (a half-pixel pan
     // would blur the document at 100%). What rounding took off is carried to
@@ -869,11 +948,17 @@ export class DrawingCanvas extends LitElement {
     // Pattern is tied to canvas context, must recreate
     this._checkerboardPattern = null;
 
+    this._redrawView(true);
+    this._dispatchViewportChange();
+  }
+
+  /** Repaints the display and preview canvases after a resize cleared them. */
+  private _redrawView(contentChanged: boolean) {
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
-    this.composite();
+    if (contentChanged) this.composite();
+    else this._composite(false);
     if (this._textEditing) this._renderTextPreview();
     if (this._cropRect) this._drawCropPreview();
-    this._dispatchViewportChange();
   }
 
   // --- History ---
@@ -1054,20 +1139,127 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _pushHistoryEntry(entry: HistoryEntry) {
-    this._history = this._history.slice(0, this._historyIndex + 1);
-    this._history.push(entry);
+    const { history, trimmed } = this._historyWith(entry);
+    this._history = history;
     this._bumpLayerRevisions(entry);
-    this._historyIndex = this._history.length - 1;
-    // Drop the oldest entries past the count cap or the pixel-memory budget,
-    // always keeping the newest so the last change can be undone.
-    let bytes = this._history.reduce((n, e) => n + historyEntryBytes(e), 0);
-    const budget = historyByteBudget();
-    while (this._history.length > 1 && (this._history.length > this._maxHistory || bytes > budget)) {
-      bytes -= historyEntryBytes(this._history.shift()!);
-      this._historyIndex--;
-      this._historyTrimmed++;
-    }
+    this._historyIndex = history.length - 1;
+    this._historyTrimmed += trimmed;
     this._notifyHistory();
+  }
+
+  /**
+   * The stack as pushing `entry` leaves it: redo entries go, and the oldest
+   * past the count cap or the pixel-memory budget, always keeping the newest
+   * so the last change can be undone.
+   */
+  private _historyWith(entry: HistoryEntry): { history: HistoryEntry[]; trimmed: number } {
+    const history = this._history.slice(0, this._historyIndex + 1);
+    history.push(entry);
+    let bytes = history.reduce((n, e) => n + historyEntryBytes(e), 0);
+    const budget = historyByteBudget();
+    let trimmed = 0;
+    while (history.length > 1 && (history.length > this._maxHistory || bytes > budget)) {
+      bytes -= historyEntryBytes(history.shift()!);
+      trimmed++;
+    }
+    return { history, trimmed };
+  }
+
+  /**
+   * What committing the float would push, worked out once per float state
+   * (layer revision, document size and `TransformManager.getStateKey`), so a
+   * save that stores the float merged into its layer stores this entry with
+   * it, and a commit of the float as saved pushes this very entry.
+   */
+  private _floatCommitCache: { key: string; entry: HistoryEntry | null } | null = null;
+
+  private _floatCommitKey(): string | null {
+    const layerId = this._ctx.value?.state.activeLayerId;
+    if (!this._transformManager || !layerId) return null;
+    return `${layerId}|${this.getLayerRevision(layerId)}|${this._docWidth}x${this._docHeight}`
+      + `|${this._transformContentMode}|${this._transformManager.getStateKey()}`;
+  }
+
+  /**
+   * The history entry committing the float would push, given its whole layer
+   * as the commit leaves it (`after`); mirrors `commitTransform`.
+   */
+  private _floatCommitEntry(layer: Layer, after: ImageData): HistoryEntry | null {
+    const tm = this._transformManager!;
+    if (this._transformContentMode === 'inserted') {
+      const bounds = tm.getBounds();
+      const x = Math.max(0, bounds.x);
+      const y = Math.max(0, bounds.y);
+      const w = Math.min(this._docWidth, bounds.x + bounds.w) - x;
+      const h = Math.min(this._docHeight, bounds.y + bounds.h) - y;
+      if (w <= 0 || h <= 0) return null;
+      // The layer under an inserted float is as it was before it.
+      const before = layer.canvas.getContext('2d')!.getImageData(x, y, w, h);
+      const region = cropImageData(after, { x, y, w, h });
+      const changed = diffBounds(before, region);
+      if (!changed) return null;
+      return {
+        type: 'patch', layerId: layer.id, x: x + changed.x, y: y + changed.y,
+        before: cropImageData(before, changed), after: cropImageData(region, changed),
+      };
+    }
+    const snapshot = this._beforeDrawCanvas;
+    if (!tm.hasChanged() || !snapshot) return null;
+    // As _readChangedPatch(ctx, undefined, true): the whole layer, and a
+    // no-op 1x1 entry when nothing differs.
+    const width = Math.min(snapshot.width, after.width);
+    const height = Math.min(snapshot.height, after.height);
+    if (width <= 0 || height <= 0) return null;
+    const before = snapshot.getContext('2d')!.getImageData(0, 0, width, height);
+    const region = cropImageData(after, { x: 0, y: 0, w: width, h: height });
+    const changed = diffBounds(before, region) ?? { x: 0, y: 0, w: 1, h: 1 };
+    return {
+      type: 'patch', layerId: layer.id, x: changed.x, y: changed.y,
+      before: cropImageData(before, changed), after: cropImageData(region, changed),
+    };
+  }
+
+  /**
+   * The float's layer as committing the float would leave it (read back
+   * whole, the live layer untouched), with the history entry that commit
+   * would push; null without a float. Throws if the layer can't be had.
+   */
+  public previewFloatCommit(): { layerId: string; imageData: ImageData; entry: HistoryEntry | null } | null {
+    const key = this._floatCommitKey();
+    const state = this._ctx.value?.state;
+    const layer = state?.layers.find(l => l.id === state.activeLayerId);
+    if (!key || !layer) return null;
+    const merged = document.createElement('canvas');
+    merged.width = layer.canvas.width;
+    merged.height = layer.canvas.height;
+    const mergedCtx = merged.getContext('2d')!;
+    mergedCtx.drawImage(layer.canvas, 0, 0);
+    // The very drawing commitTransform does, so the pixels are the same.
+    this._transformManager!.commit(merged);
+    const imageData = mergedCtx.getImageData(0, 0, merged.width, merged.height);
+    merged.width = merged.height = 0;
+    const entry = this._floatCommitCache?.key === key
+      ? this._floatCommitCache.entry
+      : this._floatCommitEntry(layer, imageData);
+    this._floatCommitCache = { key, entry };
+    return { layerId: layer.id, imageData, entry };
+  }
+
+  /**
+   * History and index as committing the float would leave them (as they are,
+   * without a float or when its commit pushes nothing): what a save storing
+   * the float merged into its layer stores, so stored layers and history
+   * agree should the page never get to commit it.
+   */
+  public getHistoryAsCommitted(): { history: HistoryEntry[]; index: number } {
+    const key = this._floatCommitKey();
+    let entry: HistoryEntry | null | undefined;
+    if (key) {
+      entry = this._floatCommitCache?.key === key ? this._floatCommitCache.entry : this.previewFloatCommit()?.entry;
+    }
+    if (!entry) return { history: this.getHistory(), index: this._historyIndex };
+    const { history } = this._historyWith(entry);
+    return { history, index: history.length - 1 };
   }
 
   /** Extract the layer ID referenced by a history entry, or null if not layer-specific. */
@@ -1100,14 +1292,33 @@ export class DrawingCanvas extends LitElement {
         composed: true,
         detail: {
           canUndo: this._historyIndex >= 0 || this._transformManager !== null,
-          canRedo: this._historyIndex < this._history.length - 1 && !this.hasPendingText(),
+          canRedo: this._historyIndex < this._history.length - 1 && !this.hasPendingText() && !this._floatHoldsWork(),
           stackChanged,
+          // The float was committed exactly as previewFloatCommit merged it,
+          // its entry (if any) the one getHistoryAsCommitted gave.
+          committedAsPreviewed: this._committingAsPreviewed,
         },
       }),
     );
   }
 
+  /**
+   * A float that would put something on its layer (a paste, or a lifted part
+   * moved or reshaped): committing it is a new step, which ends the redo
+   * stack, and dropping it loses it, so Redo waits (as for typed text).
+   */
+  private _floatHoldsWork(): boolean {
+    const tm = this._transformManager;
+    return !!tm && (this._transformContentMode === 'inserted' || tm.hasChanged());
+  }
+
+  private _redoHeldByFloat = false;
+
   private _dispatchTransformChange() {
+    if (this._floatHoldsWork() !== this._redoHeldByFloat) {
+      this._redoHeldByFloat = this._floatHoldsWork();
+      this._notifyHistory(false);
+    }
     this.dispatchEvent(new CustomEvent('transform-change', {
       bubbles: true,
       composed: true,
@@ -1183,8 +1394,9 @@ export class DrawingCanvas extends LitElement {
 
   public redo() {
     // Committing typed text would be a new step, which ends the redo stack:
-    // Redo waits until the text is done.
-    if (this.hasPendingText()) return;
+    // Redo waits until the text is done. So for a float holding work (see
+    // `_floatHoldsWork`); one that changed nothing just ends below.
+    if (this.hasPendingText() || this._floatHoldsWork()) return;
     if (this._textEditing) {
       this._commitText();
     }
@@ -1577,12 +1789,12 @@ export class DrawingCanvas extends LitElement {
   }
 
   /**
-   * Canvas pixels per client pixel. 1 unless a host's CSS `zoom` (or a
+   * View (CSS) pixels per client pixel. 1 unless a host's CSS `zoom` (or a
    * transform) scales the editor, when the canvas is shown at another size
-   * than its bitmap.
+   * than its own CSS size.
    */
   private _clientScale(rect: DOMRect): Point {
-    const w = this.mainCanvas.width, h = this.mainCanvas.height;
+    const w = this._vw, h = this._vh;
     return {
       x: rect.width > 0 && w > 0 ? w / rect.width : 1,
       y: rect.height > 0 && h > 0 ? h / rect.height : 1,
@@ -1935,8 +2147,11 @@ export class DrawingCanvas extends LitElement {
     const docPoint = this._getDocPoint(e);
     const color = this._sampleColor(docPoint.x, docPoint.y);
 
+    // The loupe's cells are document pixels, read from what is picked from:
+    // the flattened document or the active layer (not the display canvas,
+    // whose device pixels differ from them by zoom and devicePixelRatio).
     const sampleAll = this.ctx.state.eyedropperSampleAll;
-    const sourceCanvas = sampleAll ? this.mainCanvas : (this._getActiveLayerCtx()?.canvas ?? this.mainCanvas);
+    const sourceCanvas = sampleAll ? this._ensureSamplingBuffer().canvas : this._getActiveLayerCtx()?.canvas;
 
     const GRID_SIZE = 88;
     const SWATCH_HEIGHT = 24;
@@ -1953,11 +2168,7 @@ export class DrawingCanvas extends LitElement {
     previewCtx.save();
     previewCtx.imageSmoothingEnabled = false;
 
-    if (sampleAll) {
-      const srcX = view.x;
-      const srcY = view.y;
-      previewCtx.drawImage(this.mainCanvas, srcX - 5, srcY - 5, 11, 11, destX, destY, GRID_SIZE, GRID_SIZE);
-    } else {
+    if (sourceCanvas) {
       const srcX = Math.round(docPoint.x);
       const srcY = Math.round(docPoint.y);
       previewCtx.drawImage(sourceCanvas, srcX - 5, srcY - 5, 11, 11, destX, destY, GRID_SIZE, GRID_SIZE);
@@ -3444,6 +3655,15 @@ export class DrawingCanvas extends LitElement {
     this._notifyHistory();
   }
 
+  /**
+   * Whether the user is in the middle of something a reload would cut short
+   * though nothing of it is in history yet: a crop being set up, a selection
+   * being dragged out, or a resize dialog asking about a dropped image.
+   */
+  public hasInteractionInProgress(): boolean {
+    return this._cropRect !== null || this._selectionDrawing || !!this._resizeDialog?.asking;
+  }
+
   /** Closes a resize dialog still asking about a dropped image (the editor went inert). */
   public dismissResizeDialog() {
     this._resizeDialog?.dismiss();
@@ -3816,6 +4036,7 @@ export class DrawingCanvas extends LitElement {
     // Discard the transform content by NOT putting it back on the layer.
     this._transformManager.dispose();
     this._transformManager = null;
+    this._floatCommitCache = null;
     this._transformContentMode = 'lifted';
     // Push history so the deletion is undoable.
     this._pushDrawHistory(true);
@@ -3882,6 +4103,7 @@ export class DrawingCanvas extends LitElement {
     const layerId = this.ctx.state.activeLayerId;
     this._transformManager.dispose();
     this._transformManager = null;
+    this._floatCommitCache = null;
     this._floatIsExternalImage = false;
     this._transformContentMode = 'lifted';
     this._selectionDrawing = false;
@@ -3934,20 +4156,6 @@ export class DrawingCanvas extends LitElement {
     const layerId = this._ctx.value?.state.activeLayerId;
     if (!this._transformManager || !layerId) return null;
     return { layerId, key: this._transformManager.getStateKey() };
-  }
-
-  /** Returns active transform info for persistence, or null if no transform. */
-  public getFloatSnapshot(): { layerId: string; tempCanvas: HTMLCanvasElement; x: number; y: number } | null {
-    if (!this._transformManager) return null;
-    const layerId = this._ctx.value?.state.activeLayerId;
-    if (!layerId) return null;
-    // Only the part on the document survives a commit, so only that is kept;
-    // a corner dragged far outside could otherwise ask for too large a canvas.
-    const snapshot = this._transformManager.snapshot({ x: 0, y: 0, w: this._docWidth, h: this._docHeight });
-    // A float moved wholly off the document still leaves its layer changed
-    // (lifted content leaves a hole), so report it, with nothing to draw.
-    const tempCanvas = snapshot?.canvas ?? document.createElement('canvas');
-    return { layerId, tempCanvas, x: snapshot?.x ?? 0, y: snapshot?.y ?? 0 };
   }
 
   private _onDragOver = (e: DragEvent) => {
@@ -4057,6 +4265,7 @@ export class DrawingCanvas extends LitElement {
     }
     this._resizeObserver?.disconnect();
     this._resizeObserver = null;
+    this._unwatchDevicePixelRatio();
     this._compositeScheduler.cancel();
     // drawing-app flushes a pending viewport change from its own disconnect,
     // before deciding whether to save; by now it would only re-arm a save.
