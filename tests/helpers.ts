@@ -157,6 +157,8 @@ export function makeAppCanvasStub(overrides: Record<string, unknown> = {}) {
     setTransformValue: vi.fn(),
     getFloatSnapshot: vi.fn(() => null),
     getFloatKey: vi.fn(() => null),
+    previewFloatCommit: vi.fn(() => null),
+    getHistoryAsCommitted: vi.fn(() => ({ history: [], index: -1 })),
     getViewport: vi.fn(() => ({ zoom: 1, panX: 0, panY: 0 })),
     getViewportSize: vi.fn(() => ({ width: 800, height: 600 })),
     getHistory: vi.fn(() => []),

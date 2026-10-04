@@ -7,7 +7,7 @@ import { getDefaultDescriptor, getPresetById } from '../engine/brush-presets.js'
 import type { DrawingState, HistoryEntry, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
 import { IndexedDBBackend, MemoryBackend, ProjectService, StorageQuotaError, StorageNotFoundError, StorageClosedError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
-import type { StorageBackend, BlobStore, BlobRef, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord, StampEntry } from '../storage/types.js';
+import type { StorageBackend, BlobStore, BlobRef, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord, SerializedLayer, StampEntry } from '../storage/types.js';
 import { canvasToBlob, PixelDecodeError } from '../utils/canvas-helpers.js';
 import { hashImageData } from '../utils/image-diff.js';
 import { historyByteBudget, serializedHistoryEntryBytes } from '../utils/history-size.js';
@@ -422,6 +422,8 @@ export class DrawingApp extends LitElement {
   private _savedContentVersion = -1;
   /** `_contentVersion` as last loaded or written to storage; differing means work only here. */
   private _storedContentVersion = 0;
+  /** The undo stack's current entry as last stored (null for none), by identity. */
+  private _storedHistoryTop: HistoryEntry | null = null;
   /**
    * Content version and viewport the stored project thumbnail was rendered at
    * (it is a downscale of the on-screen view); null forces a new one.
@@ -848,6 +850,7 @@ export class DrawingApp extends LitElement {
     // The first save after a load always reads the layers back.
     this._savedContentVersion = -1;
     this._storedContentVersion = this._contentVersion;
+    this._storedHistoryTop = history[history.length - 1] ?? null;
     this._savedThumbKey = null;
     // Restoring history during the load isn't a new edit to show as saving.
     this._unsavedWork = false;
@@ -1766,6 +1769,7 @@ export class DrawingApp extends LitElement {
         if (this._saveError && !this._canSaveProject(savingId)) this._clearSaveError();
       }
       let flushingThisRun = flushing;
+      let restarts = 0;
       // Hands the write to a save-lock request made before encoding (a flush);
       // settled with null if the run ends without reaching the write.
       let proceedWrite: ((write: (() => Promise<boolean>) | null) => void) | null = null;
@@ -1827,10 +1831,11 @@ export class DrawingApp extends LitElement {
           const snapshotActiveLayerId = this._state.activeLayerId;
           const snapshotLayersPanelOpen = this._desktopLayersPanelOpen ?? this._state.layersPanelOpen;
 
-          // If a floating selection is active, composite it into the owning
-          // layer's snapshot so persisted data never has a hole from the lift.
+          // A float is stored as committing it would leave things: merged into
+          // its layer, and history with the entry that commit would push
+          // (getHistoryAsCommitted), so stored layers and history agree even
+          // if the page goes before the float is committed.
           const floatKey = this.canvas?.getFloatKey() ?? null;
-          let floatSnapshot: ReturnType<DrawingCanvas['getFloatSnapshot']> | undefined;
           // Only the viewport moved since the last save and every layer still has
           // its stored blob: skip the full-canvas readback and hashing.
           const reuseSaved = !floatKey
@@ -1841,10 +1846,11 @@ export class DrawingApp extends LitElement {
           // lift leaves a hole history doesn't know of, adds the float's key: the
           // same layer revision under the same float is the same stored pixels,
           // so an autosave of an unmoved huge float reads nothing back.
-          const layerRevs = this._state.layers.map(l => {
-            const rev = this.canvas?.getLayerRevision(l.id) ?? null;
-            return floatKey && l.id === floatKey.layerId && rev !== null ? `${rev}|float:${floatKey.key}` : rev;
-          });
+          const currentLayerRev = (id: string, float = this.canvas?.getFloatKey() ?? null) => {
+            const rev = this.canvas?.getLayerRevision(id) ?? null;
+            return float && id === float.layerId && rev !== null ? `${rev}|float:${float.key}` : rev;
+          };
+          const layerRevs = this._state.layers.map(l => currentLayerRev(l.id, floatKey));
           // A layer whose revision is the one it was stored under, on the same
           // canvas, still holds the stored pixels: it needn't be read back, so
           // only the layers an edit touched are read and hashed.
@@ -1854,28 +1860,19 @@ export class DrawingApp extends LitElement {
             return layerRevs[i] !== null && !!saved && saved.rev === layerRevs[i] && saved.canvas === l.canvas
               && this._trackedProjectId === projectId;
           });
-          // The layer with the float merged in, on a copy so the live canvas is
-          // untouched; null when the float can't be had (stored but not trusted).
-          const readLayerWithFloat = (
-            canvas: HTMLCanvasElement,
-            floatSnap = (floatSnapshot ??= this.canvas?.getFloatSnapshot() ?? null),
-          ): ImageData | null => {
-            if (!floatSnap) return null;
-            const tmp = document.createElement('canvas');
-            tmp.width = canvas.width;
-            tmp.height = canvas.height;
-            const tmpCtx = tmp.getContext('2d')!;
-            tmpCtx.drawImage(canvas, 0, 0);
-            tmpCtx.drawImage(floatSnap.tempCanvas, floatSnap.x, floatSnap.y);
-            return tmpCtx.getImageData(0, 0, tmp.width, tmp.height);
+          // The float's layer as its commit would leave it, read from a copy so
+          // the live canvas is untouched. One that can't be had fails the save
+          // rather than storing the layer with a hole.
+          const readLayerWithFloat = (layerId: string): ImageData => {
+            const preview = this.canvas?.previewFloatCommit() ?? null;
+            if (!preview || preview.layerId !== layerId) throw new Error(`Could not read the float on layer ${layerId}`);
+            return preview.imageData;
           };
           const layerSnapshots = this._state.layers.map((l, i) => {
             const meta = { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode };
             if (reuseSaved || layerUnchanged[i]) return { ...meta, imageData: null as ImageData | null };
             if (floatKey && l.id === floatKey.layerId) {
-              const imageData = readLayerWithFloat(l.canvas);
-              if (!imageData) snapshotTrusted = false;
-              return { ...meta, imageData: imageData ?? l.canvas.getContext('2d')!.getImageData(0, 0, l.canvas.width, l.canvas.height) as ImageData | null };
+              return { ...meta, imageData: readLayerWithFloat(l.id) as ImageData | null };
             }
             const ctx = l.canvas.getContext('2d')!;
             const imageData = ctx.getImageData(0, 0, l.canvas.width, l.canvas.height);
@@ -1885,8 +1882,12 @@ export class DrawingApp extends LitElement {
             snap.imageData ? hashImageData(snap.imageData) : this._savedLayerBlobs.get(snap.id)!.hash);
           const viewport = this.canvas?.getViewport() ?? { zoom: 1, panX: 0, panY: 0 };
           const viewportSize = this.canvas?.getViewportSize() ?? null;
-          const historySnapshot = this.canvas?.getHistory() ?? [];
-          const historyIndex = this.canvas?.getHistoryIndex() ?? -1;
+          // With a float, as its commit would leave the stack (redo entries
+          // gone, its entry on top); the next save after it is committed,
+          // moved or dropped replaces that entry like any other change.
+          const committed = floatKey ? this.canvas!.getHistoryAsCommitted() : null;
+          const historySnapshot = committed?.history ?? this.canvas?.getHistory() ?? [];
+          const historyIndex = committed?.index ?? this.canvas?.getHistoryIndex() ?? -1;
           const trackingGeneration = this._trackingGeneration;
           // The lock this snapshot was taken under: one lost and taken again
           // since (the project reloaded) isn't it.
@@ -1948,10 +1949,11 @@ export class DrawingApp extends LitElement {
 
           // Async serialization from snapshots (not live canvas).
           // Uses trackingBlobs so every blobs.put() is recorded.
-          let layers;
+          let serializedLayers: (SerializedLayer | null)[];
           let serializedEntries: ProjectHistoryRecord[];
+          let restart = false;
           try {
-            layers = await Promise.all(
+            serializedLayers = await Promise.all(
               layerSnapshots.map((snap, i) => {
                 // Unchanged since the last save and still referenced by the
                 // stored state: keep the stored PNG rather than re-encoding it.
@@ -1965,22 +1967,23 @@ export class DrawingApp extends LitElement {
                 let imageData = snap.imageData;
                 if (!imageData) {
                   // Reused, but the stored state no longer references our blob
-                  // (e.g. another tab saved this project): encode the live layer.
+                  // (e.g. another tab saved this project): encode the live layer,
+                  // if it is still as snapshotted, else (an edit, or the float
+                  // moved or committed meanwhile) it wouldn't match the history
+                  // snapshotted with it, so this run starts over.
                   const live = this._state.layers.find(l => l.id === snap.id)?.canvas;
                   if (!live) throw new Error(`Layer ${snap.id} disappeared during save`);
-                  // The float's layer: whatever float is on it now is merged in
-                  // (it may have moved since the snapshot; this save is stored
-                  // untrusted, so the next one corrects it). With none left, the
-                  // layer holds it, committed. A float that can't be had fails
-                  // the save rather than storing the layer with a hole.
-                  const nowOnLayer = this.canvas?.getFloatKey()?.layerId === snap.id;
-                  if (nowOnLayer) {
-                    const current = this.canvas?.getFloatSnapshot() ?? null;
-                    if (!current) throw new Error(`Could not read the float on layer ${snap.id}`);
-                    imageData = readLayerWithFloat(live, current)!;
-                  } else {
-                    imageData = live.getContext('2d')!.getImageData(0, 0, live.width, live.height);
+                  const floatNow = this.canvas?.getFloatKey() ?? null;
+                  const same = live === layerCanvases[i] && (layerRevs[i] !== null
+                    ? currentLayerRev(snap.id, floatNow) === layerRevs[i]
+                    : this._contentVersion === contentVersionAtSnapshot && floatNow?.layerId !== snap.id);
+                  if (!same) {
+                    restart = true;
+                    return null;
                   }
+                  imageData = floatNow?.layerId === snap.id
+                    ? readLayerWithFloat(snap.id)
+                    : live.getContext('2d')!.getImageData(0, 0, live.width, live.height);
                   // Record the hash of what is actually stored, so a later save
                   // can't match the old hash and keep these different pixels.
                   layerHashes[i] = hashImageData(imageData);
@@ -2004,6 +2007,16 @@ export class DrawingApp extends LitElement {
             }
             throw serializeErr;
           }
+          if (restart) {
+            // A layer changed while this run waited; snapshot again (a run
+            // taken over by changes this often gives up and retries later).
+            blobs.deleteMany(pendingBlobRefs).catch(() => {});
+            (proceedWrite as ((write: null) => void) | null)?.(null);
+            proceedWrite = null;
+            if (++restarts > 3) throw new Error('The drawing kept changing during the save');
+            continue;
+          }
+          const layers = serializedLayers as SerializedLayer[];
 
           const stateRecord = {
             projectId,
@@ -2162,6 +2175,7 @@ export class DrawingApp extends LitElement {
             )));
             this._savedContentVersion = snapshotTrusted ? contentVersionAtSnapshot : -1;
             this._storedContentVersion = contentVersionAtSnapshot;
+            this._storedHistoryTop = historySnapshot[historyIndex] ?? null;
           }
 
           // Mark clean only if no new edits landed while this save was in flight.
@@ -3219,7 +3233,17 @@ export class DrawingApp extends LitElement {
     this._canUndo = e.detail.canUndo;
     this._canRedo = e.detail.canRedo;
     // A float starting only makes Undo apply; nothing to save.
-    if (e.detail.stackChanged !== false) this._markDirty();
+    if (e.detail.stackChanged !== false) {
+      // A float committed just as the last save stored it merged (with the
+      // entry its commit pushes, now on top): storage already has this, so
+      // leaving needn't ask (the save still runs, finding nothing new).
+      const history = e.detail.committedAsPreviewed ? this.canvas?.getHistory() : null;
+      const top = history?.[this.canvas!.getHistoryIndex()];
+      const stored = !!history && this._storedContentVersion === this._contentVersion
+        && (top ?? null) === this._storedHistoryTop;
+      this._markDirty();
+      if (stored) this._storedContentVersion = this._contentVersion;
+    }
     this._reportModified();
   }
 
