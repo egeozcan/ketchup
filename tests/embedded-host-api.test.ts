@@ -466,6 +466,20 @@ describe('embedded host API', () => {
     expect(changes).toEqual([true, false]);
   });
 
+  it('keeps Ctrl+S from the browser\'s "Save page as" while a document is being replaced, asking nothing of the host', () => {
+    const { app } = appWithHistory(true);
+    const requests: Event[] = [];
+    app.addEventListener('save-request', (e) => requests.push(e));
+    (app as any)._replacing = true;
+    const e = keydown(app, 's');
+    expect(e.preventDefault).toHaveBeenCalled();
+    expect(requests).toHaveLength(0);
+    // Standalone, the browser's own Ctrl+S is left alone.
+    const standalone = appWithHistory(false);
+    (standalone.app as any)._replacing = true;
+    expect(keydown(standalone.app, 's').preventDefault).not.toHaveBeenCalled();
+  });
+
   it('ignores Ctrl+Shift+S and Ctrl+Alt+S when embedded', () => {
     const { app } = appWithHistory(true);
     const requests: Event[] = [];

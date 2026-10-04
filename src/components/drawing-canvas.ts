@@ -2019,8 +2019,11 @@ export class DrawingCanvas extends LitElement {
     const docPoint = this._getDocPoint(e);
     const color = this._sampleColor(docPoint.x, docPoint.y);
 
+    // The loupe's cells are document pixels, read from what is picked from:
+    // the flattened document or the active layer (not the display canvas,
+    // whose device pixels differ from them by zoom and devicePixelRatio).
     const sampleAll = this.ctx.state.eyedropperSampleAll;
-    const sourceCanvas = sampleAll ? this.mainCanvas : (this._getActiveLayerCtx()?.canvas ?? this.mainCanvas);
+    const sourceCanvas = sampleAll ? this._ensureSamplingBuffer().canvas : this._getActiveLayerCtx()?.canvas;
 
     const GRID_SIZE = 88;
     const SWATCH_HEIGHT = 24;
@@ -2037,12 +2040,7 @@ export class DrawingCanvas extends LitElement {
     previewCtx.save();
     previewCtx.imageSmoothingEnabled = false;
 
-    if (sampleAll) {
-      // The display's own pixels, which are device pixels.
-      const srcX = Math.floor(view.x * this.mainCanvas.width / this._vw);
-      const srcY = Math.floor(view.y * this.mainCanvas.height / this._vh);
-      previewCtx.drawImage(this.mainCanvas, srcX - 5, srcY - 5, 11, 11, destX, destY, GRID_SIZE, GRID_SIZE);
-    } else {
+    if (sourceCanvas) {
       const srcX = Math.round(docPoint.x);
       const srcY = Math.round(docPoint.y);
       previewCtx.drawImage(sourceCanvas, srcX - 5, srcY - 5, 11, 11, destX, destY, GRID_SIZE, GRID_SIZE);

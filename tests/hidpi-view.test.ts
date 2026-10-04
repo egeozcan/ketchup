@@ -128,4 +128,22 @@ describe('DrawingCanvas on a high-DPI screen', () => {
     // A client pixel is 2/3 of a view pixel.
     expect((canvas as any)._clientToDoc(10 + 300, 20 + 150)).toEqual({ x: 200, y: 100 });
   });
+
+  it('shows document pixels in the eyedropper loupe, the ones picked, whatever the screen', () => {
+    setDevicePixelRatio(2);
+    const { canvas, mainCanvas, previewCanvas, resize } = setup(100, 100);
+    (canvas as any)._ctx.value.state.eyedropperSampleAll = true;
+    resize(1200, 800);
+    canvas.setViewport(2, 100, 50);
+    const draw = vi.spyOn(previewCanvas.getContext('2d')!, 'drawImage');
+    (canvas as any)._renderEyedropperPreview({ clientX: 10 + 300, clientY: 20 + 250 } as PointerEvent);
+    const loupe = draw.mock.calls.find(args => args.length === 9)!;
+    expect(loupe).toBeDefined();
+    const [source, sx, sy, sw, sh] = loupe as unknown as [HTMLCanvasElement, number, number, number, number];
+    // 11×11 document pixels centred on the picked one (100, 100), not the
+    // display canvas's device pixels.
+    expect(source).not.toBe(mainCanvas);
+    expect([source.width, source.height]).toEqual([800, 600]);
+    expect([sx, sy, sw, sh]).toEqual([95, 95, 11, 11]);
+  });
 });

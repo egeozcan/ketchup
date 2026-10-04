@@ -1221,9 +1221,12 @@ export class DrawingApp extends LitElement {
       }
       // Another tab created, renamed or deleted a project.
       else if (type === 'projects') void this._refreshProjects();
-      // Let go of by a tab whose editor left the page: edit it here again.
+      // Let go of by a tab whose editor left the page: edit it here again,
+      // if this tab is the one in view (a hidden tab tries for a free lock
+      // when it comes into view, so a background tab doesn't take the
+      // project from an editor that is only briefly out of its page).
       else if (type === 'free' && this._readOnly && !this._projectLock && this._currentProject?.id === id
-        && !this._detached) void this._editHere(false);
+        && !this._detached && document.visibilityState === 'visible') void this._editHere(false);
     });
   }
 
@@ -1364,6 +1367,10 @@ export class DrawingApp extends LitElement {
     this._handingOver = true;
     this._handOverAgain = false;
     this._handOverAgainAsks = [];
+    // A yes/no question answered after the flush below would change the
+    // document once it is stored (and let go of): answered no now. (A
+    // dropped image's resize question stays, inert, unless it ends read-only.)
+    this._confirmDialog?.dismiss();
     try {
       const held = this._projectLock;
       this._readOnly = true;
@@ -2273,12 +2280,14 @@ export class DrawingApp extends LitElement {
   }
 
   private _onKeyDown = (e: KeyboardEvent) => {
+    // Embedded, Ctrl/Cmd+S saves from anywhere, text fields included, rather
+    // than falling through to the browser's "Save page as" (which it never
+    // does, even while the key is otherwise ignored below).
+    const saveKey = (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key.toLowerCase() === 's' || e.code === 'KeyS') && this.embedded;
+    if (saveKey) e.preventDefault();
     // Shown here while another tab edits it: no edits by key either.
     if (this._readOnly || this._switching || this._replacing) return;
-    // Embedded, Ctrl/Cmd+S saves from anywhere, text fields included, rather
-    // than falling through to the browser's "Save page as".
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key.toLowerCase() === 's' || e.code === 'KeyS') && this.embedded) {
-      e.preventDefault();
+    if (saveKey) {
       // A held key repeats; one press is one save.
       if (!e.repeat) this._requestSave();
       return;
@@ -2782,6 +2791,9 @@ export class DrawingApp extends LitElement {
       undo: () => this.canvas?.undo(),
       redo: () => this.canvas?.redo(),
       clearCanvas: (allLayers = false) => {
+        // Also reached from a confirm answered late: nothing changes in a
+        // read-only, switching or replaced document.
+        if (this._readOnly || this._handingOver || this._switching || this._replacing) return;
         if (!allLayers) { this.canvas?.clearCanvas(); return; }
         // Every layer at once, as one undo step: the added layers go and the
         // bottom one comes back white.
@@ -3203,6 +3215,10 @@ export class DrawingApp extends LitElement {
       if (this._readOnly && !this._handingOver) this._dismissDialogs();
       else this.canvas?.dismissResizeDialog();
     }
+    // A yes/no question is never left answerable over a read-only editor,
+    // a hand-over or a document being replaced (its answer would land after).
+    if ((changed.has('_readOnly') || changed.has('_handingOver') || changed.has('_replacing'))
+      && (this._readOnly || this._handingOver || this._replacing)) this._confirmDialog?.dismiss();
   }
 
   override willUpdate() {
@@ -3433,6 +3449,8 @@ export class DrawingApp extends LitElement {
     // No input until the replacement (or the way back) is in: a stroke begun
     // on one document must not end on another's layer.
     this._replacing = true;
+    // A question about the document being replaced is answered no.
+    this._confirmDialog?.dismiss();
     try {
       await this._replaceDocumentBlocked(width, height, background, name, paint);
     } finally {

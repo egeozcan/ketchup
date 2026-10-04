@@ -1024,6 +1024,54 @@ describe('one tab edits a project at a time', () => {
     expect(canvas.dismissResizeDialog).toHaveBeenCalled();
   });
 
+  it('answers an open yes/no question no as soon as a hand-over starts, and clears nothing after', async () => {
+    fakeLocks();
+    const { app: editing, canvas } = makeApp();
+    await (editing as any)._enterProject(meta('p'), async () => {});
+    let resolveQuestion: ((ok: boolean) => void) | null = null;
+    const dialog = {
+      show: vi.fn(() => new Promise<boolean>(r => { resolveQuestion = r; })),
+      dismiss: vi.fn(() => { resolveQuestion?.(false); resolveQuestion = null; }),
+    };
+    Object.defineProperty(editing, '_confirmDialog', { configurable: true, value: dialog });
+    const ctx = (editing as any)._buildContextValue();
+    const answer = ctx.confirm({ message: 'Clear the whole drawing?' });
+    let openAtFlush: boolean | null = null;
+    (editing as any)._dirty = true;
+    (editing as any)._flushPendingSaveAndWait = vi.fn(async () => {
+      openAtFlush = resolveQuestion !== null;
+      (editing as any)._dirty = false;
+    });
+    (editing as any)._projectWanted = vi.fn(async () => false);
+    let answered: boolean | null = null;
+    void answer.then((ok: boolean) => { answered = ok; });
+    await (editing as any)._handOver('p', 'a');
+    // Answered no before the flush that stores the document for the other tab.
+    expect(openAtFlush).toBe(false);
+    expect(answered).toBe(false);
+
+    // A clear asked for while the tab can't edit (read-only, handing over,
+    // replacing its document) changes nothing.
+    for (const flag of ['_readOnly', '_handingOver', '_replacing']) {
+      (editing as any)[flag] = true;
+      ctx.clearCanvas(true);
+      ctx.clearCanvas();
+      (editing as any)[flag] = false;
+    }
+    expect(canvas.clearSelection).toHaveBeenCalledTimes(1);   // the hand-over's own commit
+    expect(canvas.clearCanvas).not.toHaveBeenCalled();
+
+    // Rendered read-only or replacing: the question is answered no as well.
+    for (const flag of ['_readOnly', '_replacing']) {
+      ctx.confirm({ message: '?' });
+      dialog.dismiss.mockClear();
+      (editing as any)[flag] = true;
+      (editing as any).updated(new Map([[flag, false]]));
+      (editing as any)[flag] = false;
+      expect(dialog.dismiss).toHaveBeenCalled();
+    }
+  });
+
   it('taking its project back after a hand-over, answers every tab that asked meanwhile with its own tag', async () => {
     vi.stubGlobal('BroadcastChannel', FakeChannel);
     fakeLocks();
@@ -1203,6 +1251,32 @@ describe('an editor taken out of the page', () => {
 
     (shown as any)._detached = false;
     await (shown as any)._editHere(false);
+    expect(load).toHaveBeenCalledWith('p');
+    expect((shown as any)._projectLock?.id).toBe('p');
+  });
+
+  it('lets only a tab in view take up a project an editor out of its page let go of', async () => {
+    const locks = fakeLocks();
+    const release = locks.holdElsewhere('ketchup-project:p');
+    const { app: shown } = makeApp();
+    await (shown as any)._enterProject(meta('p'), async () => {});
+    expect((shown as any)._readOnly).toBe(true);
+    const load = vi.fn(async () => {});
+    (shown as any)._loadProject = load;
+    const sender = new FakeChannel('ketchup-projects');
+    release();
+    await settle();
+
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    sender.postMessage({ type: 'free', id: 'p' });
+    await settle();
+    expect(load).not.toHaveBeenCalled();
+    expect((shown as any)._projectLock).toBeNull();
+    expect((shown as any)._readOnly).toBe(true);
+
+    visibility.mockReturnValue('visible');
+    sender.postMessage({ type: 'free', id: 'p' });
+    await settle();
     expect(load).toHaveBeenCalledWith('p');
     expect((shown as any)._projectLock?.id).toBe('p');
   });
