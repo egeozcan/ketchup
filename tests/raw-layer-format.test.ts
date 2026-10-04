@@ -381,6 +381,19 @@ describe('raw KTCH pixel format', () => {
         expect(counts.cancelled).toBe(1);
       });
 
+      it('starts without waiting on a timer (hidden tabs throttle those)', async () => {
+        vi.useFakeTimers();
+        installStreams();
+        const counts = installHungCompression();
+        const helpers = await freshHelpers();
+        void helpers.imageDataToBlob(pixels(2, 2)).catch(() => undefined);
+        expect(counts.constructed).toBe(0);
+        // Microtasks only: no timer is advanced.
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+        expect(counts.constructed).toBe(1);
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+
       it('falls back to PNG at once for 60 s after a timeout, then tests again', async () => {
         vi.useFakeTimers();
         installStreams();
@@ -411,6 +424,23 @@ describe('raw KTCH pixel format', () => {
         expect((await retry).type).toBe('image/png');
         expect(counts.cancelled).toBe(2);
       });
+    });
+
+    it('frees the canvas it encodes a PNG on', async () => {
+      installStreams();
+      vi.stubGlobal('CompressionStream', undefined);
+      const helpers = await freshHelpers();
+      const created: HTMLCanvasElement[] = [];
+      const createElement = document.createElement.bind(document);
+      vi.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
+        const el = createElement(tag);
+        if (tag === 'canvas') created.push(el as HTMLCanvasElement);
+        return el;
+      }) as typeof document.createElement);
+      const { usedPng } = await encodedAsPng(helpers);
+      expect(usedPng).toBe(true);
+      expect(created.length).toBeGreaterThan(0);
+      for (const c of created) expect([c.width, c.height]).toEqual([0, 0]);
     });
 
     it('serializeLayerFromImageData still stores a layer when falling back to PNG', async () => {

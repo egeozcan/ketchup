@@ -147,3 +147,52 @@ describe('malformed record checks', () => {
     expect(serializedHistoryEntryBytes(null as any)).toBe(0);
   });
 });
+
+describe('saving after a malformed record was dropped', () => {
+  it('saves without an error and reclaims the dropped entries\' blobs', async () => {
+    const { app, backend, project, records, corrupt } = await savedApp();
+    // Track what load hands the canvas so the next save writes it.
+    let history: HistoryEntry[] = [];
+    let index = -1;
+    const canvas = (app as any).canvas;
+    canvas.getHistory.mockImplementation(() => [...history]);
+    canvas.getHistoryIndex.mockImplementation(() => index);
+    canvas.setHistory.mockImplementation((h: HistoryEntry[], i: number) => { history = h; index = i; });
+    const refsOf = (e: any) => [e.before?.blobRef, e.after?.blobRef].filter(Boolean) as string[];
+    // The corrupted record loses its `before` ref, so only what it still names can be reclaimed.
+    const droppedRefs = [...refsOf(records[0].entry), (records[1].entry as any).after.blobRef];
+    await corrupt(1, (e) => { delete e.before; return e; });
+    await (app as any)._loadProject(project.id);
+    expect(history).toHaveLength(1);
+    expect((app as any)._historyNeedsRewrite).toBe(true);
+
+    (app as any)._dirty = true;
+    (app as any)._dirtyVersion++;
+    (app as any)._contentVersion++;
+    await (app as any)._save(true);
+    expect((app as any)._saveError).toBe(false);
+    expect((app as any)._dirty).toBe(false);
+    expect(await backend.history.getEntries(project.id)).toHaveLength(1);
+    await new Promise(r => setTimeout(r, 0));
+    for (const ref of droppedRefs) {
+      await expect(backend.blobs.get(ref as any)).rejects.toThrow();
+    }
+    // What the stored history now names survives.
+    const stored = await backend.history.getEntries(project.id);
+    for (const ref of refsOf(stored[0].entry)) {
+      await expect(backend.blobs.get(ref as any)).resolves.toBeInstanceOf(Blob);
+    }
+  });
+
+  it('deletes a project with a malformed stored record', async () => {
+    const { backend, project, records, corrupt } = await savedApp();
+    await corrupt(1, (e) => { delete e.before; e.layer = null; e.beforeLayers = 5; return e; });
+    await corrupt(0, () => null);
+    const { ProjectService } = await import('../src/storage/project-service.ts');
+    await new ProjectService(backend).deleteProject(project.id);
+    expect(await backend.projects.get(project.id)).toBeNull();
+    await new Promise(r => setTimeout(r, 0));
+    const ref = (records[2].entry as any).before.blobRef;
+    await expect(backend.blobs.get(ref)).rejects.toThrow();
+  });
+});

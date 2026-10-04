@@ -89,4 +89,40 @@ describe('IndexedDB backend lifecycle', () => {
     opened.push(await upgradeElsewhere(name, 6));
     await expect(backend.projects.list()).rejects.toMatchObject({ name: 'StorageClosedError', versionChange: true });
   });
+
+  it('never closes for an upgrade between writes that belong together', async () => {
+    const name = `together-${Math.random()}`;
+    backend = new IndexedDBBackend({ dbName: name, version: 5, onVersionChange: () => Promise.resolve() });
+    await backend.init();
+    let continueWrites!: () => void;
+    const paused = new Promise<void>(r => { continueWrites = r; });
+    const writes = backend.writeTogether(async () => {
+      await backend.state.save({ projectId: 'p' } as any);
+      await paused;
+      await backend.history.replaceAll('p', []);
+    });
+
+    let upgraded = false;
+    const upgrade = upgradeElsewhere(name, 6).then(db => { upgraded = true; opened.push(db); });
+    await new Promise(r => setTimeout(r, 50));
+    expect(upgraded).toBe(false);
+    // Nothing new starts once closing.
+    await expect(backend.writeTogether(async () => 1)).rejects.toMatchObject({ name: 'StorageClosedError', versionChange: true });
+
+    continueWrites();
+    await expect(writes).resolves.toBeUndefined();
+    await upgrade;
+    expect(upgraded).toBe(true);
+  });
+
+  it('opening storage a newer build has upgraded fails as closed for an upgrade', async () => {
+    const name = `newer-${Math.random()}`;
+    backend = new IndexedDBBackend({ dbName: name, version: 5 });
+    await backend.init();
+    await backend.dispose();
+    const db = await upgradeElsewhere(name, 6);
+    db.close();
+    await expect(backend.init()).rejects.toMatchObject({ name: 'StorageClosedError', versionChange: true });
+    await expect(backend.projects.list()).rejects.toMatchObject({ versionChange: true });
+  });
 });

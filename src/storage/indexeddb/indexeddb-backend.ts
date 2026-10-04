@@ -24,6 +24,8 @@ export interface IndexedDBBackendOptions {
 
 /** How long a version change waits for `onVersionChange` before closing anyway. */
 const VERSION_CHANGE_WAIT = 10000;
+/** How long closing then waits for writes under way in `writeTogether`. */
+const WRITE_SETTLE_WAIT = 10000;
 
 const DEFAULT_DB_NAME = 'ketchup-projects';
 // v5 is a format gate, with no schema change from v4: layer and history blobs
@@ -73,6 +75,10 @@ export class IndexedDBBackend implements StorageBackend {
   private _opening: Promise<IDBDatabase> | null = null;
   /** Closed for another window's upgrade: only a reload opens it again. */
   private _versionChanged = false;
+  /** Writes under way in `writeTogether`, which closing waits for. */
+  private _writes = new Set<Promise<unknown>>();
+  /** Closing for an upgrade: `writeTogether` starts nothing new. */
+  private _closingFor: IDBDatabase | null = null;
 
   constructor(opts?: IndexedDBBackendOptions) {
     this._dbName = opts?.dbName ?? DEFAULT_DB_NAME;
@@ -91,10 +97,32 @@ export class IndexedDBBackend implements StorageBackend {
     return Promise.reject(this._closedError());
   };
 
-  private _closedError() {
-    return this._versionChanged
-      ? new StorageClosedError('Storage was upgraded by another window; reload to use it', true)
-      : new StorageClosedError('Storage is closed');
+  async writeTogether<T>(fn: () => Promise<T>): Promise<T> {
+    if (this._closingFor && this._closingFor === this._db) throw this._closedError(true);
+    const run = fn();
+    const settled = run.then(() => {}, () => {});
+    this._writes.add(settled);
+    try {
+      return await run;
+    } finally {
+      this._writes.delete(settled);
+    }
+  }
+
+  /** Resolves once the writes under way now have settled, or after `WRITE_SETTLE_WAIT`. */
+  private _writesSettled(): Promise<void> {
+    if (this._writes.size === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, WRITE_SETTLE_WAIT);
+      void Promise.all([...this._writes]).then(() => { clearTimeout(timer); resolve(); });
+    });
+  }
+
+  private _closedError(versionChange = this._versionChanged) {
+    if (versionChange) {
+      return new StorageClosedError('Storage was upgraded by another window; reload to use it', true);
+    }
+    return new StorageClosedError('Storage is closed');
   }
 
   async init(): Promise<void> {
@@ -107,6 +135,14 @@ export class IndexedDBBackend implements StorageBackend {
     this._opening = opening;
     try {
       this._db = await opening;
+    } catch (e) {
+      // Already at a higher version: a newer build upgraded it (while this
+      // editor was out of the page, say). This build may not read what it writes.
+      if ((e as { name?: string } | null)?.name === 'VersionError') {
+        this._versionChanged = true;
+        throw new StorageClosedError('Storage was upgraded by another window; reload to use it', true, e);
+      }
+      throw e;
     } finally {
       if (this._opening === opening) this._opening = null;
     }
@@ -116,14 +152,25 @@ export class IndexedDBBackend implements StorageBackend {
     // under way here is stored (`onVersionChange`).
     db.onversionchange = () => {
       let closed = false;
+      // Never between writes that belong together (`writeTogether`): new
+      // ones are refused from here on, and those under way finish first.
       const close = () => {
         if (closed) return;
         closed = true;
-        db.close();
-        if (this._db === db) {
-          this._db = null;
-          this._versionChanged = true;
+        const finish = () => {
+          db.close();
+          if (this._closingFor === db) this._closingFor = null;
+          if (this._db === db) {
+            this._db = null;
+            this._versionChanged = true;
+          }
+        };
+        if (this._writes.size === 0) {
+          finish();
+          return;
         }
+        this._closingFor = db;
+        void this._writesSettled().then(finish);
       };
       let wait: Promise<void> | void = undefined;
       try {

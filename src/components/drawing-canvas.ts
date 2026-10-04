@@ -3444,6 +3444,15 @@ export class DrawingCanvas extends LitElement {
     this._notifyHistory();
   }
 
+  /**
+   * Whether the user is in the middle of something a reload would cut short
+   * though nothing of it is in history yet: a crop being set up, a selection
+   * being dragged out, or a resize dialog asking about a dropped image.
+   */
+  public hasInteractionInProgress(): boolean {
+    return this._cropRect !== null || this._selectionDrawing || !!this._resizeDialog?.asking;
+  }
+
   /** Closes a resize dialog still asking about a dropped image (the editor went inert). */
   public dismissResizeDialog() {
     this._resizeDialog?.dismiss();

@@ -907,15 +907,24 @@ describe('one tab edits a project at a time', () => {
     const asks: string[] = [];
     other.addEventListener('message', e => { if (e.data.type === 'release') asks.push(e.data.ask); });
 
+    // Taking the lock anyway takes a while (longer than a re-ask's pause),
+    // so the late answers below reach the request while it is still taking it.
+    const lockProject = (app as any)._lockProject.bind(app);
+    (app as any)._lockProject = (id: string, mode?: string) => (mode === 'steal'
+      ? new Promise(r => setTimeout(r, 5000)).then(() => lockProject(id, mode))
+      : lockProject(id, mode));
+
     vi.useFakeTimers();
     const done = (app as any)._editHere(true);
     await vi.advanceTimersByTimeAsync(2500);
     expect((app as any)._otherTabSilent).toBe(true);
-    (app as any)._forceTakeOver();
+    // Answers sent before "Use here anyway", arriving after it.
     other.postMessage({ type: 'releasing', id: 'p', ask: asks[0] });
     other.postMessage({ type: 'stayed', id: 'p', asks: [asks[0]] });
+    (app as any)._forceTakeOver();
     await vi.advanceTimersByTimeAsync(20000);
     await done;
+    // No re-ask after "stayed" (a release the old holder would act on).
     expect(asks).toHaveLength(1);
     expect((app as any)._otherTabSilent).toBe(false);
     expect((app as any)._readOnly).toBe(false);
@@ -953,7 +962,11 @@ describe('one tab edits a project at a time', () => {
     const { app: editing, canvas } = makeApp();
     await (editing as any)._enterProject(meta('p'), async () => {});
     (editing as any)._dirty = true;
-    const flush = vi.fn(async () => { (editing as any)._saveFailed = true; });
+    const flush = vi.fn(async () => {
+      // Rendered read-only meanwhile (the app isn't in the page, so Lit won't call it).
+      (editing as any).updated(new Map([['_readOnly', false]]));
+      (editing as any)._saveFailed = true;
+    });
     (editing as any)._flushPendingSaveAndWait = flush;
     const other = new FakeChannel('ketchup-projects');
     const answers: unknown[] = [];
@@ -985,7 +998,13 @@ describe('one tab edits a project at a time', () => {
     const locks = fakeLocks();
     const { app: editing, canvas } = makeApp();
     await (editing as any)._enterProject(meta('p'), async () => {});
-    (editing as any)._projectWanted = vi.fn(async () => false);
+    // Rendered read-only during the hand-over (the app isn't in the page, so
+    // Lit won't call `updated`): the dialog must stay until it is over.
+    const renderReadOnly = () => {
+      expect((editing as any)._readOnly).toBe(true);
+      (editing as any).updated(new Map([['_readOnly', false]]));
+    };
+    (editing as any)._projectWanted = vi.fn(async () => { renderReadOnly(); return false; });
     const other = new FakeChannel('ketchup-projects');
     const answers: unknown[] = [];
     other.addEventListener('message', e => answers.push(e.data));
@@ -996,13 +1015,43 @@ describe('one tab edits a project at a time', () => {
     expect(canvas.dismissResizeDialog).not.toHaveBeenCalled();
 
     // Someone waiting this time.
-    (editing as any)._projectWanted = vi.fn(async () => true);
+    (editing as any)._projectWanted = vi.fn(async () => { renderReadOnly(); return true; });
     void locks.request('ketchup-project:p', {}, () => new Promise(() => {}));
     other.postMessage({ type: 'release', id: 'p', ask: 'b' });
     await settle();
     expect((editing as any)._readOnly).toBe(true);
     expect((editing as any)._projectLock).toBeNull();
     expect(canvas.dismissResizeDialog).toHaveBeenCalled();
+  });
+
+  it('taking its project back after a hand-over, answers every tab that asked meanwhile with its own tag', async () => {
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    fakeLocks();
+    const { app: editing } = makeApp();
+    await (editing as any)._enterProject(meta('p'), async () => {});
+    // The asking tab gave up between the check and the release.
+    (editing as any)._projectWanted = vi.fn(async () => true);
+    // Taking it back takes a moment, during which two tabs ask.
+    const lockProject = (editing as any)._lockProject.bind(editing);
+    let slow = false;
+    (editing as any)._lockProject = (id: string, mode?: string) => (slow
+      ? new Promise(r => setTimeout(r, 50)).then(() => lockProject(id, mode))
+      : lockProject(id, mode));
+    const other = new FakeChannel('ketchup-projects');
+    const answers: { type: string; ask?: string }[] = [];
+    other.addEventListener('message', e => answers.push(e.data));
+
+    slow = true;
+    other.postMessage({ type: 'release', id: 'p', ask: 'first' });
+    await flush();
+    await flush();
+    other.postMessage({ type: 'release', id: 'p', ask: 'a' });
+    other.postMessage({ type: 'release', id: 'p', ask: 'b' });
+    await new Promise(r => setTimeout(r, 100));
+    slow = false;
+    await settle(20);
+    const releasing = answers.filter(a => a.type === 'releasing').map(a => a.ask);
+    expect(releasing).toEqual(expect.arrayContaining(['first', 'a', 'b']));
   });
 
   it('"Use here" gets the project from a holder whose long save ended before it saw the request', async () => {
@@ -1116,10 +1165,12 @@ describe('an editor taken out of the page', () => {
     document.body.replaceChildren();
   });
 
-  it('during a "Use here" wait loads nothing (its storage may be closed), lets the project go, and edits it on return', async () => {
+  it('during a "Use here" wait loads nothing (its storage may be closed), lets the project go back to the tab that handed it over, and edits it on return', async () => {
     const locks = fakeLocks();
     const { app: editing } = makeApp();
     await (editing as any)._enterProject(meta('p'), async () => {});
+    const editingLoad = vi.fn(async () => {});
+    (editing as any)._loadProject = editingLoad;
     (editing as any)._dirty = true;
     (editing as any)._flushPendingSaveAndWait = vi.fn(async () => {
       await new Promise(r => setTimeout(r, 3000));
@@ -1141,6 +1192,12 @@ describe('an editor taken out of the page', () => {
     expect(load).not.toHaveBeenCalled();
     expect((shown as any)._projectLock).toBeNull();
     expect((shown as any)._readOnly).toBe(true);
+    await settle();
+    // Not left to no one: the tab that handed it over edits it again, as stored.
+    expect(editingLoad).toHaveBeenCalledWith('p');
+    expect((editing as any)._projectLock?.id).toBe('p');
+    expect((editing as any)._readOnly).toBe(false);
+    (editing as any)._releaseProjectLock();
     await settle();
     expect(locks.held.has('ketchup-project:p')).toBe(false);
 
@@ -1228,6 +1285,29 @@ describe('a newer build', () => {
     expect(reload).toHaveBeenCalled();
   });
 
+  it('upgrading storage while holding work kept from a take-over: stores it as a new project first', async () => {
+    const locks = fakeLocks();
+    const { app, backend, project } = await makeSavingApp('Q');
+    (app as any)._reload = vi.fn();
+    (app as any)._contentVersion++;
+    (app as any)._dirty = true;
+    void locks.request(`ketchup-project:${project.id}`, { steal: true }, () => new Promise(() => {}));
+    await settle();
+    expect((app as any)._stranded).toBe(true);
+
+    await (app as any)._onStorageVersionChange();
+    const copy = (app as any)._currentProject;
+    expect(copy.name).toBe('Q (copy)');
+    expect(await backend.state.get(copy.id)).toBeTruthy();
+    expect((app as any)._stranded).toBe(false);
+    expect((app as any)._storageClosed).toBe(true);
+    expect((app as any)._readOnly).toBe(true);
+    await settle();
+    // Let go for the newer build, which a reload reopens on the copy.
+    expect(locks.held.has(`ketchup-project:${copy.id}`)).toBe(false);
+    expect(sessionStorage.getItem('ketchup-tab-project')).toBe(copy.id);
+  });
+
   it('upgrading storage: a real window of the app steps aside so the upgrade goes ahead', async () => {
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
     fakeLocks();
@@ -1261,6 +1341,46 @@ describe('a newer build', () => {
     });
   });
 
+  it('upgraded while the editor was out of the page: back, it steps aside instead of loading', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    const locks = fakeLocks();
+    const { app } = makeApp();
+    (app as any)._reload = vi.fn();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    document.body.append(app);
+    await app.whenReady();
+    await settle();
+    const id = (app as any)._currentProject.id;
+    app.remove();
+    await vi.waitFor(() => expect((app as any)._backendClosed).toBe(true));
+    // Another window, on a newer build, upgrades storage meanwhile.
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = indexedDB.open('ketchup-projects', 6);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+
+    const load = vi.spyOn(app as any, '_loadProject');
+    document.body.append(app);
+    await settle(30);
+    expect((app as any)._storageClosed).toBe(true);
+    expect((app as any)._updateRequired).toBe(true);
+    expect((app as any)._readOnly).toBe(true);
+    expect(load).not.toHaveBeenCalled();
+    expect((app as any)._saveError).toBe(false);
+    expect((app as any)._projectLock).toBeNull();
+    expect(locks.held.has(`ketchup-project:${id}`)).toBe(false);
+    await app.updateComplete;
+    expect(app.shadowRoot!.querySelector('.read-only')!.textContent).toContain('Ketchup was updated in another window');
+    app.remove();
+    await new Promise<void>(resolve => {
+      const req = indexedDB.deleteDatabase('ketchup-projects');
+      req.onsuccess = () => resolve();
+      req.onerror = () => resolve();
+    });
+  });
+
   it('taking over the service worker: reloads once the page is hidden with its work stored, and offers it meanwhile', async () => {
     fakeLocks();
     const { app } = await makeSavingApp();
@@ -1275,6 +1395,48 @@ describe('a newer build', () => {
     (app as any)._onVisibilityChange();
     await vi.waitFor(() => expect(reload).toHaveBeenCalled());
     expect((app as any)._dirty).toBe(false);
+  });
+
+  it('taking over the service worker: never reloads away a crop being set up or a dropped image\'s resize question', async () => {
+    fakeLocks();
+    const { app, canvas } = await makeSavingApp();
+    const reload = vi.fn();
+    (app as any)._reload = reload;
+    const busy = canvas.hasInteractionInProgress as ReturnType<typeof vi.fn>;
+    busy.mockReturnValue(true);
+    app.updateReady();
+    hidden = true;
+    (app as any)._onVisibilityChange();
+    await settle(20);
+    expect(reload).not.toHaveBeenCalled();
+
+    // Done with it: the next time the page is hidden, it reloads.
+    busy.mockReturnValue(false);
+    hidden = false;
+    (app as any)._onVisibilityChange();
+    hidden = true;
+    (app as any)._onVisibilityChange();
+    await vi.waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('counts a crop being set up, a selection being dragged and an open resize question as in progress', async () => {
+    const { DrawingCanvas } = await import('../src/components/drawing-canvas.ts');
+    const { ResizeDialog } = await import('../src/components/resize-dialog.ts');
+    const canvas = new DrawingCanvas();
+    const dialog = new ResizeDialog();
+    Object.defineProperty(canvas, '_resizeDialog', { configurable: true, value: dialog });
+    expect(canvas.hasInteractionInProgress()).toBe(false);
+    (canvas as any)._cropRectValue = { x: 0, y: 0, w: 5, h: 5 };
+    expect(canvas.hasInteractionInProgress()).toBe(true);
+    (canvas as any)._cropRectValue = null;
+    (canvas as any)._selectionDrawing = true;
+    expect(canvas.hasInteractionInProgress()).toBe(true);
+    (canvas as any)._selectionDrawing = false;
+    const answer = dialog.show(100, 100, 10, 10);
+    expect(canvas.hasInteractionInProgress()).toBe(true);
+    dialog.dismiss();
+    await answer;
+    expect(canvas.hasInteractionInProgress()).toBe(false);
   });
 
   it('taking over the service worker: never reloads away work that could not be stored', async () => {

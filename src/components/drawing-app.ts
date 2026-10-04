@@ -6,7 +6,7 @@ import { blendModeToCompositeOp, type BlendMode, type BrushDescriptor, type TipD
 import { getDefaultDescriptor, getPresetById } from '../engine/brush-presets.js';
 import type { DrawingState, HistoryEntry, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
-import { IndexedDBBackend, MemoryBackend, ProjectService, StorageQuotaError, StorageNotFoundError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
+import { IndexedDBBackend, MemoryBackend, ProjectService, StorageQuotaError, StorageNotFoundError, StorageClosedError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
 import type { StorageBackend, BlobStore, BlobRef, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord, StampEntry } from '../storage/types.js';
 import { canvasToBlob, PixelDecodeError } from '../utils/canvas-helpers.js';
 import { hashImageData } from '../utils/image-diff.js';
@@ -816,6 +816,12 @@ export class DrawingApp extends LitElement {
       // Back in the page, storage may still be reopening.
       if (this._backendReopen) await this._backendReopen;
       if (superseded()) return;
+      // Found upgraded by a newer build meanwhile: nothing can load here.
+      if (this._storageClosed) {
+        this._currentProject = meta;
+        this._readOnly = true;
+        return;
+      }
       this._currentProject = meta;
       // One tab edits a project at a time: in another's, it's only shown.
       if (!(await this._lockProject(meta.id))) this._readOnly = true;
@@ -916,8 +922,8 @@ export class DrawingApp extends LitElement {
   private _tabs: BroadcastChannel | null = null;
   /** Another tab asked for the project while this one was taking it back after a hand-over. */
   private _handOverAgain = false;
-  /** What that tab's `release` was tagged with, so it is answered with it. */
-  private _handOverAgainAsk: string | undefined;
+  /** What those tabs' `release`s were tagged with, so each is answered with its own. */
+  private _handOverAgainAsks: (string | undefined)[] = [];
   /** The `release` tags the hand-over under way answers (every tab asking during it). */
   private _handOverAsks: string[] = [];
   /** `release` tags already answered `kept`: asked again by them, the failing save isn't retried. */
@@ -1136,10 +1142,13 @@ export class DrawingApp extends LitElement {
       // Asked while this tab takes the project back after a hand-over: asked again once it has.
       else if (type === 'release' && this._handingOver && this._currentProject?.id === id) {
         this._handOverAgain = true;
-        this._handOverAgainAsk = ask;
+        this._handOverAgainAsks.push(typeof ask === 'string' ? ask : undefined);
       }
       // Another tab created, renamed or deleted a project.
       else if (type === 'projects') void this._refreshProjects();
+      // Let go of by a tab whose editor left the page: edit it here again.
+      else if (type === 'free' && this._readOnly && !this._projectLock && this._currentProject?.id === id
+        && !this._detached) void this._editHere(false);
     });
   }
 
@@ -1279,6 +1288,7 @@ export class DrawingApp extends LitElement {
     if (this._handingOver) return;
     this._handingOver = true;
     this._handOverAgain = false;
+    this._handOverAgainAsks = [];
     try {
       const held = this._projectLock;
       this._readOnly = true;
@@ -1327,11 +1337,15 @@ export class DrawingApp extends LitElement {
       this._handingOver = false;
       // Another tab asked while the project was being taken back.
       const again = this._handOverAgain;
+      const againAsks = this._handOverAgainAsks;
       this._handOverAgain = false;
+      this._handOverAgainAsks = [];
       // Gone read-only for good: a dialog left open would answer for a
       // document this tab no longer edits (`updated` leaves it to here).
       if (this._readOnly) this.canvas?.dismissResizeDialog();
-      if (again && this._projectLock?.id === id) void this._handOver(id, this._handOverAgainAsk);
+      // Every tab that asked is answered with its own tag (the first call
+      // starts the hand-over, the rest join it).
+      if (again && this._projectLock?.id === id) for (const ask of againAsks) void this._handOver(id, ask);
     }
   }
 
@@ -1380,10 +1394,16 @@ export class DrawingApp extends LitElement {
       // Keep was chosen meanwhile: a lock got stays (Keep moves it to the copy),
       // and nothing is reloaded over the work Keep is saving.
       if (!got || this._claimCancelled) return;
+      // Back in the page, storage may still be reopening (and find it upgraded).
+      if (this._backendReopen) await this._backendReopen;
       // Taken out of the page during the wait (its storage may be closed):
       // let go, and a return edits it again (`connectedCallback`).
       if (this._detached || this._updateRequired) {
-        if (this._ownsProject(meta.id)) this._releaseProjectLock();
+        if (this._ownsProject(meta.id)) {
+          this._releaseProjectLock();
+          // The tab that handed it over may be showing it to no one's lock.
+          this._announceFree(meta.id);
+        }
         return;
       }
       // Opened as it is now (renamed meanwhile, say). Another project opened
@@ -1966,27 +1986,33 @@ export class DrawingApp extends LitElement {
             }
 
             // Reclaim superseded blob refs (layers + thumbnail + replaced history).
-            const newLayerRefs = new Set(layers.map(l => l.imageBlobRef));
-            const staleRefs: BlobRef[] = oldLayerRefs.filter(r => !newLayerRefs.has(r));
-            if (oldThumbRef && oldThumbRef !== newThumbRef) {
-              staleRefs.push(oldThumbRef);
-            }
-            // Entries that left the undo stack no longer need their blobs.
-            if (!clearExistingHistory) {
-              for (const [, saved] of historyPlan.remove) staleRefs.push(...saved.blobRefs);
-            }
-            // When history is fully rewritten, the old entries' blobs are orphaned.
-            if (clearExistingHistory && oldHistoryEntries.length > 0) {
-              const oldHistoryRefs = new Set<BlobRef>();
-              for (const h of oldHistoryEntries) collectBlobRefsFromEntry(h.entry, oldHistoryRefs);
-              const newHistoryRefs = new Set<BlobRef>();
-              for (const h of serializedEntries) collectBlobRefsFromEntry(h.entry, newHistoryRefs);
-              for (const ref of oldHistoryRefs) {
-                if (!newHistoryRefs.has(ref)) staleRefs.push(ref);
+            // Best-effort: state and history are already stored, so nothing
+            // here (a malformed stored record, say) may fail the save.
+            try {
+              const newLayerRefs = new Set(layers.map(l => l.imageBlobRef));
+              const staleRefs: BlobRef[] = oldLayerRefs.filter(r => !newLayerRefs.has(r));
+              if (oldThumbRef && oldThumbRef !== newThumbRef) {
+                staleRefs.push(oldThumbRef);
               }
-            }
-            if (staleRefs.length > 0) {
-              blobs.deleteMany(staleRefs).catch(() => {/* best-effort cleanup */});
+              // Entries that left the undo stack no longer need their blobs.
+              if (!clearExistingHistory) {
+                for (const [, saved] of historyPlan.remove) staleRefs.push(...saved.blobRefs);
+              }
+              // When history is fully rewritten, the old entries' blobs are orphaned.
+              if (clearExistingHistory && oldHistoryEntries.length > 0) {
+                const oldHistoryRefs = new Set<BlobRef>();
+                for (const h of oldHistoryEntries) collectBlobRefsFromEntry(h?.entry, oldHistoryRefs);
+                const newHistoryRefs = new Set<BlobRef>();
+                for (const h of serializedEntries) collectBlobRefsFromEntry(h.entry, newHistoryRefs);
+                for (const ref of oldHistoryRefs) {
+                  if (!newHistoryRefs.has(ref)) staleRefs.push(ref);
+                }
+              }
+              if (staleRefs.length > 0) {
+                blobs.deleteMany(staleRefs).catch(() => {/* best-effort cleanup */});
+              }
+            } catch (cleanupErr) {
+              console.warn('Blob cleanup after save failed:', cleanupErr);
             }
           };
 
@@ -2000,30 +2026,35 @@ export class DrawingApp extends LitElement {
             if (!earlyWrite && this._locks && !(await this._holdsProjectLock(projectId))) return false;
             // Save state + history atomically: if either fails, restore the
             // previous state record (so the project doesn't point at deleted
-            // blob refs) and clean up the new blobs.
-            try {
-              await this._backend!.state.save(stateRecord);
-              if (clearExistingHistory) {
-                await this._backend!.history.replaceAll(projectId, serializedEntries);
-              } else if (historyPlan.remove.length > 0 || serializedEntries.length > 0) {
-                // _planHistorySave only plans an incremental save when updateEntries exists.
-                await this._backend!.history.updateEntries!(
-                  projectId,
-                  historyPlan.remove.map(([, saved]) => saved.index),
-                  serializedEntries,
-                );
+            // blob refs) and clean up the new blobs. Written together, so
+            // storage closing for an upgrade waits for both (`writeTogether`).
+            const backend = this._backend!;
+            const writeBoth = async () => {
+              try {
+                await this._backend!.state.save(stateRecord);
+                if (clearExistingHistory) {
+                  await this._backend!.history.replaceAll(projectId, serializedEntries);
+                } else if (historyPlan.remove.length > 0 || serializedEntries.length > 0) {
+                  // _planHistorySave only plans an incremental save when updateEntries exists.
+                  await this._backend!.history.updateEntries!(
+                    projectId,
+                    historyPlan.remove.map(([, saved]) => saved.index),
+                    serializedEntries,
+                  );
+                }
+              } catch (saveErr) {
+                // Restore the previous state record so the project isn't left
+                // pointing at blob refs we're about to delete.
+                if (oldState) {
+                  await this._backend!.state.save(oldState).catch((rollbackErr) => {
+                    console.error('Failed to rollback state after save failure:', rollbackErr);
+                  });
+                }
+                blobs.deleteMany(pendingBlobRefs).catch(() => {});
+                throw saveErr;
               }
-            } catch (saveErr) {
-              // Restore the previous state record so the project isn't left
-              // pointing at blob refs we're about to delete.
-              if (oldState) {
-                this._backend!.state.save(oldState).catch((rollbackErr) => {
-                  console.error('Failed to rollback state after save failure:', rollbackErr);
-                });
-              }
-              blobs.deleteMany(pendingBlobRefs).catch(() => {});
-              throw saveErr;
-            }
+            };
+            await (backend.writeTogether ? backend.writeTogether(writeBoth) : writeBoth());
             await finishWrite();
             return true;
           };
@@ -3583,7 +3614,11 @@ export class DrawingApp extends LitElement {
     if (this._backendClosed && this._backend) {
       this._backendClosed = false;
       const reopen = this._backend.init()
-        .catch(e => console.error('Could not reopen storage:', e))
+        .catch(e => {
+          // Another window upgraded storage while this editor was away.
+          if (e instanceof StorageClosedError && e.versionChange) this._enterStorageClosed();
+          else console.error('Could not reopen storage:', e);
+        })
         .finally(() => { if (this._backendReopen === reopen) this._backendReopen = null; });
       this._backendReopen = reopen;
     }
@@ -3674,7 +3709,9 @@ export class DrawingApp extends LitElement {
       this._rejectReady(e);
       console.error('Storage initialization failed:', e);
       this._storageState = 'error';
-      this._storageError = 'Could not open local storage. Try reloading or checking browser storage settings.';
+      this._storageError = e instanceof StorageClosedError && e.versionChange
+        ? 'A newer version of Ketchup has updated local storage. Reload to use it.'
+        : 'Could not open local storage. Try reloading or checking browser storage settings.';
     }
   }
 
@@ -3768,10 +3805,26 @@ export class DrawingApp extends LitElement {
       setTimeout(() => this._leaveProject(), 100);
       return;
     }
+    const id = this._projectLock.id;
     this._releaseProjectLock();
+    this._announceFree(id);
     this._tabs?.close();
     this._tabs = null;
     this._readOnly = true;
+  }
+
+  /**
+   * Tells other tabs that this one let go of project `id` with no one asking
+   * for it (its editor left the page), once the browser has it free: a tab
+   * showing it read-only (one that handed it over, say) edits it again.
+   */
+  private _announceFree(id: string) {
+    if (!this._locks || typeof BroadcastChannel === 'undefined') return;
+    void this._lockAsked.then(() => {
+      const channel = new BroadcastChannel('ketchup-projects');
+      channel.postMessage({ type: 'free', id });
+      channel.close();
+    });
   }
 
   /** Taken out of the document (and not back yet). */
@@ -3818,16 +3871,31 @@ export class DrawingApp extends LitElement {
     try {
       if (this._dirty || this._savePromise) await this._flushPendingSaveAndWait();
       await this._savesDone();
+      // Work kept from a take-over can't be stored in its project, and the
+      // reload this window now needs would lose it: stored as a new project
+      // while storage is still open (what "Keep them as a new project" does).
+      if (this._stranded && !this._keeping) await this._keepAsNewProject();
     } finally {
-      this._storageClosed = true;
-      this._clearSaveError();
-      if (this._saveTimer) {
-        clearTimeout(this._saveTimer);
-        this._saveTimer = null;
-      }
-      this._releaseProjectLock();
-      if (document.hidden) this._reloadIfIdle();
+      this._enterStorageClosed();
     }
+  }
+
+  /**
+   * Storage is closed for a newer build's upgrade (now, or found so when
+   * reopening it on a return to the page): nothing is saved or loaded here
+   * any more, and the project is let go for the window that can edit it.
+   */
+  private _enterStorageClosed() {
+    this._updateRequired = true;
+    this._readOnly = true;
+    this._storageClosed = true;
+    this._clearSaveError();
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    this._releaseProjectLock();
+    if (document.hidden) this._reloadIfIdle();
   }
 
   /**
@@ -3862,7 +3930,9 @@ export class DrawingApp extends LitElement {
   private _reloadIfIdle() {
     if (!this._updateReady && !this._storageClosed) return;
     if (this._hasUnsavedWork() || this._savePromise || this._stranded || this._claiming || this._keeping
-      || this._handingOver || this._projectLoads > 0 || (this._dirty && !this._storageClosed)) return;
+      || this._handingOver || this._projectLoads > 0 || (this._dirty && !this._storageClosed)
+      // A crop being set up, a selection being dragged, a dropped image's resize dialog.
+      || this.canvas?.hasInteractionInProgress?.()) return;
     this._reload();
   }
 

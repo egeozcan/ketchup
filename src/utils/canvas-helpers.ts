@@ -78,10 +78,11 @@ function canCompress(): Promise<boolean> {
   if (!compressionTest) {
     if (Date.now() - compressionTimedOutAt < COMPRESSION_RETRY_AFTER_MS) return Promise.resolve(false);
     const test = new Promise<boolean>((resolve) => {
-      // The test starts (and its timeout with it) once the thread is free, so
-      // synchronous work the caller does right after this call doesn't count
-      // against it.
-      setTimeout(() => {
+      // The test starts (and its timeout with it) once the caller's
+      // synchronous work is done, so that doesn't count against it. A
+      // microtask, not a timer: hidden tabs throttle timers (to ~1 s), which
+      // would slow the save made as the page is hidden.
+      queueMicrotask(() => {
         const abort = new AbortController();
         let settled = false;
         // A stream that never resolves must not stall saves: past the timeout
@@ -101,7 +102,7 @@ function canCompress(): Promise<boolean> {
           else compressionTimedOutAt = Date.now();
           resolve(verdict === true);
         });
-      }, 0);
+      });
     });
     compressionTest = test;
     void test.then(() => { compressionTest = null; });
@@ -321,5 +322,7 @@ function encodePng(imageData: ImageData): Promise<Blob> {
   canvas.height = imageData.height;
   const ctx = canvas.getContext('2d')!;
   ctx.putImageData(imageData, 0, 0);
-  return canvasToBlob(canvas);
+  // Its pixels are freed at once rather than whenever it is collected.
+  const release = () => { canvas.width = 0; canvas.height = 0; };
+  return canvasToBlob(canvas).finally(release);
 }
