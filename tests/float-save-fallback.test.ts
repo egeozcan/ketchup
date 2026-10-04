@@ -48,54 +48,30 @@ async function setup(floatState: { x: number; key: string }) {
 
 describe('float layer fallback', () => {
   it('reads an unmoved float\'s layer back once, and again only once the float moves', async () => {
-    const backend = new MockBackend();
-    await backend.init();
-    const project = await backend.projects.create({ name: 'P', thumbnailRef: null });
-    const app = new DrawingApp();
-    const layer = makeLayer(20, 20, { id: 'l1' });
-    (app as any)._state = makeState({ layers: [layer], activeLayerId: 'l1', documentWidth: 20, documentHeight: 20 });
-    (app as any)._currentProject = project;
-    (app as any)._backend = backend;
-    const floatCanvas = document.createElement('canvas');
-    floatCanvas.width = 5; floatCanvas.height = 5;
-    let key = '7:0,0';
-    const getFloatSnapshot = vi.fn(() => ({ layerId: 'l1', tempCanvas: floatCanvas, x: 2, y: 2 }));
-    Object.defineProperty(app, 'canvas', {
-      configurable: true,
-      value: makeAppCanvasStub({
-        getHistory: vi.fn(() => []),
-        getHistoryIndex: vi.fn(() => -1),
-        setViewport: vi.fn(),
-        getLayerRevision: vi.fn(() => '1:0'),
-        getFloatKey: vi.fn(() => ({ layerId: 'l1', key })),
-        getFloatSnapshot,
-      }),
-    });
-    // Each save is for an edit (content changed), as an autosave during a float is.
-    const save = async () => {
-      (app as any)._dirty = true; (app as any)._dirtyVersion++; (app as any)._contentVersion++;
-      await (app as any)._save(true);
-    };
+    const float = { x: 2, key: '7:0,0' };
+    const { backend, project, layer, save, previewFloatCommit } = await setup(float);
     const ser = vi.spyOn(serialization, 'serializeLayerFromImageData');
     const liveRead = vi.spyOn(layer.canvas.getContext('2d')!, 'getImageData');
     await save();
-    expect(getFloatSnapshot).toHaveBeenCalledTimes(1);
+    expect(previewFloatCommit).toHaveBeenCalledTimes(1);
     expect(ser).toHaveBeenCalledTimes(1);
     const ref = (await backend.state.get(project.id))!.layers[0].imageBlobRef;
 
     // Same layer revision, same float: the stored blob stands, nothing is read.
     await save();
     await save();
-    expect(getFloatSnapshot).toHaveBeenCalledTimes(1);
+    expect(previewFloatCommit).toHaveBeenCalledTimes(1);
     expect(ser).toHaveBeenCalledTimes(1);
     expect(liveRead).not.toHaveBeenCalled();
     expect((await backend.state.get(project.id))!.layers[0].imageBlobRef).toBe(ref);
 
-    // The float moved: its layer is merged and read again (then stored if
-    // its pixels differ, which this canvas mock can't show).
-    key = '8:3,0';
+    // The float moved: its layer is merged and stored again.
+    float.x = 3;
+    float.key = '8:3,0';
     await save();
-    expect(getFloatSnapshot).toHaveBeenCalledTimes(2);
+    expect(previewFloatCommit).toHaveBeenCalledTimes(2);
+    expect(ser).toHaveBeenCalledTimes(2);
+    ser.mockRestore();
   });
 
   it('re-reads an unmoved float layer whose stored blob is no longer referenced', async () => {
