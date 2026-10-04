@@ -884,6 +884,12 @@ export class DrawingApp extends LitElement {
   private _tabs: BroadcastChannel | null = null;
   /** Another tab asked for the project while this one was taking it back after a hand-over. */
   private _handOverAgain = false;
+  /** What that tab's `release` was tagged with, so it is answered with it. */
+  private _handOverAgainAsk: string | undefined;
+  /** The `release` tags the hand-over under way answers (every tab asking during it). */
+  private _handOverAsks: string[] = [];
+  /** `release` tags already answered `kept`: asked again by them, the failing save isn't retried. */
+  private _keptAsks = new Set<string>();
   /** Saving to hand the project to the tab that asked for it. */
   @state() private _handingOver = false;
   /** The tab editing the project couldn't save, so it kept the project. */
@@ -969,7 +975,8 @@ export class DrawingApp extends LitElement {
   private _saveRetryDelay = DrawingApp.SAVE_RETRY_MIN;
   private static readonly SAVE_RETRY_MIN = 2000;
   private static readonly STEAL_WAIT = 2000;
-  private static readonly REASK_WAIT = 1500;
+  private static readonly REASK_WAIT = 500;
+  private static readonly MAX_REASKS = 3;
   private static readonly SAVE_RETRY_MAX = 60000;
   /** Why the last "Keep as a new project" failed, shown over the kept work. */
   @state() private _keepError = '';
@@ -1089,11 +1096,16 @@ export class DrawingApp extends LitElement {
     if (this._tabs || typeof BroadcastChannel === 'undefined') return;
     this._tabs = new BroadcastChannel('ketchup-projects');
     this._tabs.addEventListener('message', (e: MessageEvent) => {
-      const { type, id } = e.data ?? {};
+      const { type, id, ask } = e.data ?? {};
+      // A request already answered `kept`, asked again: still kept (no second failing save).
+      if (type === 'release' && typeof ask === 'string' && this._keptAsks.has(ask)) return;
       // Another tab wants to edit what this one is editing.
-      if (type === 'release' && this._projectLock?.id === id) void this._handOver(id);
+      if (type === 'release' && this._projectLock?.id === id) void this._handOver(id, ask);
       // Asked while this tab takes the project back after a hand-over: asked again once it has.
-      else if (type === 'release' && this._handingOver && this._currentProject?.id === id) this._handOverAgain = true;
+      else if (type === 'release' && this._handingOver && this._currentProject?.id === id) {
+        this._handOverAgain = true;
+        this._handOverAgainAsk = ask;
+      }
       // Another tab created, renamed or deleted a project.
       else if (type === 'projects') void this._refreshProjects();
     });
@@ -1119,16 +1131,16 @@ export class DrawingApp extends LitElement {
     }
   }
 
-  /** Whether a tab other than this one holds project `id`'s edit lock. */
-  private async _openInAnotherTab(id: string): Promise<boolean> {
+  /**
+   * Deletes project `id` unless a tab other than this one holds its edit
+   * lock; resolves whether it did. The lock is held through the delete, so
+   * no tab can start editing it in between.
+   */
+  private async _deleteUnlessOpenElsewhere(id: string): Promise<boolean> {
     const locks = this._locks;
-    if (!locks?.query || this._projectLock?.id === id) return false;
-    try {
-      const { held = [] } = await locks.query();
-      return held.some(lock => lock.name === `ketchup-project:${id}`);
-    } catch {
-      return false;
-    }
+    const remove = async () => { await this._projectService!.deleteProject(id); return true; };
+    if (!locks || this._projectLock?.id === id) return remove();
+    return locks.request(`ketchup-project:${id}`, { ifAvailable: true }, lock => (lock ? remove() : false));
   }
 
   private _lastSaveAnnounce = 0;
@@ -1210,22 +1222,28 @@ export class DrawingApp extends LitElement {
     } else {
       const meta = await backend.projects.create({ name: 'Untitled', thumbnailRef: null });
       this._projectList = [meta];
-      await this._enterProject(meta, async () => {
-        await this._resetToFreshProject();
-        this.canvas?.resetView();
-      });
+      try {
+        await this._enterProject(meta, async () => {
+          await this._resetToFreshProject();
+          this.canvas?.resetView();
+        });
+      } finally {
+        this._announceProjects();
+      }
       this._markDirty();
-      this._announceProjects();
     }
   }
 
   /**
    * Hands the project to the tab that asked: answers at once (that tab then
    * waits however long the save takes), stops edits here, saves, and lets
-   * go. A save that fails keeps the project here, with its work.
+   * go. A save that fails keeps the project here, with its work. `ask` tags
+   * the request, and every answer to it carries the tag.
    */
-  private async _handOver(id: string) {
-    this._tabs?.postMessage({ type: 'releasing', id });
+  private async _handOver(id: string, ask?: string) {
+    this._tabs?.postMessage({ type: 'releasing', id, ask });
+    if (!this._handingOver) this._handOverAsks = [];
+    if (typeof ask === 'string') this._handOverAsks.push(ask);
     if (this._handingOver) return;
     this._handingOver = true;
     this._handOverAgain = false;
@@ -1237,13 +1255,20 @@ export class DrawingApp extends LitElement {
       if (!held || this._projectLock !== held) return;
       if (this._dirty && this._saveFailed) {
         this._readOnly = this._noCanvas;
-        this._tabs?.postMessage({ type: 'kept', id });
+        for (const kept of this._handOverAsks) this._keptAsks.add(kept);
+        // Only the latest few can still be asking.
+        for (const old of this._keptAsks) if (this._keptAsks.size > 32) this._keptAsks.delete(old);
+        this._tabs?.postMessage({ type: 'kept', id, asks: this._handOverAsks });
         return;
       }
       // The tab that asked may have given up meanwhile: no one waiting, so
-      // stay editable rather than leave the project to no one.
+      // stay editable rather than leave the project to no one (and say so:
+      // one whose request just hadn't shown up yet asks again).
       if (!(await this._projectWanted(id))) {
-        if (this._projectLock === held) this._readOnly = this._noCanvas;
+        if (this._projectLock === held) {
+          this._readOnly = this._noCanvas;
+          this._tabs?.postMessage({ type: 'stayed', id, asks: this._handOverAsks });
+        }
         return;
       }
       if (this._projectLock !== held) return;
@@ -1264,7 +1289,10 @@ export class DrawingApp extends LitElement {
       // Another tab asked while the project was being taken back.
       const again = this._handOverAgain;
       this._handOverAgain = false;
-      if (again && this._projectLock?.id === id) void this._handOver(id);
+      // Gone read-only for good: a dialog left open would answer for a
+      // document this tab no longer edits (`updated` leaves it to here).
+      if (this._readOnly) this.canvas?.dismissResizeDialog();
+      if (again && this._projectLock?.id === id) void this._handOver(id, this._handOverAgainAsk);
     }
   }
 
@@ -1347,8 +1375,14 @@ export class DrawingApp extends LitElement {
       let stealing = false;
       let released = false;
       let offered = false;
+      let reasks = 0;
       let timer: ReturnType<typeof setTimeout> | undefined;
       let reask: ReturnType<typeof setTimeout> | undefined;
+      // Tags this request: answers to an earlier one (or another tab's) are told apart.
+      const ask = Math.random().toString(36).slice(2);
+      // An answer for this request, or for every tab asking (no tags).
+      const forThis = (data: { ask?: unknown; asks?: unknown }) => (data.ask === undefined && !Array.isArray(data.asks))
+        || data.ask === ask || (Array.isArray(data.asks) && data.asks.includes(ask));
       const answered = () => {
         clearTimeout(timer);
         clearTimeout(reask);
@@ -1359,24 +1393,30 @@ export class DrawingApp extends LitElement {
         if (e.data?.id !== id) return;
         if (e.data.type === 'releasing') {
           // Answered again whenever it is asked again: the 15 s run from the
-          // first answer, and an offer already made stays.
-          if (released) return;
+          // first answer, and an offer already made stays. Taking it anyway
+          // already, or an answer to another request: nothing to wait for.
+          if (released || stealing || !forThis(e.data)) return;
           released = true;
           clearTimeout(timer);
           // Saving to let go; if that seems stuck, taking over is offered
           // again (a save it has under way still lands first).
           if (!offered) timer = setTimeout(offerTakeOver, 15000);
-          // The holder may have looked for this tab's request before it was
-          // pending and kept the project: asked once more, it hands over (a
-          // holder still saving just answers again).
-          reask = setTimeout(() => tabs.postMessage({ type: 'release', id }), DrawingApp.REASK_WAIT);
+        }
+        // The holder saw no request of this tab's pending (it may not have
+        // shown up yet) and kept the project: asked again a few times, it
+        // hands over, however long its save took.
+        else if (e.data.type === 'stayed') {
+          if (stealing || !forThis(e.data) || reasks >= DrawingApp.MAX_REASKS) return;
+          reasks++;
+          clearTimeout(reask);
+          reask = setTimeout(() => tabs.postMessage({ type: 'release', id, ask }), DrawingApp.REASK_WAIT);
         }
         // Another tab asking at the same time got it (unless this one is
         // already taking it).
         else if (e.data.type === 'taken') { if (!stealing) this._cancelLockRequests(); }
         // Ends the wait below.
         else if (e.data.type === 'kept') {
-          if (stealing) return;
+          if (stealing || !forThis(e.data)) return;
           this._keptElsewhere = true;
           this._cancelLockRequests();
         }
@@ -1405,7 +1445,7 @@ export class DrawingApp extends LitElement {
         };
       };
       timer = setTimeout(offerTakeOver, 2000);
-      tabs.postMessage({ type: 'release', id });
+      tabs.postMessage({ type: 'release', id, ask });
     });
   }
 
@@ -1739,6 +1779,9 @@ export class DrawingApp extends LitElement {
           // Abort if the project was deleted (e.g. by another tab or a custom backend).
           // Writing state/history for a missing project creates orphaned data.
           if (!oldProject) {
+            // Embedded, nothing takes the work elsewhere (`_onProjectGone`), so
+            // it stays unsaved: a failed save, banner and all, like any other.
+            if (this.embedded) throw new Error('The project is no longer in storage');
             // Nothing can retry it now: the banner would stay up for good.
             this._clearSaveError();
             void this._onProjectGone(projectId);
@@ -2898,12 +2941,16 @@ export class DrawingApp extends LitElement {
             this._projectList = await this._backend!.projects.list();
             return;
           }
-          await this._enterProject(meta, async () => {
-            this._projectList = await this._backend!.projects.list();
-            await this._resetToFreshProject(width, height);
-            this.canvas?.resetView();
-          });
-          this._announceProjects();
+          try {
+            await this._enterProject(meta, async () => {
+              this._projectList = await this._backend!.projects.list();
+              await this._resetToFreshProject(width, height);
+              this.canvas?.resetView();
+            });
+          } finally {
+            // Also when its document couldn't be made: it is open, in a blank one.
+            this._announceProjects();
+          }
           this._markDirty();
         };
         doCreate()
@@ -2920,15 +2967,14 @@ export class DrawingApp extends LitElement {
             this.canvas?.clearSelection();
             if (this._savePromise || this._dirty) await this._flushPendingSaveAndWait();
           }
-          // Another tab editing it would lose what it has not stored.
-          if (await this._openInAnotherTab(id)) {
-            this._notice = 'That project is open in another tab. Close it there to delete it.';
-            return;
-          }
           // Its own deletion isn't a deletion by another tab, and nothing saves it back.
           this._deletingProject = id;
           try {
-            await this._projectService!.deleteProject(id);
+            // Another tab editing it would lose what it has not stored.
+            if (!(await this._deleteUnlessOpenElsewhere(id))) {
+              this._notice = 'That project is open in another tab. Close it there to delete it.';
+              return;
+            }
             this._announceProjects();
             this._projectList = await this._backend!.projects.list();
             if (request !== this._switchRequest && deletingCurrent) return;
@@ -2989,7 +3035,10 @@ export class DrawingApp extends LitElement {
   override updated(changed: PropertyValues) {
     // A dialog left open over an editor that is now inert (read-only, or
     // switching) would answer for a document this tab no longer edits.
-    if ((changed.has('_readOnly') || changed.has('_switching')) && (this._readOnly || this._switching)) {
+    // A hand-over may yet keep the project here (its save fails, or no one
+    // is waiting): `_handOver` dismisses it once it is over, if read-only.
+    if ((changed.has('_readOnly') || changed.has('_switching'))
+      && ((this._readOnly && !this._handingOver) || this._switching)) {
       this.canvas?.dismissResizeDialog();
     }
   }
@@ -3282,6 +3331,8 @@ export class DrawingApp extends LitElement {
           this._announceProjects();
         }
       }
+      // Kept (no previous project to go back to): open, in a blank document.
+      if (this._currentProject?.id === meta.id) this._announceProjects();
       this._projectList = await this._backend!.projects.list().catch(() => this._projectList);
       throw err;
     }
