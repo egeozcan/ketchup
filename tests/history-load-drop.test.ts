@@ -76,6 +76,45 @@ describe('loading history with damaged records', () => {
     await (app as any)._loadProject(project.id);
     expect(loaded()).toEqual({ xs: [3], index: 0 });
     expect((app as any)._currentProject.id).toBe(project.id);
+    // The next save deletes just the dropped records (not a full rewrite).
+    expect((app as any)._historyNeedsRewrite).toBe(false);
+    expect((app as any)._planHistorySave(project.id, (app as any).canvas.getHistory().slice(2)).rewrite).toBe(false);
+  });
+
+  it('deletes only the dropped records and their blobs at the next save, keeping the rest', async () => {
+    const { app, backend, project, records, corrupt } = await savedApp();
+    await corrupt(1, (e) => { delete e.before; return e; });
+    await (app as any)._loadProject(project.id);
+    const kept = records[2];
+    // The canvas now holds what was loaded: entry 3 alone.
+    const [entry] = (app as any).canvas.setHistory.mock.calls.at(-1)[0];
+    (app as any).canvas.getHistory = vi.fn(() => [entry]);
+    (app as any).canvas.getHistoryIndex = vi.fn(() => 0);
+    const replaceAll = vi.spyOn(backend.history, 'replaceAll');
+    const updateEntries = vi.spyOn(backend.history, 'updateEntries');
+    const deleteMany = vi.spyOn(backend.blobs, 'deleteMany');
+    (app as any)._dirty = true;
+    (app as any)._dirtyVersion++;
+    await (app as any)._save(true);
+
+    expect(replaceAll).not.toHaveBeenCalled();
+    expect(updateEntries).toHaveBeenCalledWith(project.id, [records[0].index, records[1].index], []);
+    expect(await backend.history.getEntries(project.id)).toEqual([kept]);
+    const freed = deleteMany.mock.calls.flatMap(([refs]) => refs);
+    expect(freed).toContain((records[0].entry as any).before.blobRef);
+    expect(freed).toContain((records[1].entry as any).after.blobRef);
+    expect(freed).not.toContain((kept.entry as any).after.blobRef);
+  });
+
+  it('rewrites stored history after a drop when stored indices are not distinct', async () => {
+    const { app, backend, project, records, loaded } = await savedApp();
+    const state = (await backend.state.get(project.id))!;
+    // Over the budget: only the newest is kept. Two dropped share an index.
+    await backend.history.replaceAll(project.id, [records[0], { ...records[1], index: records[0].index }, records[2]]);
+    await backend.state.save({ ...state, historyIndex: 2 });
+    vi.spyOn(await import('../src/utils/history-size.ts'), 'historyByteBudget').mockReturnValue(1);
+    await (app as any)._loadProject(project.id);
+    expect(loaded()!.xs).toEqual([3]);
     expect((app as any)._historyNeedsRewrite).toBe(true);
   });
 
@@ -164,7 +203,8 @@ describe('saving after a malformed record was dropped', () => {
     await corrupt(1, (e) => { delete e.before; return e; });
     await (app as any)._loadProject(project.id);
     expect(history).toHaveLength(1);
-    expect((app as any)._historyNeedsRewrite).toBe(true);
+    // Only the dropped records are deleted at the next save (no full rewrite).
+    expect((app as any)._historyNeedsRewrite).toBe(false);
 
     (app as any)._dirty = true;
     (app as any)._dirtyVersion++;

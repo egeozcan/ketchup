@@ -24,6 +24,8 @@ import { containsAcrossShadows } from '../utils/focus-editor.js';
 import './drawing-canvas.js';
 import './layers-panel.js';
 import './navigator-panel.js';
+import './confirm-dialog.js';
+import type { ConfirmDialog, ConfirmOptions } from './confirm-dialog.js';
 
 /** A document state as the undo stack describes it; see `DrawingApp._savedDocument`. */
 interface DocumentMark {
@@ -63,6 +65,24 @@ function keepsFloat(tool: ToolType): boolean {
  */
 export function shouldUseMobileLayout(width: number, currentlyMobile: boolean): boolean {
   return currentlyMobile ? width <= MOBILE_EXIT_WIDTH : width < MOBILE_ENTER_WIDTH;
+}
+
+/** The blobs a stored history record points at; for a malformed one, every `blobRef` found in it. */
+function historyRecordBlobRefs(record: ProjectHistoryRecord): BlobRef[] {
+  const refs = new Set<BlobRef>();
+  try {
+    collectBlobRefsFromEntry(record.entry, refs);
+  } catch {
+    const visit = (value: unknown, depth: number) => {
+      if (!value || typeof value !== 'object' || depth > 4) return;
+      for (const [key, child] of Object.entries(value)) {
+        if (key === 'blobRef' && typeof child === 'string') refs.add(child as BlobRef);
+        else visit(child, depth + 1);
+      }
+    };
+    visit(record.entry, 0);
+  }
+  return [...refs].filter(ref => typeof ref === 'string' && ref !== '');
 }
 
 @customElement('drawing-app')
@@ -127,6 +147,24 @@ export class DrawingApp extends LitElement {
       color: #fff;
       font-size: 13px;
       pointer-events: none;
+    }
+
+    .save-banner.actionable {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      pointer-events: auto;
+    }
+
+    .save-banner button {
+      flex: none;
+      padding: 4px 10px;
+      border: none;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.2);
+      color: #fff;
+      font-size: 13px;
+      cursor: pointer;
     }
 
     .save-error {
@@ -427,6 +465,18 @@ export class DrawingApp extends LitElement {
   private _desktopLayersPanelOpen: boolean | null = null;
 
   @query('drawing-canvas') canvas!: DrawingCanvas;
+  @query('confirm-dialog') private _confirmDialog!: ConfirmDialog | null;
+
+  /** Asks the user in the editor's own dialog; false if it can't be shown (storage not ready). */
+  private _confirm(options: ConfirmOptions): Promise<boolean> {
+    return this._confirmDialog?.show(options) ?? Promise.resolve(false);
+  }
+
+  /** Closes the questions open about this document unanswered (it went read-only or was replaced). */
+  private _dismissDialogs() {
+    this.canvas?.dismissResizeDialog();
+    this._confirmDialog?.dismiss();
+  }
 
   private _provider!: ContextProvider<typeof drawingContext>;
 
@@ -678,11 +728,14 @@ export class DrawingApp extends LitElement {
   }
 
   /** Back online: a save that failed may work now, so try at once. */
-  private _onOnline = () => {
+  private _onOnline = () => this._retrySaveNow();
+
+  /** Tries unsaved work again now (back online, space freed, or asked to). */
+  private _retrySaveNow() {
     if (!this._dirty || !this._autosave || this._projectLoads > 0) return;
     this._cancelSaveRetry();
     if (!this._savePromise) this._scheduleSave();
-  };
+  }
 
   private _updateBrush(partial: Partial<BrushDescriptor>) {
     this._state = {
@@ -763,6 +816,7 @@ export class DrawingApp extends LitElement {
     history: HistoryEntry[],
     records: ProjectHistoryRecord[],
     layerBlobs = new Map<string, SavedLayerBlob>(),
+    dropped: ProjectHistoryRecord[] = [],
   ) {
     this._trackedProjectId = projectId;
     this._trackingGeneration++;
@@ -771,8 +825,20 @@ export class DrawingApp extends LitElement {
       collectBlobRefsFromEntry(records[i].entry, refs);
       return [entry, { index: records[i].index, blobRefs: [...refs] }];
     }));
-    this._nextHistoryRecordIndex = records.reduce((next, r) => Math.max(next, r.index + 1), 0);
-    this._historyNeedsRewrite = false;
+    // Stored entries the load left off the stack (over the memory budget, or
+    // undecodable) are tracked under stand-in keys that are never on it, so
+    // the next save deletes just them, as entries that left the stack,
+    // rather than rewriting every kept one. Removal goes by index, so that
+    // needs every stored index to be a distinct number; else it rewrites.
+    const all = [...records, ...dropped];
+    const indices = new Set(all.map(r => r.index));
+    const distinct = indices.size === all.length && all.every(r => Number.isSafeInteger(r.index));
+    for (const record of distinct ? dropped : []) {
+      this._savedHistory.set({ type: 'dropped' } as unknown as HistoryEntry,
+        { index: record.index, blobRefs: historyRecordBlobRefs(record) });
+    }
+    this._nextHistoryRecordIndex = all.reduce((next, r) => Math.max(next, Number.isSafeInteger(r.index) ? r.index + 1 : next), 0);
+    this._historyNeedsRewrite = !distinct && dropped.length > 0;
     // What was just decoded onto the layers is what is stored, as of the
     // revisions history now reports.
     this._savedLayerBlobs = new Map([...layerBlobs].map(([id, saved]) => {
@@ -964,6 +1030,8 @@ export class DrawingApp extends LitElement {
   private _switchRequest = 0;
   /** A project this tab is deleting: it isn't saved, and its going isn't "deleted in another tab". */
   private _deletingProject: string | null = null;
+  /** `openImage`/`newDocument` is replacing the document: the canvas takes no input, nor shortcuts. */
+  @state() private _replacing = false;
 
   /**
    * Starts opening a project from a click: the editor goes inert and any
@@ -986,10 +1054,17 @@ export class DrawingApp extends LitElement {
       this._endSwitch(request);
       return false;
     }
-    if (this._hasUnsavedWork() && request === this._switchRequest
-        && !confirm("Changes couldn't be saved — discard them?")) {
-      this._endSwitch(request);
-      return false;
+    if (this._hasUnsavedWork() && request === this._switchRequest) {
+      const discard = await this._confirm({
+        message: "Changes couldn't be saved \u2014 discard them?",
+        confirmLabel: 'Discard',
+        danger: true,
+      });
+      // Taken from this tab while asking: its own screen offers to keep them.
+      if (!discard || this._stranded) {
+        this._endSwitch(request);
+        return false;
+      }
     }
     return request === this._switchRequest;
   }
@@ -1342,7 +1417,7 @@ export class DrawingApp extends LitElement {
       this._handOverAgainAsks = [];
       // Gone read-only for good: a dialog left open would answer for a
       // document this tab no longer edits (`updated` leaves it to here).
-      if (this._readOnly) this.canvas?.dismissResizeDialog();
+      if (this._readOnly) this._dismissDialogs();
       // Every tab that asked is answered with its own tag (the first call
       // starts the hand-over, the rest join it).
       if (again && this._projectLock?.id === id) for (const ask of againAsks) void this._handOver(id, ask);
@@ -2138,7 +2213,10 @@ export class DrawingApp extends LitElement {
           this._saveFailed = true;
           this._lastSaveError = err;
           this._saveError = true;
-          this._scheduleSaveRetry();
+          // Full storage stays full until something is deleted: the banner
+          // says so, and the next edit, a deleted project or "Try again"
+          // retries, rather than a timer encoding everything again for nothing.
+          if (!(err instanceof StorageQuotaError)) this._scheduleSaveRetry();
         }
         if (err instanceof StorageQuotaError) {
           console.error('Storage quota exceeded. Consider deleting old projects to free space.');
@@ -2196,7 +2274,7 @@ export class DrawingApp extends LitElement {
 
   private _onKeyDown = (e: KeyboardEvent) => {
     // Shown here while another tab edits it: no edits by key either.
-    if (this._readOnly || this._switching) return;
+    if (this._readOnly || this._switching || this._replacing) return;
     // Embedded, Ctrl/Cmd+S saves from anywhere, text fields included, rather
     // than falling through to the browser's "Save page as".
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key.toLowerCase() === 's' || e.code === 'KeyS') && this.embedded) {
@@ -2591,8 +2669,8 @@ export class DrawingApp extends LitElement {
       if (superseded()) return;
       this.canvas?.setHistory(history, storedIndex - keepFrom);
       this._dirty = false;
-      this._trackLoadedProject(projectId, history, historyRecords, layerBlobs);
-      if (keepFrom > 0 || keepTo < total) this._historyNeedsRewrite = true;
+      this._trackLoadedProject(projectId, history, historyRecords, layerBlobs,
+        [...allHistoryRecords.slice(0, keepFrom), ...allHistoryRecords.slice(keepTo)]);
       // Loaded after all: what is stored is in, and saves go on over it.
       if (this._unsavableProjectId === projectId) this._unsavableProjectId = null;
       // Restore saved viewport or fall back to centering for legacy records
@@ -2980,6 +3058,7 @@ export class DrawingApp extends LitElement {
         this._markDirty('setting');
       },
       setEyedropperSampleAll: (v: boolean) => { this._state = { ...this._state, eyedropperSampleAll: v }; this._markDirty('setting'); },
+      confirm: (options: ConfirmOptions) => this._confirm(options),
       canUndo: this._canUndo,
       canRedo: this._canRedo,
       // Project operations
@@ -3055,6 +3134,8 @@ export class DrawingApp extends LitElement {
               return;
             }
             this._announceProjects();
+            // The room it took may be what a failing save needed.
+            if (!deletingCurrent && this._saveError) this._retrySaveNow();
             this._projectList = await this._backend!.projects.list();
             if (request !== this._switchRequest && deletingCurrent) return;
             if (id === this._currentProject?.id) {
@@ -3116,9 +3197,11 @@ export class DrawingApp extends LitElement {
     // switching) would answer for a document this tab no longer edits.
     // A hand-over may yet keep the project here (its save fails, or no one
     // is waiting): `_handOver` dismisses it once it is over, if read-only.
+    // (A question asked while switching is the switch's own: see `_beginSwitch`.)
     if ((changed.has('_readOnly') || changed.has('_switching'))
       && ((this._readOnly && !this._handingOver) || this._switching)) {
-      this.canvas?.dismissResizeDialog();
+      if (this._readOnly && !this._handingOver) this._dismissDialogs();
+      else this.canvas?.dismissResizeDialog();
     }
   }
 
@@ -3275,6 +3358,8 @@ export class DrawingApp extends LitElement {
 
   /** A new document is open, and as it is now it is the saved one. */
   private _markSaved() {
+    // A question about the document that was open no longer applies.
+    this._confirmDialog?.dismiss();
     this._documentGeneration++;
     this._savedDocument = this._markDocument();
     this._exportedDocument = null;
@@ -3345,6 +3430,25 @@ export class DrawingApp extends LitElement {
       probe.width = probe.height = 0;
       if (!fits) throw new RangeError(cannotFitMessage ?? `This browser cannot make a ${width}×${height} canvas`);
     }
+    // No input until the replacement (or the way back) is in: a stroke begun
+    // on one document must not end on another's layer.
+    this._replacing = true;
+    try {
+      await this._replaceDocumentBlocked(width, height, background, name, paint);
+    } finally {
+      this._replacing = false;
+    }
+  }
+
+  private async _replaceDocumentBlocked(
+    width: number,
+    height: number,
+    background: string | null,
+    name: string,
+    paint?: (layer: Layer) => void,
+  ) {
+    // A press still down would otherwise leave half a stroke for the save.
+    this.canvas?.cancelGesture();
     this.canvas?.cancelCrop();
     this.canvas?.clearSelection();
     if (this._savePromise || this._dirty) {
@@ -3362,6 +3466,11 @@ export class DrawingApp extends LitElement {
         saved: this._savedDocument,
         generation: this._documentGeneration,
         exported: this._exportedDocument,
+        // The layout and view it was shown in: the attempt reset both.
+        isMobile: this._isMobile,
+        desktopLayersPanelOpen: this._desktopLayersPanelOpen,
+        viewport: this.canvas.getViewport(),
+        viewportSize: this.canvas.getViewportSize(),
       }
       : null;
     // Announced once this tab has it open (see createProject).
@@ -3382,27 +3491,40 @@ export class DrawingApp extends LitElement {
       // The editor holds a blank stand-in for the document that failed: go
       // back to the previous project and drop the one made for this.
       if (previous) {
+        // Input was blocked, but a press may have begun before the block applied.
+        this.canvas?.cancelGesture();
         try {
-          await (keep
+          const back = keep
             ? this._enterProject(previous, async () => {
               this._layerCounter = keep.counter;
+              // The layout it had (child mode keeps the compact one at any
+              // width), with the desktop panel state that layout set aside,
+              // then as the width since calls for; the view goes back into it.
+              this._isMobile = keep.isMobile;
+              this._desktopLayersPanelOpen = keep.desktopLayersPanelOpen;
               this._state = keep.state;
+              if (this._layoutWidth > 0) this._updateMobileLayout(this._layoutWidth);
               await this.updateComplete;
+              await this.canvas?.updateComplete;
               this.canvas?.setHistory(keep.history, keep.index);
               this.canvas?.composite();
-              this.canvas?.resetView();
+              this.canvas?.restoreViewport(keep.viewport.zoom, keep.viewport.panX, keep.viewport.panY,
+                keep.viewportSize ?? undefined);
               this._dirty = false;
               this._trackLoadedProject(previous.id, [], []);
             })
-            : this._enterProject(previous, () => this._loadProject(previous.id), true));
-          // Still the document it was: edits since its last save stay unsaved.
-          if (keep) {
+            : this._enterProject(previous, () => this._loadProject(previous.id), true);
+          // Counted as it starts: a later opening (switch, reload) bumps it.
+          const backGeneration = this._enterGeneration;
+          await back;
+          // Still the document it was (unless another opening replaced it
+          // meanwhile): edits since its last save stay unsaved.
+          if (keep && this._enterGeneration === backGeneration && this._currentProject?.id === previous.id) {
             // Marks (and exports in flight) from before the attempt are valid
             // again, so the generation goes back too rather than moving on.
             this._documentGeneration = keep.generation;
             this._savedDocument = keep.saved;
             this._exportedDocument = keep.exported;
-            if (this._layoutWidth > 0) this._updateMobileLayout(this._layoutWidth);
             this._reportModified();
           }
         } catch (backErr) {
@@ -3986,7 +4108,12 @@ export class DrawingApp extends LitElement {
       </div>`;
     }
     return html`<div class="app">
-      ${this._saveError ? html`<div class="save-banner" role="alert">Couldn't save your work${this._lastSaveError instanceof StorageQuotaError ? ': storage is full' : ''}. Trying again…</div>` : ''}
+      ${this._saveError ? this._lastSaveError instanceof StorageQuotaError ? html`
+        <div class="save-banner actionable" role="alert">
+          <span>Couldn't save your work: storage is full.${this.embedded ? '' : ' Delete projects you no longer need to make room.'}</span>
+          <button @click=${() => this._retrySaveNow()}>Try again</button>
+        </div>
+      ` : html`<div class="save-banner" role="alert">Couldn't save your work. Trying again…</div>` : ''}
       ${!this._isMobile ? html`<tool-settings ?inert=${this._stranded || this._updateRequired || (this._switching && !this._opening)}></tool-settings>` : ''}
       <div class="main-area">
         ${this._readOnly || this._switching ? html`
@@ -4052,9 +4179,9 @@ export class DrawingApp extends LitElement {
             ` : ''}
           </div>
         ` : ''}
-        <app-toolbar ?inert=${this._readOnly || this._switching}></app-toolbar>
+        <app-toolbar ?inert=${this._readOnly || this._switching || this._replacing}></app-toolbar>
         <drawing-canvas
-          ?inert=${this._readOnly || this._switching}
+          ?inert=${this._readOnly || this._switching || this._replacing}
           @history-change=${this._onHistoryChange}
           @layer-undo=${this._onLayerUndo}
           @crop-commit=${this._onCropCommit}
@@ -4074,6 +4201,7 @@ export class DrawingApp extends LitElement {
       </div>
       ${this._isMobile && !this._state.childMode && !this._readOnly && !this._switching
         ? html`<layers-panel @commit-opacity=${this._onCommitOpacity}></layers-panel>` : ''}
+      <confirm-dialog></confirm-dialog>
     </div>`;
   }
 }

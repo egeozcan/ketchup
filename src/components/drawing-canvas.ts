@@ -1167,14 +1167,30 @@ export class DrawingCanvas extends LitElement {
         composed: true,
         detail: {
           canUndo: this._historyIndex >= 0 || this._transformManager !== null,
-          canRedo: this._historyIndex < this._history.length - 1 && !this.hasPendingText(),
+          canRedo: this._historyIndex < this._history.length - 1 && !this.hasPendingText() && !this._floatHoldsWork(),
           stackChanged,
         },
       }),
     );
   }
 
+  /**
+   * A float that would put something on its layer (a paste, or a lifted part
+   * moved or reshaped): committing it is a new step, which ends the redo
+   * stack, and dropping it loses it, so Redo waits (as for typed text).
+   */
+  private _floatHoldsWork(): boolean {
+    const tm = this._transformManager;
+    return !!tm && (this._transformContentMode === 'inserted' || tm.hasChanged());
+  }
+
+  private _redoHeldByFloat = false;
+
   private _dispatchTransformChange() {
+    if (this._floatHoldsWork() !== this._redoHeldByFloat) {
+      this._redoHeldByFloat = this._floatHoldsWork();
+      this._notifyHistory(false);
+    }
     this.dispatchEvent(new CustomEvent('transform-change', {
       bubbles: true,
       composed: true,
@@ -1250,8 +1266,9 @@ export class DrawingCanvas extends LitElement {
 
   public redo() {
     // Committing typed text would be a new step, which ends the redo stack:
-    // Redo waits until the text is done.
-    if (this.hasPendingText()) return;
+    // Redo waits until the text is done. So for a float holding work (see
+    // `_floatHoldsWork`); one that changed nothing just ends below.
+    if (this.hasPendingText() || this._floatHoldsWork()) return;
     if (this._textEditing) {
       this._commitText();
     }
