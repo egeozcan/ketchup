@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DrawingApp } from '../src/components/drawing-app.ts';
 import { MockBackend } from '../src/storage/testing/mock-backend.ts';
 import { IndexedDBBackend } from '../src/storage/indexeddb/indexeddb-backend.ts';
+import { StorageQuotaError } from '../src/storage/errors.ts';
 import { makeAppCanvasStub, makeCanvas, makeLayer, makeState } from './helpers.ts';
 
 /**
@@ -400,6 +401,41 @@ describe('one tab edits a project at a time', () => {
     await vi.waitFor(async () => expect((await backend.projects.list()).map(p => p.id)).toEqual([project.id]));
     // "Use here without them" can still be tried.
     expect((app as any)._claiming).toBe(false);
+  });
+
+  it('stays with the kept work, and says why, when the copy cannot even be made', async () => {
+    const locks = fakeLocks();
+    const { app, backend, project } = await makeSavingApp();
+    (app as any)._projectService = { deleteProject: vi.fn((id: string) => backend.projects.delete(id)) };
+    (app as any)._contentVersion++;
+    (app as any)._dirty = true;
+    const release = await stealElsewhere(locks, project.id);
+    expect((app as any)._stranded).toBe(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const create = vi.spyOn(backend.projects, 'create').mockRejectedValueOnce(new StorageQuotaError('full'));
+    const save = vi.spyOn(backend.state, 'save');
+
+    await (app as any)._keepAsNewProject();
+    await settle();
+    expect(create).toHaveBeenCalledTimes(1);
+    expect((app as any)._keepError).toBe('Storage is full, so the copy could not be saved.');
+    expect((app as any)._currentProject.id).toBe(project.id);
+    expect((app as any)._stranded).toBe(true);
+    expect((app as any)._readOnly).toBe(true);
+    expect((app as any)._hasUnsavedWork()).toBe(true);
+    expect((app as any)._projectLock).toBeNull();
+    expect((app as any)._claiming).toBe(false);
+    expect((app as any)._keeping).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+    expect((await backend.projects.list()).map(p => p.id)).toEqual([project.id]);
+    expect([...locks.held.keys()]).toEqual([`ketchup-project:${project.id}`]);
+
+    // Trying again once there is room makes the copy.
+    await (app as any)._keepAsNewProject();
+    expect((app as any)._stranded).toBe(false);
+    expect((app as any)._keepError).toBe('');
+    expect((app as any)._currentProject.name).toBe('P (copy)');
+    release();
   });
 
   it('keeps work from a take-over through coming back into view, and through a return to the page', async () => {
@@ -1152,6 +1188,112 @@ describe('one tab edits a project at a time', () => {
     expect(heldDuring).toBe(true);
     await settle();
     expect(locks.held.has(`ketchup-project:${other.id}`)).toBe(false);
+  });
+
+  it('hands a project over and back between two tabs, each loading what the other last drew', async () => {
+    const locks = fakeLocks();
+    const backend = new MockBackend();
+    await backend.init();
+    const project = await backend.projects.create({ name: 'P', thumbnailRef: null });
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb) {
+      cb(new Blob(['png'], { type: 'image/png' }));
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const patch = (x: number) => ({ type: 'patch', layerId: 'l1', x, y: 0, before: new ImageData(1, 1), after: new ImageData(1, 1) });
+    /** A tab on the shared storage, whose canvas keeps the history it is given and drawn into. */
+    const tab = () => {
+      const app = new DrawingApp();
+      (app as any)._state = makeState({ layers: [makeLayer(20, 20, { id: 'l1' })], activeLayerId: 'l1', documentWidth: 20, documentHeight: 20 });
+      (app as any)._backend = backend;
+      Object.defineProperty(app, 'updateComplete', { configurable: true, get: () => Promise.resolve(true) });
+      let history: unknown[] = [];
+      let index = -1;
+      const canvas = makeAppCanvasStub({
+        mainCanvas: makeCanvas(40, 30),
+        getHistory: vi.fn(() => [...history]),
+        getHistoryIndex: vi.fn(() => index),
+        setHistory: vi.fn((h: unknown[], i: number) => { history = [...h]; index = i; }),
+        setViewport: vi.fn(),
+      });
+      Object.defineProperty(app, 'canvas', { configurable: true, value: canvas });
+      const draw = (x: number) => {
+        history = [...history.slice(0, index + 1), patch(x)];
+        index = history.length - 1;
+        (app as any)._markDirty();
+      };
+      const drawn = () => history.slice(0, index + 1).map(e => (e as { x: number }).x);
+      return { app, draw, drawn };
+    };
+
+    const one = tab();
+    await (one.app as any)._enterProject(project, () => (one.app as any)._loadProject(project.id));
+    expect((one.app as any)._readOnly).toBe(false);
+    one.draw(1);
+    await (one.app as any)._flushPendingSaveAndWait();
+    // Drawn but not stored yet when the other tab asks.
+    one.draw(2);
+
+    const two = tab();
+    await (two.app as any)._enterProject(project, () => (two.app as any)._loadProject(project.id));
+    expect((two.app as any)._readOnly).toBe(true);
+    expect(two.drawn()).toEqual([1]);
+
+    await (two.app as any)._editHere(true);
+    expect((two.app as any)._readOnly).toBe(false);
+    expect(two.drawn()).toEqual([1, 2]);
+    expect((one.app as any)._readOnly).toBe(true);
+    expect((one.app as any)._projectLock).toBeNull();
+    expect((one.app as any)._stranded).toBe(false);
+    expect((two.app as any)._otherTabSilent).toBe(false);
+
+    // And back again, with what the second tab drew.
+    two.draw(3);
+    await (one.app as any)._editHere(true);
+    expect((one.app as any)._readOnly).toBe(false);
+    expect(one.drawn()).toEqual([1, 2, 3]);
+    expect((two.app as any)._readOnly).toBe(true);
+    expect((two.app as any)._projectLock).toBeNull();
+    await settle();
+    expect(locks.held.has(`ketchup-project:${project.id}`)).toBe(true);
+    expect((one.app as any)._projectLock?.id).toBe(project.id);
+    expect((await backend.history.getEntries(project.id)).map(r => (r.entry as { x: number }).x)).toEqual([1, 2, 3]);
+  });
+
+  it('on the phone, "Opening the project…" lists the other projects to open instead', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    fakeLocks();
+    const { app } = makeApp();
+    const backend = new MockBackend();
+    app.storageBackend = backend;
+    document.body.append(app);
+    await app.whenReady();
+    const current = (app as any)._currentProject;
+    const other = await backend.projects.create({ name: 'Other', thumbnailRef: null });
+    const switchProject = vi.fn();
+    const build = (app as any)._buildContextValue.bind(app);
+    vi.spyOn(app as any, '_buildContextValue').mockImplementation(() => ({ ...build(), switchProject }));
+    const buttons = () => [...app.shadowRoot!.querySelectorAll<HTMLButtonElement>('.read-only button')];
+    const texts = () => buttons().map(b => b.textContent!.trim());
+    Object.assign(app as any, {
+      _projectList: [current, other], _isMobile: true, _readOnly: true, _opening: true, _switching: true,
+    });
+    await app.updateComplete;
+    expect(app.shadowRoot!.querySelector('.read-only')!.textContent).toContain('Opening the project…');
+    expect(texts()).toEqual(['Open another project']);
+
+    buttons()[0].click();
+    await app.updateComplete;
+    // Only the others: the one being opened isn't offered.
+    expect(texts()).toEqual(['Open another project', 'Other']);
+    buttons()[1].click();
+    await app.updateComplete;
+    expect(switchProject).toHaveBeenCalledWith(other.id);
+    expect(texts()).toEqual(['Open another project']);
+
+    // Not on the desktop layout, which has the project menu at hand.
+    Object.assign(app as any, { _isMobile: false });
+    await app.updateComplete;
+    expect(texts()).toEqual([]);
   });
 });
 
