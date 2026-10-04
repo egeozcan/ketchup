@@ -819,6 +819,7 @@ export class DrawingApp extends LitElement {
     records: ProjectHistoryRecord[],
     layerBlobs = new Map<string, SavedLayerBlob>(),
     dropped: ProjectHistoryRecord[] = [],
+    historyIndex = history.length - 1,
   ) {
     this._trackedProjectId = projectId;
     this._trackingGeneration++;
@@ -850,7 +851,9 @@ export class DrawingApp extends LitElement {
     // The first save after a load always reads the layers back.
     this._savedContentVersion = -1;
     this._storedContentVersion = this._contentVersion;
-    this._storedHistoryTop = history[history.length - 1] ?? null;
+    // The entry at the stored index (as a save records it), not the stack's
+    // last: with redo entries stored, the top is below them.
+    this._storedHistoryTop = historyIndex >= 0 ? history[historyIndex] ?? null : null;
     this._savedThumbKey = null;
     // Restoring history during the load isn't a new edit to show as saving.
     this._unsavedWork = false;
@@ -1776,6 +1779,8 @@ export class DrawingApp extends LitElement {
         if (this._saveError && !this._canSaveProject(savingId)) this._clearSaveError();
       }
       let flushingThisRun = flushing;
+      // Snapshots retaken before a write gets in; counted per write, so a long
+      // run of passes that each got stored never adds up to a failure.
       let restarts = 0;
       // Hands the write to a save-lock request made before encoding (a flush);
       // settled with null if the run ends without reaching the write.
@@ -2192,6 +2197,7 @@ export class DrawingApp extends LitElement {
             }
           }
           this._clearSaveError();
+          restarts = 0;
 
           // Best-effort: the content is stored by now, so a failed listing
           // mustn't read as a failed save.
@@ -2690,10 +2696,11 @@ export class DrawingApp extends LitElement {
       if (this._isMobile) this._desktopLayersPanelOpen = record.layersPanelOpen;
       await this.updateComplete;
       if (superseded()) return;
-      this.canvas?.setHistory(history, storedIndex - keepFrom);
+      const loadedIndex = Math.max(-1, Math.min(storedIndex - keepFrom, history.length - 1));
+      this.canvas?.setHistory(history, loadedIndex);
       this._dirty = false;
       this._trackLoadedProject(projectId, history, historyRecords, layerBlobs,
-        [...allHistoryRecords.slice(0, keepFrom), ...allHistoryRecords.slice(keepTo)]);
+        [...allHistoryRecords.slice(0, keepFrom), ...allHistoryRecords.slice(keepTo)], loadedIndex);
       // Loaded after all: what is stored is in, and saves go on over it.
       if (this._unsavableProjectId === projectId) this._unsavableProjectId = null;
       // Restore saved viewport or fall back to centering for legacy records

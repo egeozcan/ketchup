@@ -441,41 +441,44 @@ export class DrawingCanvas extends LitElement {
 
     // The history events below say so: a save may have stored just this.
     this._committingAsPreviewed = !!cached;
-    if (cached) {
-      if (cached.entry) this._pushHistoryEntry(cached.entry);
-    } else if (isInsertion && patch) {
-      const after = layerCtx.getImageData(patch.x, patch.y, patch.w, patch.h);
-      const changed = diffBounds(patch.before, after);
-      if (changed) {
-        this._pushHistoryEntry({
-          type: 'patch',
-          layerId: layer.id,
-          x: patch.x + changed.x,
-          y: patch.y + changed.y,
-          before: cropImageData(patch.before, changed),
-          after: cropImageData(after, changed),
-        });
+    try {
+      if (cached) {
+        if (cached.entry) this._pushHistoryEntry(cached.entry);
+      } else if (isInsertion && patch) {
+        const after = layerCtx.getImageData(patch.x, patch.y, patch.w, patch.h);
+        const changed = diffBounds(patch.before, after);
+        if (changed) {
+          this._pushHistoryEntry({
+            type: 'patch',
+            layerId: layer.id,
+            x: patch.x + changed.x,
+            y: patch.y + changed.y,
+            before: cropImageData(patch.before, changed),
+            after: cropImageData(after, changed),
+          });
+        }
+      } else if (this._transformManager.hasChanged() && this._beforeDrawCanvas) {
+        const changed = this._readChangedPatch(layerCtx, undefined, true);
+        if (changed) this._pushHistoryEntry({ type: 'patch', layerId: layer.id, ...changed });
       }
-    } else if (this._transformManager.hasChanged() && this._beforeDrawCanvas) {
-      const changed = this._readChangedPatch(layerCtx, undefined, true);
-      if (changed) this._pushHistoryEntry({ type: 'patch', layerId: layer.id, ...changed });
-    }
-    this._beforeDrawCanvas = null;
-    this._transformContentMode = 'lifted';
-    this._floatIsExternalImage = false;
+      this._beforeDrawCanvas = null;
+      this._transformContentMode = 'lifted';
+      this._floatIsExternalImage = false;
 
-    this._transformManager.dispose();
-    this._transformManager = null;
-    this.previewCanvas.getContext('2d')!.clearRect(
-      0, 0, this.previewCanvas.width, this.previewCanvas.height,
-    );
-    this.composite();
-    this.requestUpdate();
-    this._dispatchTransformChange();
-    // A no-op or fully off-canvas insertion does not push history, but ending
-    // the transform still changes whether Undo/Redo should be enabled.
-    this._notifyHistory();
-    this._committingAsPreviewed = false;
+      this._transformManager.dispose();
+      this._transformManager = null;
+      this.previewCanvas.getContext('2d')!.clearRect(
+        0, 0, this.previewCanvas.width, this.previewCanvas.height,
+      );
+      this.composite();
+      this.requestUpdate();
+      this._dispatchTransformChange();
+      // A no-op or fully off-canvas insertion does not push history, but ending
+      // the transform still changes whether Undo/Redo should be enabled.
+      this._notifyHistory();
+    } finally {
+      this._committingAsPreviewed = false;
+    }
   }
 
   /** Set while a commit pushes what `previewFloatCommit` worked out (see history-change). */
@@ -4153,20 +4156,6 @@ export class DrawingCanvas extends LitElement {
     const layerId = this._ctx.value?.state.activeLayerId;
     if (!this._transformManager || !layerId) return null;
     return { layerId, key: this._transformManager.getStateKey() };
-  }
-
-  /** Returns active transform info for persistence, or null if no transform. */
-  public getFloatSnapshot(): { layerId: string; tempCanvas: HTMLCanvasElement; x: number; y: number } | null {
-    if (!this._transformManager) return null;
-    const layerId = this._ctx.value?.state.activeLayerId;
-    if (!layerId) return null;
-    // Only the part on the document survives a commit, so only that is kept;
-    // a corner dragged far outside could otherwise ask for too large a canvas.
-    const snapshot = this._transformManager.snapshot({ x: 0, y: 0, w: this._docWidth, h: this._docHeight });
-    // A float moved wholly off the document still leaves its layer changed
-    // (lifted content leaves a hole), so report it, with nothing to draw.
-    const tempCanvas = snapshot?.canvas ?? document.createElement('canvas');
-    return { layerId, tempCanvas, x: snapshot?.x ?? 0, y: snapshot?.y ?? 0 };
   }
 
   private _onDragOver = (e: DragEvent) => {
