@@ -348,6 +348,91 @@ describe('embedded host API', () => {
     expect((await ((app as any)._backend as MemoryBackend).projects.list()).map(p => p.id)).toEqual([project.id]);
   });
 
+  it('brings back the view and layout the previous document had when making the new one fails', async () => {
+    const app = new DrawingApp();
+    app.embedded = true;
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    const stub = makeAppCanvasStub({
+      getViewport: vi.fn(() => ({ zoom: 2.5, panX: -40, panY: 12 })),
+      getViewportSize: vi.fn(() => ({ width: 900, height: 700 })),
+    });
+    Object.defineProperty(app, 'canvas', { configurable: true, value: stub });
+    document.body.append(app);
+    await app.whenReady();
+    // A child-mode document at desktop width: the compact layout, with the
+    // desktop layers panel (open) set aside for when child mode ends.
+    (app as any)._layoutWidth = 1400;
+    (app as any)._state = { ...(app as any)._state, childMode: true, layersPanelOpen: true };
+    (app as any)._updateMobileLayout(1400);
+    expect((app as any)._isMobile).toBe(true);
+    expect((app as any)._desktopLayersPanelOpen).toBe(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    stub.resetView.mockClear();
+
+    await expect((app as any)._replaceDocument(16, 8, null, 'Failing', () => { throw new Error('paint'); }))
+      .rejects.toThrow('paint');
+
+    expect(stub.restoreViewport).toHaveBeenLastCalledWith(2.5, -40, 12, { width: 900, height: 700 });
+    expect(stub.resetView).not.toHaveBeenCalled();
+    expect((app as any)._state.childMode).toBe(true);
+    expect((app as any)._isMobile).toBe(true);
+    expect((app as any)._desktopLayersPanelOpen).toBe(true);
+    (app as any)._buildContextValue().setChildMode(false);
+    expect((app as any)._state.layersPanelOpen).toBe(true);
+  });
+
+  it('takes no input while the document is replaced, and ends a press begun before', async () => {
+    const app = new DrawingApp();
+    app.embedded = true;
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    const stub = makeAppCanvasStub();
+    Object.defineProperty(app, 'canvas', { configurable: true, value: stub });
+    document.body.append(app);
+    await app.whenReady();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    stub.cancelGesture.mockClear();
+    let replacingDuring = false;
+    let keyDuring: KeyboardEvent | null = null;
+
+    await expect((app as any)._replaceDocument(16, 8, null, 'Failing', () => {
+      replacingDuring = (app as any)._replacing;
+      keyDuring = keydown(app, 'z');
+      throw new Error('paint');
+    })).rejects.toThrow('paint');
+
+    expect(replacingDuring).toBe(true);
+    expect(stub.undo).not.toHaveBeenCalled();
+    expect(keyDuring!.preventDefault).not.toHaveBeenCalled();
+    // Once before the attempt, once before going back to the previous document.
+    expect(stub.cancelGesture).toHaveBeenCalledTimes(2);
+    expect((app as any)._replacing).toBe(false);
+  });
+
+  it('leaves the marks alone when another opening replaced the way back', async () => {
+    const app = new DrawingApp();
+    app.embedded = true;
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    Object.defineProperty(app, 'canvas', { configurable: true, value: makeAppCanvasStub() });
+    document.body.append(app);
+    await app.whenReady();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const keptGeneration = (app as any)._documentGeneration;
+    const enter = (app as any)._enterProject.bind(app);
+    let calls = 0;
+    vi.spyOn(app as any, '_enterProject').mockImplementation(async (...args: unknown[]) => {
+      calls++;
+      const done = enter(...args);
+      // Going back: another opening starts meanwhile.
+      if (calls === 2) void Promise.resolve().then(() => { (app as any)._enterGeneration++; });
+      return done;
+    });
+
+    await expect((app as any)._replaceDocument(16, 8, null, 'Failing', () => { throw new Error('paint'); }))
+      .rejects.toThrow('paint');
+
+    expect((app as any)._documentGeneration).not.toBe(keptGeneration);
+  });
+
   it('replaces the document one call at a time, in the order the calls were made', async () => {
     const app = new DrawingApp();
     app.embedded = true;

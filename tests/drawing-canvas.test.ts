@@ -478,8 +478,9 @@ describe('DrawingCanvas', () => {
     expect((canvas as any)._historyIndex).toBe(-1);
   });
 
-  it('redo discards the active transform before replaying the next entry', () => {
-    const { canvas, activeLayer } = setupCanvas();
+  function canvasWithRedoAndFloat(floatOptions: { hasChanged: boolean; inserted?: boolean }) {
+    const setup = setupCanvas();
+    const { canvas, activeLayer } = setup;
     const image = () => new ImageData(100, 100);
     (canvas as any)._history = [
       { type: 'draw', layerId: activeLayer.id, before: image(), after: image() },
@@ -490,11 +491,40 @@ describe('DrawingCanvas', () => {
     (canvas as any)._beforeDrawCanvas = makeCanvas(100, 100);
     (canvas as any)._transformManager = makeTransformManagerStub({
       getSourceRect: vi.fn(() => ({ x: 10, y: 10, w: 20, h: 20 })),
+      hasChanged: vi.fn(() => floatOptions.hasChanged),
     });
+    if (floatOptions.inserted) (canvas as any)._transformContentMode = 'inserted';
+    return setup;
+  }
+
+  it('redo ends a float that changed nothing before replaying the next entry', () => {
+    const { canvas } = canvasWithRedoAndFloat({ hasChanged: false });
 
     expect(() => canvas.redo()).not.toThrow();
     expect((canvas as any)._transformManager).toBeNull();
     expect((canvas as any)._historyIndex).toBe(2);
+  });
+
+  it.each([
+    ['a moved lifted float', { hasChanged: true }],
+    ['a pasted float', { hasChanged: false, inserted: true }],
+  ])('redo waits while %s is live, and says so', (_label, options) => {
+    const { canvas } = canvasWithRedoAndFloat(options);
+    const events: { canRedo: boolean }[] = [];
+    canvas.addEventListener('history-change', (e) => events.push((e as CustomEvent).detail));
+
+    canvas.redo();
+
+    // Neither dropped (the paste or move would be lost) nor committed (a new
+    // step would end the redo stack).
+    expect((canvas as any)._transformManager).not.toBeNull();
+    expect((canvas as any)._historyIndex).toBe(1);
+    (canvas as any)._notifyHistory(false);
+    expect(events.at(-1)!.canRedo).toBe(false);
+
+    // Once the float is done with, Redo is offered again.
+    canvas.cancelTransform();
+    expect(events.at(-1)!.canRedo).toBe(true);
   });
 
   it('preserves the pre-lift image data when clearCanvas commits an active transform', () => {
