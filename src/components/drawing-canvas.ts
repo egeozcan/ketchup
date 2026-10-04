@@ -21,6 +21,7 @@ import { detectContentBounds } from '../transform/transform-math.js';
 import { diffBounds, cropImageData, type PixelRect } from '../utils/image-diff.js';
 import { historyEntryBytes, historyByteBudget } from '../utils/history-size.js';
 import { focusEditor } from '../utils/focus-editor.js';
+import { sizeViewCanvas, viewBackingSize, viewCanvasSize } from '../utils/view-canvas.js';
 import './resize-dialog.js';
 import type { ResizeDialog } from './resize-dialog.js';
 
@@ -504,8 +505,9 @@ export class DrawingCanvas extends LitElement {
   }
 
   // --- Viewport helpers ---
-  private get _vw(): number { return this.mainCanvas?.width ?? 800; }
-  private get _vh(): number { return this.mainCanvas?.height ?? 600; }
+  /** The view's size in CSS pixels: what pan, zoom and everything drawn on the view canvases are measured in. */
+  private get _vw(): number { return this.mainCanvas ? viewCanvasSize(this.mainCanvas).width : 800; }
+  private get _vh(): number { return this.mainCanvas ? viewCanvasSize(this.mainCanvas).height : 600; }
 
   // --- Layer-aware helpers ---
 
@@ -783,15 +785,11 @@ export class DrawingCanvas extends LitElement {
   }
 
   override firstUpdated() {
-    const rect = this.getBoundingClientRect();
-    const vw = rect.width > 0 ? Math.floor(rect.width) : 800;
-    const vh = rect.height > 0 ? Math.floor(rect.height) : 600;
-    this._laidOut = rect.width > 0 && rect.height > 0;
-
-    this.mainCanvas.width = vw;
-    this.mainCanvas.height = vh;
-    this.previewCanvas.width = vw;
-    this.previewCanvas.height = vh;
+    const view = this._measureView();
+    const vw = view?.width ?? 800;
+    const vh = view?.height ?? 600;
+    this._laidOut = view !== null;
+    this._sizeViewCanvases(vw, vh, view?.scale ?? DrawingCanvas._devicePixelRatio());
 
     // Center document in viewport, shrinking it to fit small screens
     this._zoom = Math.max(DrawingCanvas.MIN_ZOOM, Math.min(this._zoom, this._fitZoom()));
@@ -825,6 +823,64 @@ export class DrawingCanvas extends LitElement {
       this._resizeToFit();
     });
     this._resizeObserver.observe(this);
+    this._watchDevicePixelRatio();
+  }
+
+  private static _devicePixelRatio(): number {
+    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio : 1;
+    return Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  }
+
+  private _dprQuery: MediaQueryList | null = null;
+
+  /**
+   * Re-measures when the device pixel ratio changes (the window moved to
+   * another screen, or the page zoomed without resizing this element),
+   * which no size observer reports.
+   */
+  private _watchDevicePixelRatio() {
+    this._unwatchDevicePixelRatio();
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const query = window.matchMedia(`(resolution: ${DrawingCanvas._devicePixelRatio()}dppx)`);
+    query.addEventListener?.('change', this._onDevicePixelRatioChange);
+    this._dprQuery = query;
+  }
+
+  private _unwatchDevicePixelRatio() {
+    this._dprQuery?.removeEventListener?.('change', this._onDevicePixelRatioChange);
+    this._dprQuery = null;
+  }
+
+  private _onDevicePixelRatioChange = () => {
+    if (!this.isConnected) return;
+    this._watchDevicePixelRatio();
+    this._invalidateCanvasRect();
+    this._resizeToFit();
+  };
+
+  /**
+   * The element's size in its own CSS pixels, and how many device pixels
+   * each covers. A host's CSS `zoom` scales the client rect, not the
+   * element's own pixels (the computed size), so the two are measured apart.
+   */
+  private _measureView(): { width: number; height: number; scale: number } | null {
+    const rect = this.getBoundingClientRect();
+    if (!(rect.width > 0 && rect.height > 0)) return null;
+    let cssW = rect.width, cssH = rect.height;
+    if (this.isConnected) {
+      const cs = getComputedStyle(this);
+      const w = parseFloat(cs.width), h = parseFloat(cs.height);
+      if (w > 0 && h > 0) { cssW = w; cssH = h; }
+    }
+    const width = Math.floor(cssW), height = Math.floor(cssH);
+    if (width <= 0 || height <= 0) return null;
+    return { width, height, scale: DrawingCanvas._devicePixelRatio() * (rect.width / cssW) };
+  }
+
+  /** Sizes the display and preview canvases to the view, at device resolution. */
+  private _sizeViewCanvases(width: number, height: number, scale: number) {
+    sizeViewCanvas(this.mainCanvas, width, height, scale);
+    sizeViewCanvas(this.previewCanvas, width, height, scale);
   }
 
   /** Center the document in the viewport */
@@ -840,21 +896,26 @@ export class DrawingCanvas extends LitElement {
   }
 
   private _resizeToFit() {
-    const rect = this.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
+    const view = this._measureView();
+    if (!view) return;
 
-    const newWidth = Math.floor(rect.width);
-    const newHeight = Math.floor(rect.height);
+    const newWidth = view.width;
+    const newHeight = view.height;
     this._laidOut = true;
-    const oldWidth = this.mainCanvas.width;
-    const oldHeight = this.mainCanvas.height;
-    if (oldWidth === newWidth && oldHeight === newHeight) return;
+    const oldWidth = this._vw;
+    const oldHeight = this._vh;
+    const sameSize = oldWidth === newWidth && oldHeight === newHeight;
+    const backing = viewBackingSize(newWidth, newHeight, view.scale);
+    if (sameSize && backing.width === this.mainCanvas.width && backing.height === this.mainCanvas.height) return;
 
     // Resize display and preview canvases to viewport size only
-    this.mainCanvas.width = newWidth;
-    this.mainCanvas.height = newHeight;
-    this.previewCanvas.width = newWidth;
-    this.previewCanvas.height = newHeight;
+    this._sizeViewCanvases(newWidth, newHeight, view.scale);
+    if (sameSize) {
+      // Only the resolution changed (another screen): the view stays put.
+      this._checkerboardPattern = null;
+      this._redrawView(false);
+      return;
+    }
 
     // Adjust pan to keep the center stable, on whole pixels (a half-pixel pan
     // would blur the document at 100%). What rounding took off is carried to
@@ -869,11 +930,17 @@ export class DrawingCanvas extends LitElement {
     // Pattern is tied to canvas context, must recreate
     this._checkerboardPattern = null;
 
+    this._redrawView(true);
+    this._dispatchViewportChange();
+  }
+
+  /** Repaints the display and preview canvases after a resize cleared them. */
+  private _redrawView(contentChanged: boolean) {
     this._transformManager?.updateViewport(this._zoom, { x: this._panX, y: this._panY });
-    this.composite();
+    if (contentChanged) this.composite();
+    else this._composite(false);
     if (this._textEditing) this._renderTextPreview();
     if (this._cropRect) this._drawCropPreview();
-    this._dispatchViewportChange();
   }
 
   // --- History ---
@@ -1577,12 +1644,12 @@ export class DrawingCanvas extends LitElement {
   }
 
   /**
-   * Canvas pixels per client pixel. 1 unless a host's CSS `zoom` (or a
+   * View (CSS) pixels per client pixel. 1 unless a host's CSS `zoom` (or a
    * transform) scales the editor, when the canvas is shown at another size
-   * than its bitmap.
+   * than its own CSS size.
    */
   private _clientScale(rect: DOMRect): Point {
-    const w = this.mainCanvas.width, h = this.mainCanvas.height;
+    const w = this._vw, h = this._vh;
     return {
       x: rect.width > 0 && w > 0 ? w / rect.width : 1,
       y: rect.height > 0 && h > 0 ? h / rect.height : 1,
@@ -1954,8 +2021,9 @@ export class DrawingCanvas extends LitElement {
     previewCtx.imageSmoothingEnabled = false;
 
     if (sampleAll) {
-      const srcX = view.x;
-      const srcY = view.y;
+      // The display's own pixels, which are device pixels.
+      const srcX = Math.floor(view.x * this.mainCanvas.width / this._vw);
+      const srcY = Math.floor(view.y * this.mainCanvas.height / this._vh);
       previewCtx.drawImage(this.mainCanvas, srcX - 5, srcY - 5, 11, 11, destX, destY, GRID_SIZE, GRID_SIZE);
     } else {
       const srcX = Math.round(docPoint.x);
@@ -4057,6 +4125,7 @@ export class DrawingCanvas extends LitElement {
     }
     this._resizeObserver?.disconnect();
     this._resizeObserver = null;
+    this._unwatchDevicePixelRatio();
     this._compositeScheduler.cancel();
     // drawing-app flushes a pending viewport change from its own disconnect,
     // before deciding whether to save; by now it would only re-arm a save.
