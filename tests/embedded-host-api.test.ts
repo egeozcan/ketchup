@@ -348,6 +348,71 @@ describe('embedded host API', () => {
     expect((await ((app as any)._backend as MemoryBackend).projects.list()).map(p => p.id)).toEqual([project.id]);
   });
 
+  it('brings back the previous document\'s history and saved mark when making the new one fails', async () => {
+    const app = new DrawingApp();
+    app.embedded = true;
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    let history: HistoryEntry[] = [];
+    let index = -1;
+    const stub = makeAppCanvasStub({
+      getHistory: vi.fn(() => [...history]),
+      getHistoryIndex: vi.fn(() => index),
+      setHistory: vi.fn((entries: HistoryEntry[], i: number) => { history = [...entries]; index = i; }),
+    });
+    Object.defineProperty(app, 'canvas', { configurable: true, value: stub });
+    document.body.append(app);
+    await app.whenReady();
+    await app.newDocument(64, 32, { name: 'Keep' });
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb, type) {
+      cb(new Blob(['x'], { type: type ?? 'image/png' }));
+    });
+    const [a, b, c] = [patch(1), patch(2), patch(3)];
+    history = [a, b];
+    index = 1;
+    // The host is still storing this export when the replacement is tried.
+    const exported = await app.exportImage();
+    history = [a, b, c];
+    index = 2;
+    expect(app.modified).toBe(true);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect((app as any)._replaceDocument(16, 8, null, 'Failing', () => { throw new Error('paint'); }))
+      .rejects.toThrow('paint');
+
+    // The attempt cleared it; the way back put it back as it was.
+    expect(stub.setHistory).toHaveBeenCalledWith([], -1);
+    expect(stub.setHistory).toHaveBeenLastCalledWith([a, b, c], 2);
+    expect(app.modified).toBe(true);
+    // The export from before the attempt is of this document still: once it
+    // lands, undoing to what it rendered is unmodified.
+    app.markSaved(exported);
+    expect(app.modified).toBe(true);
+    index = 1;
+    expect(app.modified).toBe(false);
+  });
+
+  it('a standalone editor goes back to the stored previous project when making the new one fails', async () => {
+    const app = new DrawingApp();
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    Object.defineProperty(app, 'canvas', { configurable: true, value: makeAppCanvasStub() });
+    const backend = new MemoryBackend();
+    app.storageBackend = backend;
+    document.body.append(app);
+    await app.whenReady();
+    const previous = (app as any)._currentProject;
+    expect((app as any)._autosave).toBe(true);
+    const load = vi.spyOn(app as any, '_loadProject');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect((app as any)._replaceDocument(16, 8, null, 'Failing', () => { throw new Error('paint'); }))
+      .rejects.toThrow('paint');
+
+    // Not from memory: autosave stored it, so it is loaded again.
+    expect(load).toHaveBeenLastCalledWith(previous.id);
+    expect((app as any)._currentProject.id).toBe(previous.id);
+    expect((await backend.projects.list()).map(p => p.id)).toEqual([previous.id]);
+  });
+
   it('brings back the view and layout the previous document had when making the new one fails', async () => {
     const app = new DrawingApp();
     app.embedded = true;
