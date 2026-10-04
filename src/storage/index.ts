@@ -31,6 +31,7 @@ export {
   StorageNetworkError,
   StorageConflictError,
   StorageNotSupportedError,
+  StorageClosedError,
 } from './errors.js';
 
 // Service

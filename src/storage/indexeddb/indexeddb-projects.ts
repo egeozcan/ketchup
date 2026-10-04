@@ -1,21 +1,22 @@
 // src/storage/indexeddb/indexeddb-projects.ts
 import type { BlobRef, ProjectMeta, ProjectStore } from '../types.js';
 import { StorageNotFoundError } from '../errors.js';
-import { mapDOMException, txAbortError, txRequestError } from './error-utils.js';
+import { mapDOMException, txAbortError, txRequestError, openTx, type Connection } from './error-utils.js';
 import { generateUUID } from './migration.js';
 
 const PROJECTS_STORE = 'projects';
 
 export class IndexedDBProjectStore implements ProjectStore {
-  constructor(private _db: IDBDatabase) {}
+  constructor(private _connection: Connection) {}
 
   async list(
     opts?: { orderBy?: 'updatedAt' | 'createdAt'; direction?: 'asc' | 'desc' },
   ): Promise<ProjectMeta[]> {
     const orderBy = opts?.orderBy ?? 'updatedAt';
     const direction = opts?.direction ?? 'desc';
+    const db = await this._connection();
     return new Promise((resolve, reject) => {
-      const tx = this._db.transaction(PROJECTS_STORE, 'readonly');
+      const tx = openTx(db, PROJECTS_STORE, 'readonly');
       const store = tx.objectStore(PROJECTS_STORE);
       const entries: ProjectMeta[] = [];
       if (orderBy === 'updatedAt') {
@@ -48,8 +49,9 @@ export class IndexedDBProjectStore implements ProjectStore {
   }
 
   async get(id: string): Promise<ProjectMeta | null> {
+    const db = await this._connection();
     return new Promise((resolve, reject) => {
-      const tx = this._db.transaction(PROJECTS_STORE, 'readonly');
+      const tx = openTx(db, PROJECTS_STORE, 'readonly');
       const req = tx.objectStore(PROJECTS_STORE).get(id);
       req.onsuccess = () => resolve((req.result as ProjectMeta) ?? null);
       req.onerror = () => reject(mapDOMException(req.error));
@@ -68,8 +70,9 @@ export class IndexedDBProjectStore implements ProjectStore {
       updatedAt: now,
       thumbnailRef: meta.thumbnailRef ?? null,
     };
+    const db = await this._connection();
     await new Promise<void>((resolve, reject) => {
-      const tx = this._db.transaction(PROJECTS_STORE, 'readwrite');
+      const tx = openTx(db, PROJECTS_STORE, 'readwrite');
       tx.objectStore(PROJECTS_STORE).add(record);
       tx.oncomplete = () => resolve();
       tx.onerror = e => reject(txRequestError(e, tx));
@@ -82,8 +85,9 @@ export class IndexedDBProjectStore implements ProjectStore {
     id: string,
     changes: Partial<Pick<ProjectMeta, 'name' | 'thumbnailRef'>>,
   ): Promise<ProjectMeta> {
+    const db = await this._connection();
     return new Promise((resolve, reject) => {
-      const tx = this._db.transaction(PROJECTS_STORE, 'readwrite');
+      const tx = openTx(db, PROJECTS_STORE, 'readwrite');
       const store = tx.objectStore(PROJECTS_STORE);
       let updated: ProjectMeta;
       const getReq = store.get(id);
@@ -107,8 +111,9 @@ export class IndexedDBProjectStore implements ProjectStore {
   }
 
   async delete(id: string): Promise<void> {
+    const db = await this._connection();
     await new Promise<void>((resolve, reject) => {
-      const tx = this._db.transaction(PROJECTS_STORE, 'readwrite');
+      const tx = openTx(db, PROJECTS_STORE, 'readwrite');
       tx.objectStore(PROJECTS_STORE).delete(id);
       tx.oncomplete = () => resolve();
       tx.onerror = e => reject(txRequestError(e, tx));

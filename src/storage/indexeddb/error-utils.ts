@@ -4,7 +4,23 @@ import {
   StorageQuotaError,
   StorageNotFoundError,
   StorageConflictError,
+  StorageClosedError,
 } from '../errors.js';
+
+/** The open database, once open: waits for one being (re)opened, rejects with `StorageClosedError` if closed. */
+export type Connection = () => Promise<IDBDatabase>;
+
+/** Starts a transaction; a connection closed meanwhile is a `StorageClosedError`, not a raw InvalidStateError. */
+export function openTx(db: IDBDatabase, stores: string | string[], mode: IDBTransactionMode): IDBTransaction {
+  try {
+    return db.transaction(stores, mode);
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'InvalidStateError') {
+      throw new StorageClosedError('Storage is closed', false, e);
+    }
+    throw mapDOMException(e);
+  }
+}
 
 /** Maps a native DOMException to the appropriate StorageError subclass. */
 export function mapDOMException(e: unknown): StorageError {
