@@ -893,4 +893,214 @@ describe('one tab edits a project at a time', () => {
     await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(2), { timeout: 5000 });
     await vi.waitFor(() => expect((app as any)._dirty).toBe(false), { timeout: 5000 });
   });
+
+  it('ignores a late "releasing" once taking the project anyway: no stray request to the tab it is taken from', async () => {
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    const locks = fakeLocks();
+    locks.holdElsewhere('ketchup-project:p');
+    const { app } = makeApp();
+    await (app as any)._enterProject(meta('p'), async () => {});
+    (app as any)._loadProject = vi.fn(async () => {});
+    // The tab holding it, slow to answer.
+    const other = new FakeChannel('ketchup-projects');
+    const asks: string[] = [];
+    other.addEventListener('message', e => { if (e.data.type === 'release') asks.push(e.data.ask); });
+
+    vi.useFakeTimers();
+    const done = (app as any)._editHere(true);
+    await vi.advanceTimersByTimeAsync(2500);
+    expect((app as any)._otherTabSilent).toBe(true);
+    (app as any)._forceTakeOver();
+    other.postMessage({ type: 'releasing', id: 'p', ask: asks[0] });
+    other.postMessage({ type: 'stayed', id: 'p', asks: [asks[0]] });
+    await vi.advanceTimersByTimeAsync(20000);
+    await done;
+    expect(asks).toHaveLength(1);
+    expect((app as any)._otherTabSilent).toBe(false);
+    expect((app as any)._readOnly).toBe(false);
+  });
+
+  it('waits on despite answers to another request', async () => {
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    const locks = fakeLocks();
+    const release = locks.holdElsewhere('ketchup-project:p');
+    const { app } = makeApp();
+    await (app as any)._enterProject(meta('p'), async () => {});
+    const load = vi.fn(async () => {});
+    (app as any)._loadProject = load;
+    const other = new FakeChannel('ketchup-projects');
+
+    vi.useFakeTimers();
+    const done = (app as any)._editHere(true);
+    await vi.advanceTimersByTimeAsync(10);
+    // Answers to an earlier "Use here" of this tab's: not kept from this one.
+    other.postMessage({ type: 'kept', id: 'p', asks: ['earlier'] });
+    other.postMessage({ type: 'releasing', id: 'p', ask: 'earlier' });
+    await vi.advanceTimersByTimeAsync(2500);
+    expect((app as any)._keptElsewhere).toBe(false);
+    // Not answered (to this request) within 2 s.
+    expect((app as any)._otherTabSilent).toBe(true);
+    release();
+    await vi.advanceTimersByTimeAsync(100);
+    await done;
+    expect(load).toHaveBeenCalled();
+  });
+
+  it('a request answered "kept" and asked again keeps the project without trying the failing save again', async () => {
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    fakeLocks();
+    const { app: editing, canvas } = makeApp();
+    await (editing as any)._enterProject(meta('p'), async () => {});
+    (editing as any)._dirty = true;
+    const flush = vi.fn(async () => { (editing as any)._saveFailed = true; });
+    (editing as any)._flushPendingSaveAndWait = flush;
+    const other = new FakeChannel('ketchup-projects');
+    const answers: unknown[] = [];
+    other.addEventListener('message', e => answers.push(e.data));
+
+    other.postMessage({ type: 'release', id: 'p', ask: 'a' });
+    await settle();
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(answers).toContainEqual({ type: 'kept', id: 'p', asks: ['a'] });
+    expect((editing as any)._readOnly).toBe(false);
+    // A dialog over the editor stays: the tab kept the project.
+    expect(canvas.dismissResizeDialog).not.toHaveBeenCalled();
+
+    answers.length = 0;
+    other.postMessage({ type: 'release', id: 'p', ask: 'a' });
+    await settle();
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(answers).toEqual([]);
+    expect((editing as any)._readOnly).toBe(false);
+
+    // A new request is a new try.
+    other.postMessage({ type: 'release', id: 'p', ask: 'b' });
+    await settle();
+    expect(flush).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a dialog open through a hand-over no one waits for, and dismisses it once the project is handed over', async () => {
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    const locks = fakeLocks();
+    const { app: editing, canvas } = makeApp();
+    await (editing as any)._enterProject(meta('p'), async () => {});
+    (editing as any)._projectWanted = vi.fn(async () => false);
+    const other = new FakeChannel('ketchup-projects');
+    const answers: unknown[] = [];
+    other.addEventListener('message', e => answers.push(e.data));
+    other.postMessage({ type: 'release', id: 'p', ask: 'a' });
+    await settle();
+    expect(answers).toContainEqual({ type: 'stayed', id: 'p', asks: ['a'] });
+    expect((editing as any)._readOnly).toBe(false);
+    expect(canvas.dismissResizeDialog).not.toHaveBeenCalled();
+
+    // Someone waiting this time.
+    (editing as any)._projectWanted = vi.fn(async () => true);
+    void locks.request('ketchup-project:p', {}, () => new Promise(() => {}));
+    other.postMessage({ type: 'release', id: 'p', ask: 'b' });
+    await settle();
+    expect((editing as any)._readOnly).toBe(true);
+    expect((editing as any)._projectLock).toBeNull();
+    expect(canvas.dismissResizeDialog).toHaveBeenCalled();
+  });
+
+  it('"Use here" gets the project from a holder whose long save ended before it saw the request', async () => {
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    fakeLocks();
+    const { app: editing } = makeApp();
+    await (editing as any)._enterProject(meta('p'), async () => {});
+    (editing as any)._dirty = true;
+    (editing as any)._flushPendingSaveAndWait = vi.fn(async () => {
+      await new Promise(r => setTimeout(r, 3000));
+      (editing as any)._dirty = false;
+    });
+    // The first look for the request misses it.
+    const wanted = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    (editing as any)._projectWanted = wanted;
+
+    const { app: shown } = makeApp();
+    await (shown as any)._enterProject(meta('p'), async () => {});
+    const load = vi.fn(async () => {});
+    (shown as any)._loadProject = load;
+
+    vi.useFakeTimers();
+    const done = (shown as any)._editHere(true);
+    await vi.advanceTimersByTimeAsync(6000);
+    await done;
+    expect(wanted).toHaveBeenCalledTimes(2);
+    expect(load).toHaveBeenCalled();
+    expect((shown as any)._readOnly).toBe(false);
+    expect((shown as any)._otherTabSilent).toBe(false);
+    expect((editing as any)._projectLock).toBeNull();
+  });
+
+  it('re-asks a holder that keeps seeing no request only a few times', async () => {
+    vi.stubGlobal('BroadcastChannel', FakeChannel);
+    fakeLocks();
+    const { app: editing } = makeApp();
+    await (editing as any)._enterProject(meta('p'), async () => {});
+    const wanted = vi.fn(async () => false);
+    (editing as any)._projectWanted = wanted;
+    const { app: shown } = makeApp();
+    await (shown as any)._enterProject(meta('p'), async () => {});
+
+    vi.useFakeTimers();
+    void (shown as any)._editHere(true);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(wanted).toHaveBeenCalledTimes(4);
+    expect((editing as any)._readOnly).toBe(false);
+  });
+
+  it('announces a project whose document could not be made, which carries on blank', async () => {
+    fakeLocks();
+    const { app } = await makeSavingApp();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    // The fallback blank document is made; the one asked for isn't.
+    (app as any)._resetToFreshProject = vi.fn()
+      .mockRejectedValueOnce(new RangeError('too big'))
+      .mockResolvedValue(undefined);
+    const announce = vi.spyOn(app as any, '_announceProjects');
+    (app as any)._buildContextValue().createProject('Big', 100000, 100000);
+    await vi.waitFor(() => expect((app as any)._currentProject.name).toBe('Big'));
+    await vi.waitFor(() => expect(announce).toHaveBeenCalled());
+  });
+
+  it('embedded, a project gone from storage leaves its unsaved work as a failed save, banner up', async () => {
+    fakeLocks();
+    const { app, backend, project } = await makeSavingApp();
+    app.embedded = true;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await backend.projects.delete(project.id);
+    (app as any)._contentVersion++;
+    (app as any)._dirty = true;
+    await (app as any)._save(true);
+    expect((app as any)._dirty).toBe(true);
+    expect((app as any)._saveError).toBe(true);
+    (app as any)._clearSaveError();
+  });
+
+  it('holds a project\'s lock through deleting it, and refuses while another tab edits it', async () => {
+    const locks = fakeLocks();
+    const { app, backend } = await makeSavingApp();
+    const other = await backend.projects.create({ name: 'Q', thumbnailRef: null });
+    let heldDuring = false;
+    (app as any)._projectService = { deleteProject: vi.fn(async (id: string) => {
+      heldDuring = locks.held.has(`ketchup-project:${id}`);
+      await backend.projects.delete(id);
+    }) };
+    const release = locks.holdElsewhere(`ketchup-project:${other.id}`);
+    await settle();
+    (app as any)._buildContextValue().deleteProject(other.id);
+    await vi.waitFor(() => expect((app as any)._notice).toMatch(/open in another tab/));
+    expect(await backend.projects.get(other.id)).toBeTruthy();
+
+    release();
+    await settle();
+    (app as any)._notice = '';
+    (app as any)._buildContextValue().deleteProject(other.id);
+    await vi.waitFor(async () => expect(await backend.projects.get(other.id)).toBeFalsy());
+    expect(heldDuring).toBe(true);
+    await settle();
+    expect(locks.held.has(`ketchup-project:${other.id}`)).toBe(false);
+  });
 });
