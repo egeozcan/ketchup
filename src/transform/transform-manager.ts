@@ -9,6 +9,7 @@ import {
   snapAngle, getPerspectiveDestCorners, warpPerspective,
 } from './transform-math.js';
 import { canWarpOnGpu, releaseGpuSource, warpPerspectiveGpu } from './perspective-gl.js';
+import { viewCanvasSize } from '../utils/view-canvas.js';
 import {
   hitTestHandle, hitTestRotationHandle, isInsideTransform,
   getCommitCancelPositions,
@@ -329,8 +330,9 @@ export class TransformManager {
     const outside = order.map(corner => getCommitCancelPositions(corners, config, zoom, corner));
     const r = outside[0].buttonRadius;
     const left = -this._pan.x / zoom, top = -this._pan.y / zoom;
-    const right = (this._previewCanvas.width - this._pan.x) / zoom;
-    const bottom = (this._previewCanvas.height - this._pan.y) / zoom;
+    const view = viewCanvasSize(this._previewCanvas);
+    const right = (view.width - this._pan.x) / zoom;
+    const bottom = (view.height - this._pan.y) / zoom;
     // On touch, kept back from the screen's edges too where they can be: a
     // finger there is taken by the toolbar beside the canvas.
     const m = r + (this.touchMode ? 12 / zoom : 0);
@@ -502,8 +504,7 @@ export class TransformManager {
 
   renderPreview(): void {
     const ctx = this._previewCanvas.getContext('2d')!;
-    const w = this._previewCanvas.width;
-    const h = this._previewCanvas.height;
+    const { width: w, height: h } = viewCanvasSize(this._previewCanvas);
     ctx.clearRect(0, 0, w, h);
     ctx.save();
     ctx.translate(this._pan.x, this._pan.y);
