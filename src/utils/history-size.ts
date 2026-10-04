@@ -36,11 +36,23 @@ export function historyEntryBytes(entry: HistoryEntry): number {
   }
 }
 
-const imageBytes = (s: SerializedImageData) => s.width * s.height * 4;
+// A malformed record counts as 0 here; decoding it reports it (and drops it).
+const imageBytes = (s: SerializedImageData) => {
+  const n = s.width * s.height * 4;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+};
 const serializedSnapshotBytes = (s: SerializedLayerSnapshot) => imageBytes(s.imageData);
 
 /** Bytes a stored history entry will hold once decoded, without decoding it. */
 export function serializedHistoryEntryBytes(entry: SerializedHistoryEntry): number {
+  try {
+    return serializedBytes(entry);
+  } catch {
+    return 0;
+  }
+}
+
+function serializedBytes(entry: SerializedHistoryEntry): number {
   switch (entry.type) {
     case 'draw':
     case 'patch':

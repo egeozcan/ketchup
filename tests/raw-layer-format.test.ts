@@ -230,6 +230,63 @@ describe('raw KTCH pixel format', () => {
     });
   });
 
+  describe('PNG for opaque photo-like pixels', () => {
+    /** Pixels that deflate poorly (noise), opaque unless `alpha` says otherwise. */
+    function noise(width: number, height: number, alpha = 255) {
+      const data = new Uint8ClampedArray(width * height * 4);
+      let x = 7;
+      for (let i = 0; i < data.length; i++) data[i] = (x = (Math.imul(x, 1664525) + 1013904223) >>> 0) >>> 24;
+      for (let i = 3; i < data.length; i += 4) data[i] = alpha;
+      return new ImageData(data, width, height);
+    }
+    const pngOfSize = (size: number) => vi.spyOn(HTMLCanvasElement.prototype, 'toBlob')
+      .mockImplementation(function (cb) { cb(new Blob([new Uint8Array(size)], { type: 'image/png' })); });
+
+    it('stores PNG when it is smaller than the raw encoding', async () => {
+      installStreams();
+      const helpers = await freshHelpers();
+      const toBlob = pngOfSize(100);
+      const blob = await helpers.imageDataToBlob(noise(32, 32));
+      expect(toBlob).toHaveBeenCalledTimes(1);
+      expect(blob.type).toBe('image/png');
+    });
+
+    it('keeps raw when PNG comes out larger', async () => {
+      installStreams();
+      const helpers = await freshHelpers();
+      pngOfSize(1 << 20);
+      const blob = await helpers.imageDataToBlob(noise(32, 32));
+      expect((await header(blob)).magic).toBe('KTCH');
+    });
+
+    it('never tries PNG for pixels with transparency (it would not round-trip)', async () => {
+      installStreams();
+      const helpers = await freshHelpers();
+      const toBlob = pngOfSize(100);
+      const blob = await helpers.imageDataToBlob(noise(32, 32, 254));
+      expect(toBlob).not.toHaveBeenCalled();
+      expect((await header(blob)).magic).toBe('KTCH');
+    });
+
+    it('does not try PNG for content that deflates well', async () => {
+      installStreams();
+      const helpers = await freshHelpers();
+      const toBlob = pngOfSize(1);
+      const flat = new ImageData(new Uint8ClampedArray(64 * 64 * 4).fill(255), 64, 64);
+      const blob = await helpers.imageDataToBlob(flat);
+      expect(toBlob).not.toHaveBeenCalled();
+      expect((await header(blob)).magic).toBe('KTCH');
+    });
+
+    it('keeps raw when PNG encoding fails', async () => {
+      installStreams();
+      const helpers = await freshHelpers();
+      vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb) { cb(null); });
+      const blob = await helpers.imageDataToBlob(noise(32, 32));
+      expect((await header(blob)).magic).toBe('KTCH');
+    });
+  });
+
   describe('canCompress fallback to PNG', () => {
     const encodedAsPng = async (helpers: Helpers) => {
       const toBlob = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb) {
@@ -282,6 +339,78 @@ describe('raw KTCH pixel format', () => {
       await helpers.imageDataToBlob(pixels(2, 2));
       // Self-test (once) plus one encode per call: no second self-test.
       expect(spy.mock.calls.length).toBeLessThanOrEqual(3);
+    });
+
+    describe('a self-test that hangs', () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      /** A CompressionStream that takes its input and never puts anything out. */
+      function installHungCompression() {
+        const counts = { constructed: 0, cancelled: 0 };
+        vi.stubGlobal('CompressionStream', class {
+          writable = new WritableStream({ write() {} });
+          readable = new ReadableStream({ cancel: () => { counts.cancelled++; } });
+          constructor() { counts.constructed++; }
+        });
+        return counts;
+      }
+
+      it('starts once the caller yields, gives up after 3 s and cancels the hung stream', async () => {
+        vi.useFakeTimers();
+        installStreams();
+        const counts = installHungCompression();
+        const helpers = await freshHelpers();
+        const toBlob = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb) {
+          cb(new Blob(['png'], { type: 'image/png' }));
+        });
+
+        let done = false;
+        const pending = helpers.imageDataToBlob(pixels(4, 3)).then((b) => { done = true; return b; });
+        // Nothing has started (no timeout running) during the caller's synchronous work.
+        expect(counts.constructed).toBe(0);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(counts.constructed).toBe(1);
+        await vi.advanceTimersByTimeAsync(2999);
+        expect(done).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect((await pending).type).toBe('image/png');
+        expect(toBlob).toHaveBeenCalledTimes(1);
+        // The hung stream is let go of rather than left pending.
+        expect(counts.cancelled).toBe(1);
+      });
+
+      it('falls back to PNG at once for 60 s after a timeout, then tests again', async () => {
+        vi.useFakeTimers();
+        installStreams();
+        const counts = installHungCompression();
+        const helpers = await freshHelpers();
+        vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb) {
+          cb(new Blob(['png'], { type: 'image/png' }));
+        });
+
+        const first = helpers.imageDataToBlob(pixels(2, 2));
+        await vi.advanceTimersByTimeAsync(3000);
+        await first;
+        expect(counts.constructed).toBe(1);
+
+        await vi.advanceTimersByTimeAsync(59000);
+        // Within the window: PNG straight away, no second self-test waited out.
+        expect((await helpers.imageDataToBlob(pixels(2, 2))).type).toBe('image/png');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(counts.constructed).toBe(1);
+
+        await vi.advanceTimersByTimeAsync(1000);
+        // Past it, the timeout cached no verdict (and the cancelled read none
+        // either), so the test runs again.
+        const retry = helpers.imageDataToBlob(pixels(2, 2));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(counts.constructed).toBe(2);
+        await vi.advanceTimersByTimeAsync(3000);
+        expect((await retry).type).toBe('image/png');
+        expect(counts.cancelled).toBe(2);
+      });
     });
 
     it('serializeLayerFromImageData still stores a layer when falling back to PNG', async () => {

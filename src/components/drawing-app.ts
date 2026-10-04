@@ -13,7 +13,7 @@ import { hashImageData } from '../utils/image-diff.js';
 import { historyByteBudget, serializedHistoryEntryBytes } from '../utils/history-size.js';
 import {
   serializeLayerFromImageData, deserializeLayer,
-  serializeHistoryEntry, deserializeHistoryEntry,
+  serializeHistoryEntry, deserializeHistoryEntry, MalformedRecordError,
 } from '../utils/storage-serialization.js';
 import { toolForShortcut, CHILD_TOOL_SET } from './tool-icons.js';
 import { DEFAULT_STAMP_SIZE, normalizeStampSize } from '../tools/stamp-size.js';
@@ -2377,12 +2377,14 @@ export class DrawingApp extends LitElement {
           history.push(await deserializeHistoryEntry(candidates[i].entry, blobs));
         } catch (err) {
           if (superseded()) return;
-          // Only corrupt data is dropped; a storage failure (transient read
-          // error) fails the load, so history isn't deleted by a hiccup.
+          // Only corrupt data is dropped (undecodable pixels, a malformed
+          // record, a blob that is gone); a storage or resource failure
+          // (transient read error, out of memory for the pixels) fails the
+          // load, so history isn't deleted by a hiccup.
           const name = (err as { name?: string } | null)?.name;
           const missing = err instanceof StorageNotFoundError || name === 'StorageNotFoundError' ||
             name === 'NotFoundError' || name === 'NotReadableError';
-          if (!(err instanceof PixelDecodeError || missing)) throw err;
+          if (!(err instanceof PixelDecodeError || err instanceof MalformedRecordError || missing)) throw err;
           // An undecodable entry costs the history, not the project: drop it
           // and everything older (or, for a redo entry, it and what follows).
           console.error('Dropping undecodable history entry:', err);

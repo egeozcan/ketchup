@@ -28,6 +28,8 @@ Another page can host the editor and keep the image itself, for example an app t
 
 The `embedded` attribute (or property, set before the element is connected) means the host owns the document. The editor then keeps its working state in memory instead of IndexedDB and does not autosave it (unless you pass your own `storageBackend`), hides project switching and creation (recent stamps carry over from one opened document to the next), and answers the Save button and Ctrl/Cmd+S with a `save-request` event instead of downloading a PNG.
 
+A custom `storageBackend` implements the exported `StorageBackend` interface (see `MemoryBackend` for a complete one). Its `blobs.get` should reject with the exported `StorageNotFoundError` (or any error whose `name` is `"StorageNotFoundError"`) for a blob that no longer exists: loading then drops the undo steps that needed it instead of failing. Any other error fails the load and leaves stored data as it is. Reject writes that run out of space with `StorageQuotaError`.
+
 | Member | What it does |
 |--------|--------------|
 | `whenReady()` | Resolves once storage is open and a document is on the canvas. |

@@ -10,6 +10,77 @@ import type {
 } from '../storage/types.js';
 import { blobToCanvas, imageDataToBlob, blobToImageData } from './canvas-helpers.js';
 
+const MAX_STORED_DIMENSION = 16384; // the app's largest canvas side
+
+/**
+ * A stored history record that doesn't have the shape its type requires
+ * (missing pixel data or blob reference, impossible size, unknown type).
+ * Like a PixelDecodeError, it is corrupt data rather than a failure to read
+ * storage, so loading drops the entry instead of failing.
+ */
+export class MalformedRecordError extends Error {
+  override name = 'MalformedRecordError';
+}
+
+function malformed(what: string): never {
+  throw new MalformedRecordError(`Stored history record is malformed: ${what}`);
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
+function checkImageDataRecord(s: unknown): asserts s is SerializedImageData {
+  if (!isObject(s)) malformed('missing pixel data');
+  if (typeof s.blobRef !== 'string' || !s.blobRef) malformed('missing blob reference');
+  const { width, height } = s;
+  if (!Number.isInteger(width) || !Number.isInteger(height) ||
+      (width as number) <= 0 || (height as number) <= 0 ||
+      (width as number) > MAX_STORED_DIMENSION || (height as number) > MAX_STORED_DIMENSION) {
+    malformed(`invalid size ${String(width)}x${String(height)}`);
+  }
+}
+
+function checkSnapshotRecord(s: unknown): asserts s is SerializedLayerSnapshot {
+  if (!isObject(s)) malformed('missing layer');
+  checkImageDataRecord(s.imageData);
+}
+
+function checkSnapshotList(list: unknown): asserts list is SerializedLayerSnapshot[] {
+  if (!Array.isArray(list)) malformed('missing layer list');
+  list.forEach(checkSnapshotRecord);
+}
+
+/** Throws MalformedRecordError unless every pixel reference the entry needs is present and sized. */
+function checkHistoryRecord(entry: unknown): asserts entry is SerializedHistoryEntry {
+  if (!isObject(entry)) malformed('not an object');
+  switch (entry.type) {
+    case 'draw':
+    case 'patch':
+    case 'transform':
+      checkImageDataRecord(entry.before);
+      checkImageDataRecord(entry.after);
+      return;
+    case 'add-layer':
+    case 'delete-layer':
+      checkSnapshotRecord(entry.layer);
+      return;
+    case 'crop':
+    case 'merge':
+      checkSnapshotList(entry.beforeLayers);
+      checkSnapshotList(entry.afterLayers);
+      return;
+    case 'reorder':
+    case 'visibility':
+    case 'opacity':
+    case 'rename':
+    case 'blend-mode':
+      return;
+    default:
+      malformed(`unknown type ${String(entry.type)}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // ImageData ↔ SerializedImageData
 // ---------------------------------------------------------------------------
@@ -145,6 +216,7 @@ export async function deserializeHistoryEntry(
   entry: SerializedHistoryEntry,
   blobs: BlobStore,
 ): Promise<HistoryEntry> {
+  checkHistoryRecord(entry);
   switch (entry.type) {
     case 'draw': {
       const [before, after] = await Promise.all([
