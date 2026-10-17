@@ -77,21 +77,25 @@ function transformDab(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingCo
   return true;
 }
 
-/** Tips whose footprint is a long w × w/aspect bar rather than round. */
+/** Tips whose footprint is a long w × w/aspect bar, or (calligraphy) an ellipse that long. */
 const BAR_TIPS = new Set(['flat', 'chisel', 'calligraphy']);
+
+/** Headings tried for a dab with none yet, the first of a stroke. */
+const ANY_HEADING = Array.from({ length: 8 }, (_, i) => i * Math.PI / 8);
 
 /**
  * How far apart two bar dabs (1 long, 1/aspect thick, turned by `rotation`
- * and stretched by `lean`) can sit along `heading` and still touch.
+ * and stretched by `lean`) can sit along `heading` and still touch; an
+ * elliptical bar's ends are round, so it reaches less far off its axes.
  */
-function barReach(aspect: number, rotation: number, lean: DabStretch, heading: number): number {
+function barReach(aspect: number, elliptical: boolean, rotation: number, lean: DabStretch, heading: number): number {
   // The heading back in the dab's own frame: R(az - rot) S⁻¹ R(-az).
   const a = heading - lean.azimuth;
   const ux = Math.cos(a) / lean.stretch, uy = Math.sin(a);
   const b = lean.azimuth - rotation;
-  const qx = ux * Math.cos(b) - uy * Math.sin(b);
-  const qy = ux * Math.sin(b) + uy * Math.cos(b);
-  return 1 / Math.max(Math.abs(qx), Math.abs(qy) * aspect, 1e-9);
+  const qx = Math.abs(ux * Math.cos(b) - uy * Math.sin(b));
+  const qy = Math.abs(ux * Math.sin(b) + uy * Math.cos(b)) * aspect;
+  return 1 / Math.max(elliptical ? Math.hypot(qx, qy) : Math.max(qx, qy), 1e-9);
 }
 
 /** A dynamics factor: `control` (-1..1) applied at a speed `v` (0..1). */
@@ -137,8 +141,9 @@ export class StampStrokeEngine {
   private _docWidth = 0;
   private _docHeight = 0;
   /** The way the stroke last headed, in radians, and the point it was measured from. */
-  private _heading = 0;
-  private _headingFrom: { x: number; y: number } | null = null;
+  /** The last dab spaced, whose direction to the next sets how the next is turned. */
+  private _spacedFrom: StampPoint | null = null;
+  private _spacedHeading: number | null = null;
   private _inkState: InkState | null = null;
   private _prevStamp: StampPoint | null = null;
   private _variantCounter = 0;
@@ -212,7 +217,6 @@ export class StampStrokeEngine {
   private _feed(p: StabilizedPoint): StampPoint[] {
     // Speed and heading are measured along the stabilized path, the one the dabs follow.
     const v = this._trackVelocity(p.x, p.y, p.timestamp);
-    this._trackHeading(p.x, p.y);
     return this._smoother.addPoint(p.x, p.y, p.pressure, this._dabSpacing, p.timestamp,
       { velocity: v, tiltX: p.tiltX, tiltY: p.tiltY });
   }
@@ -387,7 +391,13 @@ export class StampStrokeEngine {
    */
   private _dabSpacing = (stamp: StampPoint): number => {
     const d = this._descriptor!;
-    return Math.max(1, d.spacing * this._sizeAt(stamp.pressure, stamp.velocity) * this._leanSpacing(stamp));
+    const from = this._spacedFrom;
+    if (from) {
+      const dx = stamp.x - from.x, dy = stamp.y - from.y;
+      if (dx * dx + dy * dy >= MIN_DIRECTION_DIST_SQ) this._spacedHeading = Math.atan2(dy, dx);
+    }
+    this._spacedFrom = stamp;
+    return Math.max(1, d.spacing * this._sizeAt(stamp.pressure, stamp.velocity) * this._leanSpacing(stamp, this._spacedHeading));
   };
 
   /**
@@ -396,35 +406,28 @@ export class StampStrokeEngine {
    * reach along the stroke shrank, so ones that touched upright still do.
    * Round dabs only grow when stretched.
    */
-  private _leanSpacing(tilt: PenTilt): number {
+  private _leanSpacing(tilt: PenTilt, heading: number | null): number {
     const d = this._descriptor!;
     const lean = tiltStretch(tilt.tiltX, tilt.tiltY, d.dynamics.tilt);
     if (lean.stretch === 1 || !BAR_TIPS.has(d.tip.shape)) return 1;
     const angle = d.tip.angle * Math.PI / 180;
-    const rotation = d.tip.orientation === 'fixed' ? angle : this._heading + angle;
     const aspect = Math.max(1, d.tip.aspect);
-    return Math.min(1, barReach(aspect, rotation, lean, this._heading) / barReach(aspect, rotation, NO_STRETCH, this._heading));
-  }
-
-  /** Follow the way the stroke heads, as the dabs' direction does. */
-  private _trackHeading(x: number, y: number) {
-    const from = this._headingFrom;
-    if (!from) {
-      this._headingFrom = { x, y };
-      return;
-    }
-    const dx = x - from.x, dy = y - from.y;
-    if (dx * dx + dy * dy < MIN_DIRECTION_DIST_SQ) return;
-    this._heading = Math.atan2(dy, dx);
-    this._headingFrom = { x, y };
+    const elliptical = d.tip.shape === 'calligraphy';
+    // As _stampPoints turns it: along the way from the dab before, or at
+    // the tip's own angle when there is none yet (and then any way on).
+    const shrink = (h: number) => {
+      const rotation = d.tip.orientation === 'fixed' || heading === null ? angle : h + angle;
+      return barReach(aspect, elliptical, rotation, lean, h) / barReach(aspect, elliptical, rotation, NO_STRETCH, h);
+    };
+    return Math.min(1, ...(heading === null ? ANY_HEADING : [heading]).map(shrink));
   }
 
   private _resetMotion() {
     this._velocity = 0;
     this._velocityLast = null;
     this._velocityDist = 0;
-    this._heading = 0;
-    this._headingFrom = null;
+    this._spacedFrom = null;
+    this._spacedHeading = null;
   }
 
   /**

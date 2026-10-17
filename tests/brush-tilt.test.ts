@@ -93,38 +93,83 @@ describe('tilt dynamics', () => {
     for (let i = 1; i < stretches.length; i++) expect(stretches[i]).toBeGreaterThanOrEqual(stretches[i - 1] - 1e-9);
   });
 
+  /**
+   * Steps between neighbouring dabs, each in the frame of the dab before
+   * (where its footprint is w × h about the origin), so (|qx|/w, |qy|/h)
+   * inside the unit square (or, for ellipses, circle) means they touch.
+   */
+  function steps(brush: Parameters<typeof makeBrush>[0], feed: (engine: StampStrokeEngine) => void) {
+    const dabs: { m: DOMMatrix; w: number; h: number }[] = [];
+    const spy = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage').mockImplementation(function (this: CanvasRenderingContext2D, ...args: unknown[]) {
+      if (args.length !== 5 || (args[0] as HTMLCanvasElement).width >= 200) return;
+      dabs.push({ m: this.getTransform(), w: args[3] as number, h: args[4] as number });
+    });
+    const engine = new StampStrokeEngine();
+    engine.begin(makeBrush(brush), '#000000', false, 2000, 400);
+    feed(engine);
+    engine.commit(document.createElement('canvas').getContext('2d')!);
+    spy.mockRestore();
+    return dabs.slice(1).map((next, i) => {
+      const { m, w, h } = dabs[i];
+      const dx = next.m.m41 - m.m41, dy = next.m.m42 - m.m42;
+      const det = m.m11 * m.m22 - m.m21 * m.m12;
+      return {
+        x: Math.abs((m.m22 * dx - m.m21 * dy) / det) / w,
+        y: Math.abs((-m.m12 * dx + m.m11 * dy) / det) / h,
+        from: { x: m.m41, y: m.m42 },
+      };
+    });
+  }
+
   it('keep bar dabs touching when a lean across them shears them', () => {
     // A long flat bar along the stroke, spaced wide, with a pen leaning
     // diagonally: stretched along 45°, each bar turns and thins across the
     // stroke, and at the upright spacing neighbours would no longer touch.
-    const dabs: { m: DOMMatrix; w: number; h: number; cx: number; cy: number }[] = [];
-    const spy = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage').mockImplementation(function (this: CanvasRenderingContext2D, ...args: unknown[]) {
-      if (args.length !== 5 || (args[0] as HTMLCanvasElement).width >= 200) return;
-      const m = this.getTransform();
-      dabs.push({ m, w: args[3] as number, h: args[4] as number, cx: m.m41, cy: m.m42 });
-    });
-    const engine = new StampStrokeEngine();
-    engine.begin(makeBrush({
+    const all = steps({
       size: 60, spacing: 0.6, pressureSize: false,
       tip: { shape: 'flat', aspect: 6, angle: 0, orientation: 'direction' },
       dynamics: { tilt: 1 },
-    }), '#000000', false, 2000, 200);
-    for (let i = 0; i <= 40; i++) engine.stroke(20 + i * 20, 100, 1, undefined, i * 4, { tiltX: 60, tiltY: 60 });
-    engine.commit(document.createElement('canvas').getContext('2d')!);
-    spy.mockRestore();
-
-    const steady = dabs.slice(3);
-    expect(steady.length).toBeGreaterThan(10);
-    for (let i = 1; i < steady.length; i++) {
-      const { m, w, h } = steady[i - 1];
-      // The step to the next dab, in this dab's own frame.
-      const dx = steady[i].cx - steady[i - 1].cx, dy = steady[i].cy - steady[i - 1].cy;
-      const det = m.m11 * m.m22 - m.m21 * m.m12;
-      const qx = (m.m22 * dx - m.m21 * dy) / det;
-      const qy = (-m.m12 * dx + m.m11 * dy) / det;
-      expect(Math.abs(qx)).toBeLessThan(w);
-      expect(Math.abs(qy)).toBeLessThan(h);
+    }, engine => {
+      for (let i = 0; i <= 40; i++) engine.stroke(20 + i * 20, 100, 1, undefined, i * 4, { tiltX: 60, tiltY: 60 });
+    });
+    expect(all.length).toBeGreaterThan(10);
+    for (const q of all) {
+      expect(q.x).toBeLessThan(1);
+      expect(q.y).toBeLessThan(1);
     }
+  });
+
+  it('space each bar dab by the way its own part of the stroke heads', () => {
+    // The last sample turns the stroke diagonal while the spline is still
+    // laying the level part before it.
+    const all = steps({
+      size: 60, spacing: 0.6, pressureSize: false,
+      tip: { shape: 'flat', aspect: 6, angle: 0, orientation: 'fixed' },
+      dynamics: { tilt: 1 },
+    }, engine => {
+      [[100, 200], [200, 200], [300, 200], [400, 300]].forEach(([x, y], i) =>
+        engine.stroke(x, y, 1, undefined, i * 4, { tiltX: 60, tiltY: 60 }));
+    });
+    // The level run (a fixed bar on the diagonal after it gaps even upright,
+    // spaced by its size rather than its reach that way).
+    const level = all.filter(q => q.from.y < 201);
+    expect(level.length).toBeGreaterThan(5);
+    for (const q of level) {
+      expect(q.x).toBeLessThan(1);
+      expect(q.y).toBeLessThan(1);
+    }
+  });
+
+  it('keep calligraphy dabs touching by their rounded ends', () => {
+    const all = steps({
+      size: 120, spacing: 0.9, pressureSize: false,
+      tip: { shape: 'calligraphy', aspect: 6, angle: 0, orientation: 'fixed' },
+      dynamics: { tilt: 0.25 },
+    }, engine => {
+      for (let i = 0; i <= 20; i++) engine.stroke(100 + i * 40, 200, 1, undefined, i * 4, { tiltX: 60, tiltY: 60 });
+    });
+    expect(all.length).toBeGreaterThan(5);
+    for (const q of all) expect(Math.hypot(q.x, q.y)).toBeLessThan(1);
   });
 
   it('cover the stretched dab in the dirty bounds', () => {

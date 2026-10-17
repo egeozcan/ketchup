@@ -54,15 +54,19 @@ describe('Stabilizer', () => {
     expect(s.catchUp()).toEqual([]);
   });
 
-  it('trails tilt with the position and catches it up too', () => {
+  it('delays pressure and tilt by the time constant, and plays out the rest on catching up', () => {
     const s = new Stabilizer();
     s.reset(100);
     s.add(0, 0, 1, 0, 0, 0);
-    const lagging = s.add(100, 0, 1, 10, 60, -30);
-    expect(lagging.tiltX).toBeGreaterThan(0);
-    expect(lagging.tiltX).toBeLessThan(20);
+    // What the pen did a time constant ago, where the drawn point now is.
+    expect(s.add(100, 0, 0.5, 100, 60, -30)).toMatchObject({ pressure: 1, tiltX: 0, tiltY: 0 });
+    expect(s.add(150, 0, 0.5, 150, 60, -30)).toMatchObject({ pressure: 0.75, tiltX: 30, tiltY: -15 });
+    s.add(200, 0, 0.2, 200, 80, 0);
     const way = s.catchUp();
-    expect(way[way.length - 1]).toMatchObject({ tiltX: 60, tiltY: -30 });
+    // From the pen at t=100 (0.5) to its last sample (0.2), in time order.
+    expect(way[0].pressure).toBeLessThanOrEqual(0.5);
+    for (let i = 1; i < way.length; i++) expect(way[i].pressure).toBeLessThanOrEqual(way[i - 1].pressure);
+    expect(way[way.length - 1]).toMatchObject({ x: 200, pressure: 0.2, tiltX: 80, tiltY: 0 });
   });
 
   it('starts afresh after a reset', () => {
@@ -140,11 +144,33 @@ describe('StampStrokeEngine with the stabilizer', () => {
     const tail = drawImage.mock.calls.map(dab).filter(d => d.w < 19);
     drawImage.mockRestore();
 
-    // The catch-up narrows toward the lift point, ending at its pressure there.
+    // The catch-up narrows toward the lift point, ending near its pressure
+    // there (4 px at 0.2), and only where the pen tapered: short of x=200 it
+    // was still at full pressure.
     const last = tail[tail.length - 1];
     expect(last.x).toBeGreaterThan(212);
-    expect(last.w).toBeLessThan(5);
+    expect(last.w).toBeLessThan(6);
     expect(Math.min(...tail.map(d => d.w))).toBe(last.w);
+    expect(tail.filter(d => d.x < 196)).toEqual([]);
+  });
+
+  it('catches up at the pace the stroke went, even when it crept', () => {
+    const drawImage = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage');
+    const engine = new StampStrokeEngine();
+    const brush = makeBrush({ size: 100, spacing: 0.1, pressureSize: false, dynamics: { sizeVelocity: 1 } });
+    engine.begin(brush, '#000000', false, 1000, 300, { stabilizerMs: 120 });
+    for (let i = 0; i <= 250; i++) engine.stroke(100 + i * 0.4, 150, 1, undefined, i * 4);
+    const width = (call: unknown[]) => call[3] as number;
+    const before = width(drawImage.mock.lastCall!);
+
+    drawImage.mockClear();
+    engine.commit(document.createElement('canvas').getContext('2d')!);
+    const after = drawImage.mock.calls.filter(call => (call as unknown[]).length === 5 && width(call) < 100).map(width);
+    drawImage.mockRestore();
+
+    // Size by speed would show any speed the catch-up made up.
+    expect(after.length).toBeGreaterThan(0);
+    expect(Math.max(...after)).toBeLessThan(before * 1.1);
   });
 
   it('carries on forward when it catches up, never back over the stroke', () => {
