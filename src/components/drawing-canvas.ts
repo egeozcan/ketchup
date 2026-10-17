@@ -54,6 +54,12 @@ function releasedAt(e: PointerEvent, clientX: number, clientY: number): PointerE
   } as PointerEvent;
 }
 
+/** The samples a pointermove stands for, oldest first: its coalesced events where the browser reports them. */
+function coalescedSamples(e: PointerEvent): PointerEvent[] {
+  const samples = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
+  return samples.length > 0 ? samples : [e];
+}
+
 @customElement('drawing-canvas')
 export class DrawingCanvas extends LitElement {
   static override styles = css`
@@ -2803,7 +2809,13 @@ export class DrawingCanvas extends LitElement {
     if (activeTool === 'pencil' || activeTool === 'eraser') {
       const desc = this._brushDescriptor;
       const layerCtx = desc.ink.wetness > 0 ? this._getActiveLayerCtx() ?? undefined : undefined;
-      this._engine.stroke(p.x, p.y, normalizePointerPressure(e), layerCtx, e.timeStamp);
+      // A fast pen reports several samples per frame; feed the brush each one
+      // rather than letting the spline guess the curve between frames.
+      // Samples that don't move still count: their pressure may be a lift.
+      for (const sample of coalescedSamples(e)) {
+        const sp = sample === e ? p : this._getDocPoint(sample);
+        this._engine.stroke(sp.x, sp.y, normalizePointerPressure(sample), layerCtx, sample.timeStamp);
+      }
       this._lastPoint = p;
       // The stroke stays in the engine's buffer until pointerup; the layer is unchanged.
       this.scheduleComposite(false);

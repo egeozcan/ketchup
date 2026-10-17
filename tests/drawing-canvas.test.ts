@@ -865,4 +865,64 @@ describe('DrawingCanvas', () => {
     expect((canvas as any)._drawing).toBe(false);
     expect(clearRectSpy).toHaveBeenCalled();
   });
+
+  it('feeds the brush every coalesced sample of a move, each with its own pressure and time', () => {
+    const { canvas } = setupCanvas({ stateOverrides: { activeTool: 'pencil' } });
+    const stroke = vi.spyOn((canvas as any)._engine, 'stroke');
+    const pen = (clientX: number, pressure: number, timeStamp: number, coalesced?: PointerEvent[]) =>
+      ({
+        button: 0, buttons: 1, pointerId: 1, clientX, clientY: 10, pointerType: 'pen', isPrimary: true,
+        pressure, timeStamp, preventDefault() {},
+        ...(coalesced ? { getCoalescedEvents: () => coalesced } : {}),
+      }) as unknown as PointerEvent;
+
+    (canvas as any)._onPointerDown(pen(10, 0.5, 0));
+    stroke.mockClear();
+    // The last sample stands still; every sample reaches the brush.
+    const samples = [pen(20, 0.6, 4), pen(30, 0.7, 8), pen(40, 0.8, 12), pen(40, 0.8, 13)];
+    (canvas as any)._onPointerMove(pen(40, 0.8, 13, samples));
+
+    const doc = (x: number) => (canvas as any)._getDocPoint(pen(x, 0, 0));
+    expect(stroke.mock.calls.map(c => [c[0], c[2], c[4]])).toEqual([
+      [doc(20).x, 0.6, 4],
+      [doc(30).x, 0.7, 8],
+      [doc(40).x, 0.8, 12],
+      [doc(40).x, 0.8, 13],
+    ]);
+    expect((canvas as any)._lastPoint).toEqual(doc(40));
+  });
+
+  it('passes on a pressure drop in place, so a pen lift still breaks the stroke', () => {
+    const { canvas } = setupCanvas({ stateOverrides: { activeTool: 'pencil' } });
+    const stroke = vi.spyOn((canvas as any)._engine, 'stroke');
+    const pen = (clientX: number, pressure: number, timeStamp: number, coalesced?: PointerEvent[]) =>
+      ({
+        button: 0, buttons: 1, pointerId: 1, clientX, clientY: 10, pointerType: 'pen', isPrimary: true,
+        pressure, timeStamp, preventDefault() {},
+        ...(coalesced ? { getCoalescedEvents: () => coalesced } : {}),
+      }) as unknown as PointerEvent;
+
+    (canvas as any)._onPointerDown(pen(10, 0.5, 0));
+    stroke.mockClear();
+    (canvas as any)._onPointerMove(pen(20, 0, 8, [pen(20, 0.5, 4), pen(20, 0.005, 6), pen(20, 0, 8)]));
+
+    expect(stroke.mock.calls.map(c => c[2])).toEqual([0.5, 0.005, 0]);
+  });
+
+  it('strokes the move itself when the browser reports no coalesced samples', () => {
+    const { canvas } = setupCanvas({ stateOverrides: { activeTool: 'pencil' } });
+    const stroke = vi.spyOn((canvas as any)._engine, 'stroke');
+    const pen = (clientX: number, timeStamp: number) =>
+      ({
+        button: 0, buttons: 1, pointerId: 1, clientX, clientY: 10, pointerType: 'pen', isPrimary: true,
+        pressure: 0.5, timeStamp, preventDefault() {}, getCoalescedEvents: () => [],
+      }) as unknown as PointerEvent;
+
+    (canvas as any)._onPointerDown(pen(10, 0));
+    stroke.mockClear();
+    (canvas as any)._onPointerMove(pen(30, 8));
+
+    expect(stroke).toHaveBeenCalledTimes(1);
+    expect(stroke.mock.calls[0][4]).toBe(8);
+  });
 });
