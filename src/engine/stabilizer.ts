@@ -46,7 +46,10 @@ interface PenSample {
  * the average of that distance, which (the average being linear) is exactly
  * the drawn point on a straight stroke at any pace, from the first sample
  * on: a taper lands where the pen made it, a light touchdown doesn't linger,
- * and a pen easing off as it stops does so at the stop.
+ * and a pen easing off as it stops does so at the stop. The distance is
+ * taken up like a string pulled behind the pen with `slack` to spare, so a
+ * hand trembling where it holds doesn't add up to a way it never went (and
+ * read what the pen did there before the drawn point gets there).
  */
 export class Stabilizer {
   private _tau = 0;
@@ -59,15 +62,25 @@ export class Stabilizer {
   private _prevT = 0;
   private _rawX = 0;
   private _rawY = 0;
-  /** How far the pen has gone, and that distance averaged as the position is. */
+  /**
+   * How far the pen has gone (never less than before), and that distance
+   * averaged as the position is. Measured as `_anchorS`, the way a point
+   * pulled `_slack` behind the pen went, plus how far the pen is from it.
+   */
   private _rawS = 0;
+  private _anchorX = 0;
+  private _anchorY = 0;
+  private _anchorS = 0;
+  private _slack = 0;
   private _penS = 0;
   /** The pen's pressure and tilt from the drawn point's distance on, oldest first. */
   private _history: PenSample[] = [];
   private _started = false;
 
-  reset(timeConstantMs = this._tau) {
+  /** Start over, lagging by `timeConstantMs` and taking up `slack` px of tremor. */
+  reset(timeConstantMs = this._tau, slack = this._slack) {
     this._tau = timeConstantMs;
+    this._slack = Math.max(0, slack);
     this._started = false;
     this._history = [];
   }
@@ -83,13 +96,24 @@ export class Stabilizer {
       this._prevX = x;
       this._prevY = y;
       this._prevT = timestamp;
+      this._anchorX = x;
+      this._anchorY = y;
+      this._anchorS = 0;
       this._rawS = 0;
       this._penS = 0;
       this._history = [{ s: 0, pressure, tiltX, tiltY }];
       this._started = true;
       return { x, y, pressure, tiltX, tiltY };
     }
-    this._rawS += Math.hypot(x - this._rawX, y - this._rawY);
+    let off = Math.hypot(x - this._anchorX, y - this._anchorY);
+    if (off > this._slack) {
+      const pull = (off - this._slack) / off;
+      this._anchorX += (x - this._anchorX) * pull;
+      this._anchorY += (y - this._anchorY) * pull;
+      this._anchorS += off - this._slack;
+      off = this._slack;
+    }
+    this._rawS = Math.max(this._rawS, this._anchorS + off);
     this._rawX = x;
     this._rawY = y;
     this._remember({ s: this._rawS, pressure, tiltX, tiltY });

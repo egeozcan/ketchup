@@ -85,6 +85,20 @@ describe('Stabilizer', () => {
     expect((s as any)._history.length).toBeLessThanOrEqual(3);
   });
 
+  it('keeps pressure eased off at a stop for the stop through a trembling hold', () => {
+    const s = new Stabilizer();
+    s.reset(120, 3);
+    for (let t = 0; t <= 400; t += 4) s.add(100 + t, 0, 1, t);
+    let at = s.add(500, 0, 1, 404);
+    // Held at x=500 trembling a pixel either way, easing off over 120 ms.
+    for (let t = 408, i = 0; t <= 1400; t += 4, i++) {
+      at = s.add(500 + (i % 2 ? -1 : 1), 0, Math.max(0.2, 1 - (t - 404) / 150), t);
+      if (at.x < 496) expect(at.pressure).toBe(1);
+    }
+    const way = s.catchUp();
+    expect(way[way.length - 1].pressure).toBeCloseTo(0.2);
+  });
+
   it('plays out what the pen did over the lag on catching up', () => {
     const s = new Stabilizer();
     s.reset(100);
@@ -239,6 +253,15 @@ describe('StampStrokeEngine with the stabilizer', () => {
       prev = x;
     }
     expect(prev).toBeGreaterThan(148);
+  });
+
+  it('takes up the same tremor on screen at any zoom', () => {
+    const engine = new StampStrokeEngine();
+    engine.begin(makeBrush({ size: 4 }), '#000000', false, 100, 100, { stabilizerMs: 100, viewScale: 2 });
+    const zoomedIn = (engine as any)._stabilizer._slack;
+    engine.begin(makeBrush({ size: 4 }), '#000000', false, 100, 100, { stabilizerMs: 100, viewScale: 0.5 });
+    expect((engine as any)._stabilizer._slack).toBeCloseTo(zoomedIn * 4);
+    expect(zoomedIn).toBeGreaterThan(0);
   });
 
   it('reaches the end of a taper even when the full-size spacing is wide', () => {

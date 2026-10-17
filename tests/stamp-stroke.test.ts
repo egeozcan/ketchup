@@ -142,5 +142,25 @@ describe('dab spacing', () => {
       expect(dabs[i].x - dabs[i - 1].x).toBeLessThanOrEqual((dabs[i].w + dabs[i - 1].w) / 2 + 0.01);
     }
   });
+
+  it('lays a taper about as densely however often the pen reported it', () => {
+    const taperDabs = (step: number) => {
+      let count = 0;
+      const spy = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage').mockImplementation((...args: unknown[]) => {
+        if (args.length === 5 && (args[0] as HTMLCanvasElement).width <= 100) count++;
+      });
+      const engine = new StampStrokeEngine();
+      engine.begin(makeBrush({ size: 100, spacing: 0.1, pressureSize: true, pressureCurve: 'linear' }), '#000000', false, 400, 300);
+      for (let x = 100; x <= 200; x += step) engine.stroke(x, 150, 1 - 0.9 * (x - 100) / 100, undefined, x);
+      engine.commit(document.createElement('canvas').getContext('2d')!);
+      spy.mockRestore();
+      return count;
+    };
+    const fine = taperDabs(1);
+    const coarse = taperDabs(100);
+    // Spacing the whole of a coarse segment for its narrow end would lay
+    // several times as many dabs, darkening the stroke at low flow.
+    expect(Math.abs(coarse - fine) / fine).toBeLessThan(0.2);
+  });
 });
 

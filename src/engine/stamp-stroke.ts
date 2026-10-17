@@ -1,6 +1,6 @@
 import { BrushTipCache } from './brush-tip-cache.js';
 import { StrokeBufferPool } from './stroke-buffer-pool.js';
-import { PathSmoother, type PathTarget } from './path-smoother.js';
+import { PathSmoother, type PathProbe, type PathTarget } from './path-smoother.js';
 import { Stabilizer, type StabilizedPoint } from './stabilizer.js';
 import { get2dContext, drawImageSafe, tintAlphaMask, createOffscreenCanvas, type AnyCanvas } from './canvas-pool.js';
 import { PRESSURE_CURVES, quantizeDiameter, type BrushDescriptor, type TipDescriptor, type StampPoint, type InkState } from './types.js';
@@ -17,11 +17,13 @@ const FULL_VELOCITY_PX_PER_MS = 2;
 const MAX_TILT_STRETCH = 2;
 /** Tilt short of flat, so its tangent stays finite. */
 const MAX_TILT_DEG = 89.9;
+/** Screen (CSS) pixels a hand may tremble without the stabilizer counting it as way gone. */
+const STABILIZER_SLACK_PX = 3;
 
 export interface StrokeOptions {
   /** How far, in time, the stroke trails the pointer (0 = off); needs increasing stroke() timestamps. */
   stabilizerMs?: number;
-  /** Screen pixels per document pixel, so speed dynamics feel the same at any zoom. */
+  /** Screen pixels per document pixel, so speed dynamics and the stabilizer feel the same at any zoom. */
   viewScale?: number;
 }
 
@@ -193,7 +195,7 @@ export class StampStrokeEngine {
     this._docHeight = docHeight;
     this._bufferPool.acquire(docWidth, docHeight, this._rawDirtyRect());
     this._smoother.reset();
-    this._stabilizer.reset(options.stabilizerMs ?? 0);
+    this._stabilizer.reset(options.stabilizerMs ?? 0, STABILIZER_SLACK_PX / this._viewScale);
     this._prevStamp = null;
     this._variantCounter = 0;
     this._snapshotCaptured = false;
@@ -407,21 +409,26 @@ export class StampStrokeEngine {
    * Distance from a dab to the next, from the dab's own size and lean: the
    * spline lays a segment a sample late, so the newest sample's would be
    * another dab's (a pause after a thin, fast run would gap it). Where the
-   * segment narrows, the smaller size it heads to sets it, so a steep taper
-   * stays joined to the small dabs ahead.
+   * path narrows, the spacing where that would put the next dab sets it, so
+   * a steep taper stays joined to the small dabs ahead, as densely however
+   * often the pen reported.
    */
-  private _dabSpacing = (stamp: StampPoint, ahead: PathTarget): number => {
-    const d = this._descriptor!;
+  private _dabSpacing = (stamp: StampPoint, ahead: PathProbe): number => {
     const from = this._spacedFrom;
     if (from) {
       const dx = stamp.x - from.x, dy = stamp.y - from.y;
       if (dx * dx + dy * dy >= MIN_DIRECTION_DIST_SQ) this._spacedHeading = Math.atan2(dy, dx);
     }
     this._spacedFrom = stamp;
-    const size = Math.min(this._sizeAt(stamp.pressure, stamp.velocity), this._sizeAt(ahead.pressure, ahead.velocity));
-    const lean = Math.min(this._leanSpacing(stamp, this._spacedHeading), this._leanSpacing(ahead, this._spacedHeading));
-    return Math.max(1, d.spacing * size * lean);
+    const own = this._spacingAt(stamp);
+    return Math.min(own, this._spacingAt(ahead(own)));
   };
+
+  /** The spacing a dab with `at`'s pressure, speed and lean would get, along the current heading. */
+  private _spacingAt(at: PathTarget): number {
+    const d = this._descriptor!;
+    return Math.max(1, d.spacing * this._sizeAt(at.pressure, at.velocity) * this._leanSpacing(at, this._spacedHeading));
+  }
 
   /**
    * Stretching a bar along a lean across it shears it, which can pull

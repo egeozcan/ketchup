@@ -17,17 +17,31 @@ function lerpChannels(a: PathChannels, b: PathChannels, t: number): PathChannels
 
 const DEFAULT_SPEED_PX_PER_MS = 1;
 
-/** The pressure and channels a segment heads to, where the stamps after one may get to. */
+/** The pressure and channels at a point of the path. */
 export type PathTarget = PathChannels & { pressure: number };
 
 /**
- * Distance from a stamp to the next: fixed, or worked out from the stamp
- * and what the segment it is on heads to.
+ * The pressure and channels `distance` further along the path from a stamp,
+ * as far as the segment it is on goes (past its end, at its end).
  */
-export type Spacing = number | ((stamp: StampPoint, ahead: PathTarget) => number);
+export type PathProbe = (distance: number) => PathTarget;
 
-function spacingAfter(spacing: Spacing, stamp: StampPoint, ahead: PathTarget): number {
+/**
+ * Distance from a stamp to the next: fixed, or worked out from the stamp
+ * and, through `ahead`, the path past it.
+ */
+export type Spacing = number | ((stamp: StampPoint, ahead: PathProbe) => number);
+
+function spacingAfter(spacing: Spacing, stamp: StampPoint, ahead: PathProbe): number {
   return typeof spacing === 'number' ? spacing : spacing(stamp, ahead);
+}
+
+function targetOf(p: RawPoint): PathTarget {
+  return { pressure: p.pressure, velocity: p.velocity, tiltX: p.tiltX, tiltY: p.tiltY };
+}
+
+function targetBetween(a: RawPoint, b: RawPoint, t: number): PathTarget {
+  return { pressure: a.pressure + (b.pressure - a.pressure) * t, ...lerpChannels(a, b, t) };
 }
 
 /**
@@ -77,7 +91,7 @@ export class PathSmoother {
     // Single point (stroke start dot)
     if (n === 1) {
       const stamp: StampPoint = { x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, velocity: pt.velocity, tiltX: pt.tiltX, tiltY: pt.tiltY };
-      this._remainder = spacingAfter(spacing, stamp, pt);
+      this._remainder = spacingAfter(spacing, stamp, () => targetOf(pt));
       return [stamp];
     }
 
@@ -151,12 +165,12 @@ export class PathSmoother {
       const stamp: StampPoint = {
         x: from.x + dx * t,
         y: from.y + dy * t,
-        pressure: from.pressure + (to.pressure - from.pressure) * t,
         speedPxPerMs,
-        ...lerpChannels(from, to, t),
+        ...targetBetween(from, to, t),
       };
       stamps.push(stamp);
-      d += spacingAfter(spacing, stamp, to);
+      const at = d;
+      d += spacingAfter(spacing, stamp, (ahead) => targetBetween(from, to, Math.min(1, (at + ahead) / dist)));
     }
 
     this._remainder = d - dist;
@@ -189,28 +203,33 @@ export class PathSmoother {
     const speedPxPerMs = elapsed > 0 ? totalLen / elapsed : DEFAULT_SPEED_PX_PER_MS;
     let d = this._remainder;
 
-    while (d <= totalLen) {
-      // Find the subdivision segment containing distance d
+    // The curve's parameter at arc length `at` along it.
+    const paramAt = (at: number): number => {
+      if (at >= totalLen) return 1;
+      // Find the subdivision segment containing distance `at`
       let segIdx = 0;
       for (let i = 1; i < lengths.length; i++) {
-        if (lengths[i] >= d) { segIdx = i - 1; break; }
+        if (lengths[i] >= at) { segIdx = i - 1; break; }
       }
 
       // Interpolate t within this subdivision segment
       const segStart = lengths[segIdx];
       const segEnd = lengths[segIdx + 1];
-      const segFrac = segEnd > segStart ? (d - segStart) / (segEnd - segStart) : 0;
-      const t = (segIdx + segFrac) / SUBDIV;
+      const segFrac = segEnd > segStart ? (at - segStart) / (segEnd - segStart) : 0;
+      return (segIdx + segFrac) / SUBDIV;
+    };
 
+    while (d <= totalLen) {
+      const t = paramAt(d);
       const stamp: StampPoint = {
         x: catmullRom(p0.x, p1.x, p2.x, p3.x, t),
         y: catmullRom(p0.y, p1.y, p2.y, p3.y, t),
-        pressure: p1.pressure + (p2.pressure - p1.pressure) * t,
         speedPxPerMs,
-        ...lerpChannels(p1, p2, t),
+        ...targetBetween(p1, p2, t),
       };
       stamps.push(stamp);
-      d += spacingAfter(spacing, stamp, p2);
+      const at = d;
+      d += spacingAfter(spacing, stamp, (ahead) => targetBetween(p1, p2, paramAt(at + ahead)));
     }
 
     this._remainder = d - totalLen;
