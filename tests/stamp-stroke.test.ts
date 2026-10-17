@@ -64,4 +64,46 @@ describe('StampStrokeEngine pressure and buildup', () => {
     expect(Math.max(...slow)).toBeGreaterThan(Math.max(...fast));
     expect(Math.max(...fast)).toBe(0.25);
   });
+
+  it('lays dabs at subpixel positions and at the exact pressure size', () => {
+    // Spied directly: the canvas mock records the wrong dWidth/dHeight for 5-argument drawImage.
+    const drawImage = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage');
+    const engine = new StampStrokeEngine();
+    engine.begin(makeBrush({ size: 5, spacing: 10, pressureSize: true, pressureCurve: 'linear' }), '#000000', false, 40, 40);
+    // Pressure 0.66 makes a 3.3 px dab; tips are cached at an even 4 px.
+    engine.stroke(10.3, 12.7, 0.66, undefined, 0);
+
+    const [, dx, dy, dw, dh] = drawImage.mock.lastCall as unknown as [unknown, number, number, number, number];
+    drawImage.mockRestore();
+    expect(dw).toBeCloseTo(3.3);
+    expect(dh).toBeCloseTo(3.3);
+    expect(dx + dw / 2).toBeCloseTo(10.3);
+    expect(dy + dh / 2).toBeCloseTo(12.7);
+    const bounds = engine.getDirtyBounds()!;
+    expect(bounds.x).toBeLessThanOrEqual(dx);
+    expect(bounds.x + bounds.w).toBeGreaterThanOrEqual(dx + dw);
+  });
+
+  it('grows every tip shape smoothly with size, across the quantized tip diameters', () => {
+    const drawImage = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage');
+    for (const shape of ['round', 'flat', 'chisel', 'calligraphy'] as const) {
+      let prev: { w: number; h: number } | null = null;
+      for (let size = 1; size <= 12; size += 0.05) {
+        const engine = new StampStrokeEngine();
+        engine.begin(makeBrush({ size, pressureSize: false, tip: { shape, aspect: 4, angle: 0, orientation: 'fixed' } }), '#000000', false, 40, 40);
+        engine.stroke(20, 20, 1, undefined, 0);
+        const [, , , w, h] = drawImage.mock.lastCall as unknown as [unknown, number, number, number, number];
+        // Calligraphy: dabs a hair past 3px were drawn half as tall when their tip came from the next cached diameter.
+        if (prev) {
+          expect(w, `${shape} width at ${size}`).toBeGreaterThanOrEqual(prev.w);
+          expect(h, `${shape} height at ${size}`).toBeGreaterThanOrEqual(prev.h);
+          expect(w - prev.w, `${shape} width jump at ${size}`).toBeLessThan(0.1);
+          expect(h - prev.h, `${shape} height jump at ${size}`).toBeLessThan(0.1);
+        }
+        prev = { w, h };
+      }
+    }
+    drawImage.mockRestore();
+  });
 });
+

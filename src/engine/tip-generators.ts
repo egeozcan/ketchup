@@ -234,6 +234,26 @@ export const tipGenerators: Record<TipShape, TipGeneratorFn> = {
   splatter: generateSplatterTip,
 };
 
+/**
+ * The footprint a dab of `size` covers, unrounded: the generators' own
+ * proportions and minimums, without the whole-pixel canvas sizes of a tip
+ * cached at a quantized diameter. Keep in step with the generators above.
+ */
+export function tipFootprint(size: number, tip: TipDescriptor): { w: number; h: number } {
+  const w = Math.max(1, size);
+  const aspect = Math.max(1, tip.aspect);
+  switch (tip.shape) {
+    case 'flat':
+    case 'chisel':
+      return { w, h: Math.max(1, size / aspect) };
+    case 'calligraphy':
+      // Its ellipse keeps a radius of at least 1px across.
+      return { w, h: Math.max(2, size / aspect) };
+    default:
+      return { w, h: w };
+  }
+}
+
 /** Number of cached variants per shape (for visual variety) */
 export const TIP_VARIANT_COUNTS: Partial<Record<TipShape, number>> = {
   fan: 4,

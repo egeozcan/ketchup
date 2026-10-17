@@ -3,7 +3,7 @@ import { StrokeBufferPool } from './stroke-buffer-pool.js';
 import { PathSmoother } from './path-smoother.js';
 import { get2dContext, drawImageSafe, tintAlphaMask, createOffscreenCanvas, type AnyCanvas } from './canvas-pool.js';
 import { PRESSURE_CURVES, quantizeDiameter, type BrushDescriptor, type TipDescriptor, type StampPoint, type InkState } from './types.js';
-import { TIP_VARIANT_COUNTS } from './tip-generators.js';
+import { TIP_VARIANT_COUNTS, tipFootprint } from './tip-generators.js';
 import { initInkState, applyDepletion, applyBuildup, applyPickup } from './ink-model.js';
 
 const MIN_DIRECTION_DIST_SQ = 0.25;
@@ -156,10 +156,14 @@ export class StampStrokeEngine {
 
       const tipW = tip.width;
       const tipH = tip.height;
+      // Tips are cached at an even diameter; draw them stretched to the exact
+      // footprint, at the exact (subpixel) position, so thin strokes and
+      // pressure tapers don't step in whole pixels.
+      const { w: drawW, h: drawH } = tipFootprint(stampSize, d.tip);
 
-      // Half-diagonal covers the tip footprint at any rotation; +1 absorbs the
-      // Math.round applied to the draw position below.
-      const reach = Math.sqrt(tipW * tipW + tipH * tipH) / 2 + 1;
+      // Half-diagonal covers the tip footprint at any rotation; +1 absorbs
+      // resampling spill at the fractional edges.
+      const reach = Math.sqrt(drawW * drawW + drawH * drawH) / 2 + 1;
       if (stamp.x - reach < this._dirtyMinX) this._dirtyMinX = stamp.x - reach;
       if (stamp.y - reach < this._dirtyMinY) this._dirtyMinY = stamp.y - reach;
       if (stamp.x + reach > this._dirtyMaxX) this._dirtyMaxX = stamp.x + reach;
@@ -190,24 +194,24 @@ export class StampStrokeEngine {
         ctx.globalCompositeOperation = 'source-over';
         if (rotation !== 0) {
           ctx.save();
-          ctx.translate(Math.round(stamp.x), Math.round(stamp.y));
+          ctx.translate(stamp.x, stamp.y);
           ctx.rotate(rotation);
-          ctx.drawImage(tint, 0, 0, tipW, tipH, -tipW / 2, -tipH / 2, tipW, tipH);
+          ctx.drawImage(tint, 0, 0, tipW, tipH, -drawW / 2, -drawH / 2, drawW, drawH);
           ctx.restore();
         } else {
-          ctx.drawImage(tint, 0, 0, tipW, tipH, Math.round(stamp.x - tipW / 2), Math.round(stamp.y - tipH / 2), tipW, tipH);
+          ctx.drawImage(tint, 0, 0, tipW, tipH, stamp.x - drawW / 2, stamp.y - drawH / 2, drawW, drawH);
         }
       } else {
         ctx.globalAlpha = stampAlpha;
         ctx.globalCompositeOperation = 'source-over';
         if (rotation !== 0) {
           ctx.save();
-          ctx.translate(Math.round(stamp.x), Math.round(stamp.y));
+          ctx.translate(stamp.x, stamp.y);
           ctx.rotate(rotation);
-          drawImageSafe(ctx, tip, -tipW / 2, -tipH / 2, tipW, tipH);
+          drawImageSafe(ctx, tip, -drawW / 2, -drawH / 2, drawW, drawH);
           ctx.restore();
         } else {
-          drawImageSafe(ctx, tip, Math.round(stamp.x - tipW / 2), Math.round(stamp.y - tipH / 2), tipW, tipH);
+          drawImageSafe(ctx, tip, stamp.x - drawW / 2, stamp.y - drawH / 2, drawW, drawH);
         }
       }
 
