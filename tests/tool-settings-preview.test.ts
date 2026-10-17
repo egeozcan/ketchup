@@ -8,7 +8,8 @@ const engineCalls = vi.hoisted(() => ({
   commit: vi.fn(),
 }));
 
-vi.mock('../src/engine/stamp-stroke.js', () => ({
+vi.mock('../src/engine/stamp-stroke.js', async importOriginal => ({
+  tiltStretch: (await importOriginal<typeof import('../src/engine/stamp-stroke.js')>()).tiltStretch,
   StampStrokeEngine: class {
     begin(...args: unknown[]) { engineCalls.begin(...args); }
     stroke(...args: unknown[]) { engineCalls.stroke(...args); }

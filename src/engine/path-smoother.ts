@@ -1,11 +1,18 @@
-import type { StampPoint } from './types.js';
+import type { PathChannels, StampPoint } from './types.js';
 
-interface RawPoint {
+interface RawPoint extends PathChannels {
   x: number;
   y: number;
   pressure: number;
   timestamp: number;
-  velocity: number;
+}
+
+function lerpChannels(a: PathChannels, b: PathChannels, t: number): PathChannels {
+  return {
+    velocity: a.velocity + (b.velocity - a.velocity) * t,
+    tiltX: a.tiltX + (b.tiltX - a.tiltX) * t,
+    tiltY: a.tiltY + (b.tiltY - a.tiltY) * t,
+  };
 }
 
 const DEFAULT_SPEED_PX_PER_MS = 1;
@@ -13,7 +20,7 @@ const DEFAULT_SPEED_PX_PER_MS = 1;
 /**
  * Catmull-Rom spline interpolator for pointer events.
  * Subdivides curves by arc-length spacing, never by timestamp.
- * Lerps pressure and velocity between bracketing raw samples.
+ * Lerps pressure and the other path channels between bracketing raw samples.
  *
  * Uses a rolling window of 4 points to avoid unbounded array growth.
  */
@@ -32,12 +39,17 @@ export class PathSmoother {
 
   /**
    * Feed a new raw pointer sample. Returns stamp positions along the
-   * smoothed path spaced at `spacing` pixel intervals. `velocity` is carried
+   * smoothed path spaced at `spacing` pixel intervals. `channels` are carried
    * to the stamps like pressure, so a segment drawn a sample late still gets
-   * the speed it was drawn at.
+   * the speed and tilt it was drawn with.
    */
-  addPoint(x: number, y: number, pressure: number, spacing: number, timestamp = 0, velocity = 0): StampPoint[] {
-    const pt: RawPoint = { x, y, pressure, timestamp, velocity };
+  addPoint(x: number, y: number, pressure: number, spacing: number, timestamp = 0, channels: Partial<PathChannels> = {}): StampPoint[] {
+    const pt: RawPoint = {
+      x, y, pressure, timestamp,
+      velocity: channels.velocity ?? 0,
+      tiltX: channels.tiltX ?? 0,
+      tiltY: channels.tiltY ?? 0,
+    };
     this._count++;
 
     // Maintain rolling window of at most 4 points
@@ -51,7 +63,7 @@ export class PathSmoother {
     // Single point (stroke start dot)
     if (n === 1) {
       this._remainder = spacing;
-      return [{ x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, velocity }];
+      return [{ x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, velocity: pt.velocity, tiltX: pt.tiltX, tiltY: pt.tiltY }];
     }
 
     // Second point: linear interpolation (only linear segment we emit)
@@ -102,6 +114,8 @@ export class PathSmoother {
       pressure: p2.pressure,
       timestamp: p2.timestamp + Math.max(0, p2.timestamp - p1.timestamp),
       velocity: p2.velocity,
+      tiltX: p2.tiltX,
+      tiltY: p2.tiltY,
     };
     return this._walkCatmullRom(p0, p1, p2, p3, spacing);
   }
@@ -124,7 +138,7 @@ export class PathSmoother {
         y: from.y + dy * t,
         pressure: from.pressure + (to.pressure - from.pressure) * t,
         speedPxPerMs,
-        velocity: from.velocity + (to.velocity - from.velocity) * t,
+        ...lerpChannels(from, to, t),
       });
       d += spacing;
     }
@@ -177,7 +191,7 @@ export class PathSmoother {
         y: catmullRom(p0.y, p1.y, p2.y, p3.y, t),
         pressure: p1.pressure + (p2.pressure - p1.pressure) * t,
         speedPxPerMs,
-        velocity: p1.velocity + (p2.velocity - p1.velocity) * t,
+        ...lerpChannels(p1, p2, t),
       });
       d += spacing;
     }

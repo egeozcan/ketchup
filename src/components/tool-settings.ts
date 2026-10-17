@@ -8,12 +8,15 @@ import type { StampEntry } from '../storage/types.js';
 import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushDynamics, BrushPreset } from '../engine/types.js';
 import { BRUSH_PRESETS, copyDescriptor } from '../engine/brush-presets.js';
 import { getDefaultTipDescriptor, getTipCapabilities } from '../engine/brush-capabilities.js';
-import { StampStrokeEngine } from '../engine/stamp-stroke.js';
+import { StampStrokeEngine, tiltStretch } from '../engine/stamp-stroke.js';
 import { getStampThumbnailUrl, removeStampThumbnail } from '../utils/stamp-thumbnail-cache.js';
 import { MAX_STAMP_SIZE, MIN_STAMP_SIZE } from '../tools/stamp-size.js';
 import { SHAPE_TOOLS, isShapeTool } from '../tools/shapes.js';
 import { toolIcons, toolLabels, toolShortcuts } from './tool-icons.js';
 import { focusEditor, keyIsForEditorOf } from '../utils/focus-editor.js';
+
+/** How the brush preview's imagined pen leans: toward the viewer, across the mostly level stroke, so tilt shows. */
+const PREVIEW_TILT = { tiltX: 0, tiltY: 50 };
 
 /** Icons for the project dropdown's per-row actions. */
 const projectActionIcons = {
@@ -1555,7 +1558,8 @@ export class ToolSettings extends LitElement {
     // Generate S-curve points — keep amplitude small enough that
     // the largest stamp (previewSize) stays fully within the canvas
     const padX = 8;
-    const maxTipR = previewSize / 2 + 2; // half the largest stamp + margin
+    // Half the largest stamp, as long as the preview's lean stretches it, + margin.
+    const maxTipR = previewSize / 2 * tiltStretch(PREVIEW_TILT.tiltX, PREVIEW_TILT.tiltY, d.dynamics.tilt).stretch + 2;
     const amplitude = Math.max(2, (H / 2 - maxTipR) * 0.8);
     const cy = H / 2;
     const totalLen = W - padX * 2;
@@ -1597,7 +1601,7 @@ export class ToolSettings extends LitElement {
       // respond to while preserving the same geometric path.
       timestamp += t > 0.35 && t < 0.65 ? 4 : 1;
       const layerCtx = !eraser && d.ink.wetness > 0 ? sampleCtx : undefined;
-      this._previewEngine.stroke(x, y, pressure, layerCtx, timestamp);
+      this._previewEngine.stroke(x, y, pressure, layerCtx, timestamp, PREVIEW_TILT);
     }
     this._previewEngine.commit(strokeCtx);
 
@@ -1954,6 +1958,12 @@ export class ToolSettings extends LitElement {
               @change=${(e: Event) => this.ctx.setBrush({ pressureOpacity: (e.target as HTMLInputElement).checked })} />
             Stylus Opacity
           </label>
+        </div>
+        <div class="section">
+          <label title="Stretches dabs along the way a tilting pen or stylus leans; upright, mouse and touch input are unaffected.">Stylus Tilt</label>
+          <input type="range" min="0" max="100" aria-label="Stylus tilt" .value=${String(Math.round(brush.dynamics.tilt * 100))}
+            @input=${(e: Event) => this.ctx.setBrushDynamics({ tilt: Number((e.target as HTMLInputElement).value) / 100 })} />
+          <span class="size-value">${Math.round(brush.dynamics.tilt * 100)}%</span>
         </div>
         ${(brush.pressureSize || brush.pressureOpacity) ? html`
         <div class="section">

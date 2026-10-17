@@ -2,7 +2,7 @@ import type { BrushDescriptor, BrushDynamics, BrushPreset } from './types.js';
 import { getDefaultTipDescriptor } from './brush-capabilities.js';
 
 const NO_INK = { depletion: 0, depletionLength: 500, buildup: 0, wetness: 0 };
-export const NO_DYNAMICS: BrushDynamics = { sizeVelocity: 0, flowVelocity: 0, minSize: 0 };
+export const NO_DYNAMICS: BrushDynamics = { sizeVelocity: 0, flowVelocity: 0, minSize: 0, tilt: 0 };
 
 export const BRUSH_PRESETS: BrushPreset[] = [
   {
@@ -133,6 +133,7 @@ const DYNAMICS_RANGES: Record<keyof BrushDynamics, [number, number]> = {
   sizeVelocity: [-1, 1],
   flowVelocity: [-1, 1],
   minSize: [0, 1],
+  tilt: [0, 1],
 };
 
 export function normalizeDynamics(stored: Partial<BrushDynamics> | undefined): BrushDynamics {

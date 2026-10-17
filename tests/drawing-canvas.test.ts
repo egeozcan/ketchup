@@ -909,6 +909,24 @@ describe('DrawingCanvas', () => {
     expect(stroke.mock.calls.map(c => c[2])).toEqual([0.5, 0.005, 0]);
   });
 
+  it('passes the pen tilt of each sample to the brush', () => {
+    const { canvas } = setupCanvas({ stateOverrides: { activeTool: 'pencil' } });
+    const stroke = vi.spyOn((canvas as any)._engine, 'stroke');
+    const pen = (clientX: number, tiltX: number, timeStamp: number, coalesced?: PointerEvent[]) =>
+      ({
+        button: 0, buttons: 1, pointerId: 1, clientX, clientY: 10, pointerType: 'pen', isPrimary: true,
+        pressure: 0.5, tiltX, tiltY: -5, timeStamp, preventDefault() {},
+        ...(coalesced ? { getCoalescedEvents: () => coalesced } : {}),
+      }) as unknown as PointerEvent;
+
+    (canvas as any)._onPointerDown(pen(10, 20, 0));
+    (canvas as any)._onPointerMove(pen(30, 40, 8, [pen(20, 30, 4), pen(30, 40, 8)]));
+
+    expect(stroke.mock.calls.map(c => c[5])).toEqual([
+      { tiltX: 20, tiltY: -5 }, { tiltX: 30, tiltY: -5 }, { tiltX: 40, tiltY: -5 },
+    ]);
+  });
+
   it('measures brush speed in screen pixels, through zoom and a host CSS zoom', () => {
     const { canvas } = setupCanvas({ stateOverrides: { activeTool: 'pencil' } });
     const begin = vi.spyOn((canvas as any)._engine, 'begin');

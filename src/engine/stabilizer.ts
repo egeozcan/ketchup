@@ -21,6 +21,8 @@ export interface StabilizedPoint {
   x: number;
   y: number;
   pressure: number;
+  tiltX: number;
+  tiltY: number;
   timestamp: number;
 }
 
@@ -35,6 +37,8 @@ export class Stabilizer {
   private _x = 0;
   private _y = 0;
   private _pressure = 0;
+  private _tiltX = 0;
+  private _tiltY = 0;
   private _t = 0;
   // The smoothed point before the last move, which paces the catch-up.
   private _prevX = 0;
@@ -43,6 +47,8 @@ export class Stabilizer {
   private _rawX = 0;
   private _rawY = 0;
   private _rawPressure = 0;
+  private _rawTiltX = 0;
+  private _rawTiltY = 0;
   private _rawT = 0;
   private _started = false;
 
@@ -52,24 +58,28 @@ export class Stabilizer {
   }
 
   /**
-   * The smoothed sample for a raw one at `timestamp` (ms). Pressure trails
-   * with the position, so a taper lands where the pen made it.
+   * The smoothed sample for a raw one at `timestamp` (ms). Pressure and
+   * tilt trail with the position, so a taper lands where the pen made it.
    */
-  add(x: number, y: number, pressure: number, timestamp: number): { x: number; y: number; pressure: number } {
+  add(x: number, y: number, pressure: number, timestamp: number, tiltX = 0, tiltY = 0): Omit<StabilizedPoint, 'timestamp'> {
     this._rawX = x;
     this._rawY = y;
     this._rawPressure = pressure;
+    this._rawTiltX = tiltX;
+    this._rawTiltY = tiltY;
     this._rawT = timestamp;
     if (!this._started || this._tau <= 0) {
       this._x = x;
       this._y = y;
       this._pressure = pressure;
+      this._tiltX = tiltX;
+      this._tiltY = tiltY;
       this._t = timestamp;
       this._prevX = x;
       this._prevY = y;
       this._prevT = timestamp;
       this._started = true;
-      return { x, y, pressure };
+      return { x, y, pressure, tiltX, tiltY };
     }
     const dt = timestamp - this._t;
     if (dt > 0) {
@@ -80,9 +90,11 @@ export class Stabilizer {
       this._x += (x - this._x) * a;
       this._y += (y - this._y) * a;
       this._pressure += (pressure - this._pressure) * a;
+      this._tiltX += (tiltX - this._tiltX) * a;
+      this._tiltY += (tiltY - this._tiltY) * a;
       this._t = timestamp;
     }
-    return { x: this._x, y: this._y, pressure: this._pressure };
+    return { x: this._x, y: this._y, pressure: this._pressure, tiltX: this._tiltX, tiltY: this._tiltY };
   }
 
   /**
@@ -90,7 +102,7 @@ export class Stabilizer {
    * lags behind it, so a stroke can finish there rather than short of it.
    * Laid in steps no longer than the last move and as quick, so the spline
    * through them doesn't overshoot and buildup sees the stroke's own speed;
-   * pressure goes to the pointer's along the way.
+   * pressure and tilt go to the pointer's along the way.
    */
   catchUp(): StabilizedPoint[] {
     if (!this._started || this._tau <= 0) return [];
@@ -102,7 +114,7 @@ export class Stabilizer {
     const lastDt = this._t - this._prevT;
     const n = Math.min(MAX_CATCH_UP_POINTS, Math.ceil(dist / Math.max(1, lastStep)));
     const dt = lastStep > 0 && lastDt > 0 ? lastDt : DEFAULT_STEP_MS;
-    const from = { x: this._x, y: this._y, pressure: this._pressure, t: this._t };
+    const from = { x: this._x, y: this._y, pressure: this._pressure, tiltX: this._tiltX, tiltY: this._tiltY, t: this._t };
     const points: StabilizedPoint[] = [];
     for (let i = 1; i <= n; i++) {
       const f = i / n;
@@ -110,6 +122,8 @@ export class Stabilizer {
         x: from.x + dx * f,
         y: from.y + dy * f,
         pressure: from.pressure + (this._rawPressure - from.pressure) * f,
+        tiltX: from.tiltX + (this._rawTiltX - from.tiltX) * f,
+        tiltY: from.tiltY + (this._rawTiltY - from.tiltY) * f,
         timestamp: from.t + dt * i,
       });
     }
@@ -120,6 +134,8 @@ export class Stabilizer {
     this._x = end.x;
     this._y = end.y;
     this._pressure = end.pressure;
+    this._tiltX = end.tiltX;
+    this._tiltY = end.tiltY;
     this._t = end.timestamp;
     return points;
   }

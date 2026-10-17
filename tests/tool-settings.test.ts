@@ -7,7 +7,7 @@ import { makeState } from './helpers.ts';
 function renderBrushSettings(
   shape: TipShape,
   activeTool: 'pencil' | 'eraser' = 'pencil',
-  brushOverrides: { flow?: number; pressureOpacity?: boolean; pressureSize?: boolean; dynamics?: { flowVelocity?: number; minSize?: number } } = {},
+  brushOverrides: { flow?: number; pressureOpacity?: boolean; pressureSize?: boolean; dynamics?: { flowVelocity?: number; minSize?: number; tilt?: number } } = {},
   setBrushTip = vi.fn(),
   setBrushDynamics = vi.fn(),
 ): HTMLElement {
@@ -149,6 +149,16 @@ describe('ToolSettings brush controls', () => {
     min.value = '40';
     min.dispatchEvent(new Event('input'));
     expect(setBrushDynamics).toHaveBeenCalledWith({ minSize: 0.4 });
+  });
+
+  it('sets tilt dynamics from the Stylus Tilt slider', () => {
+    const setBrushDynamics = vi.fn();
+    const controls = renderBrushSettings('round', 'pencil', { dynamics: { tilt: 0.6 } }, vi.fn(), setBrushDynamics);
+    const tilt = controls.querySelector<HTMLInputElement>('input[aria-label="Stylus tilt"]')!;
+    expect(tilt.value).toBe('60');
+    tilt.value = '25';
+    tilt.dispatchEvent(new Event('input'));
+    expect(setBrushDynamics).toHaveBeenCalledWith({ tilt: 0.25 });
   });
 
   it('does not reset custom tip values when the active shape is clicked again', () => {

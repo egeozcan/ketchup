@@ -30,6 +30,8 @@ export interface BrushDynamics {
   flowVelocity: number;
   /** With stylus size, the share (0..1) of the size the lightest touch draws at. */
   minSize: number;
+  /** How far (0..1) a leaning pen stretches each dab along its lean. */
+  tilt: number;
 }
 
 export interface BrushDescriptor {
@@ -63,13 +65,20 @@ export interface InkState {
   prevRotation: number;
 }
 
-export interface StampPoint {
+/** Values a stroke carries along its path besides pressure, interpolated between samples. */
+export interface PathChannels {
+  /** Smoothed screen speed as a share (0..1) of the speed dynamics take full effect at. */
+  velocity: number;
+  /** Pen tilt in degrees (-90..90), as Pointer Events report it; 0, 0 is upright. */
+  tiltX: number;
+  tiltY: number;
+}
+
+export interface StampPoint extends PathChannels {
   x: number;
   y: number;
   pressure: number;
   speedPxPerMs: number;
-  /** Smoothed screen speed as a share (0..1) of the speed dynamics take full effect at. */
-  velocity: number;
 }
 
 export type BlendMode =
