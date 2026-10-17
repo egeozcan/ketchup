@@ -79,7 +79,10 @@ export function generateChiselTip(diameter: number, hardness: number, tip: TipDe
   const canvas = createOffscreenCanvas(w, h);
   const ctx = get2dContext(canvas);
 
-  const shear = h / 3;
+  // A third of the bar's thickness at its own aspect, not of the canvas's
+  // height (rounded up to whole pixels), so the slant is the same share of
+  // its length at any size, as barGauge in stamp-stroke.ts reckons it.
+  const shear = w / Math.max(1, tip.aspect) / 3;
   ctx.beginPath();
   ctx.moveTo(shear, 0);
   ctx.lineTo(w, 0);

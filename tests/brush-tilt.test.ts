@@ -3,6 +3,7 @@ import { StampStrokeEngine, type PenTilt } from '../src/engine/stamp-stroke.ts';
 import { normalizeDynamics } from '../src/engine/brush-presets.ts';
 import { pointerTilt } from '../src/utils/pointer-pressure.ts';
 import type { TipDescriptor } from '../src/engine/types.ts';
+import { generateChiselTip } from '../src/engine/tip-generators.ts';
 import { makeBrush } from './helpers.ts';
 
 interface Dab {
@@ -185,6 +186,14 @@ describe('tilt dynamics', () => {
       expect(Math.abs(q.qy)).toBeLessThan(q.h);
       expect(Math.abs(q.qx + q.qy / 3)).toBeLessThan(q.w - shear);
     }
+  });
+
+  it('slant a small chisel as a share of its length, as the spacing reckons it', () => {
+    // 6 px at aspect 5.5 is cached 2 px high; the slant still follows the aspect.
+    const tip = generateChiselTip(6, 1, { shape: 'chisel', aspect: 5.5, angle: 0, orientation: 'fixed' }) as HTMLCanvasElement;
+    const path = (tip.getContext('2d') as unknown as { __getPath(): { type: string; props: { x: number } }[] }).__getPath();
+    const start = path.find(event => event.type === 'moveTo')!;
+    expect(start.props.x).toBeCloseTo(6 / 5.5 / 3, 6);
   });
 
   it('cover the stretched dab in the dirty bounds', () => {
