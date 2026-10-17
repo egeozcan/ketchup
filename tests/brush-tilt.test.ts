@@ -113,11 +113,8 @@ describe('tilt dynamics', () => {
       const { m, w, h } = dabs[i];
       const dx = next.m.m41 - m.m41, dy = next.m.m42 - m.m42;
       const det = m.m11 * m.m22 - m.m21 * m.m12;
-      return {
-        x: Math.abs((m.m22 * dx - m.m21 * dy) / det) / w,
-        y: Math.abs((-m.m12 * dx + m.m11 * dy) / det) / h,
-        from: { x: m.m41, y: m.m42 },
-      };
+      const qx = (m.m22 * dx - m.m21 * dy) / det, qy = (-m.m12 * dx + m.m11 * dy) / det;
+      return { x: Math.abs(qx) / w, y: Math.abs(qy) / h, qx, qy, w, h, from: { x: m.m41, y: m.m42 } };
     });
   }
 
@@ -170,6 +167,24 @@ describe('tilt dynamics', () => {
     });
     expect(all.length).toBeGreaterThan(5);
     for (const q of all) expect(Math.hypot(q.x, q.y)).toBeLessThan(1);
+  });
+
+  it('keep chisel dabs touching by their slanted ends', () => {
+    // Leaning 60° from upright toward 65°, across a square chisel turned 115°.
+    const all = steps({
+      size: 120, spacing: 0.9, pressureSize: false,
+      tip: { shape: 'chisel', aspect: 1, angle: 115, orientation: 'fixed' },
+      dynamics: { tilt: 1 },
+    }, engine => {
+      for (let i = 0; i <= 20; i++) engine.stroke(100 + i * 40, 200, 1, undefined, i * 4, { tiltX: 36.2, tiltY: 57.5 });
+    });
+    expect(all.length).toBeGreaterThan(5);
+    for (const q of all) {
+      // Rows of the parallelogram are w - h/3 long, shifted h/3 from top to bottom.
+      const shear = q.h / 3;
+      expect(Math.abs(q.qy)).toBeLessThan(q.h);
+      expect(Math.abs(q.qx + q.qy / 3)).toBeLessThan(q.w - shear);
+    }
   });
 
   it('cover the stretched dab in the dirty bounds', () => {

@@ -123,3 +123,24 @@ describe('calligraphy tips', () => {
   });
 });
 
+describe('dab spacing', () => {
+  it('keeps a steep pressure taper joined at wide spacing', () => {
+    const dabs: { x: number; w: number }[] = [];
+    const spy = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage').mockImplementation((...args: unknown[]) => {
+      if (args.length === 5 && (args[0] as HTMLCanvasElement).width <= 100) {
+        dabs.push({ x: (args[1] as number) + (args[3] as number) / 2, w: args[3] as number });
+      }
+    });
+    const engine = new StampStrokeEngine();
+    engine.begin(makeBrush({ size: 100, spacing: 0.75, pressureSize: true, pressureCurve: 'linear' }), '#000000', false, 600, 200);
+    [[50, 1], [150, 1], [250, 0.01], [350, 0.01]].forEach(([x, p], i) => engine.stroke(x, 100, p, undefined, i * 16));
+    engine.commit(document.createElement('canvas').getContext('2d')!);
+    spy.mockRestore();
+
+    expect(dabs.length).toBeGreaterThan(5);
+    for (let i = 1; i < dabs.length; i++) {
+      expect(dabs[i].x - dabs[i - 1].x).toBeLessThanOrEqual((dabs[i].w + dabs[i - 1].w) / 2 + 0.01);
+    }
+  });
+});
+

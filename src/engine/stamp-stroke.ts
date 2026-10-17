@@ -1,6 +1,6 @@
 import { BrushTipCache } from './brush-tip-cache.js';
 import { StrokeBufferPool } from './stroke-buffer-pool.js';
-import { PathSmoother } from './path-smoother.js';
+import { PathSmoother, type PathTarget } from './path-smoother.js';
 import { Stabilizer, type StabilizedPoint } from './stabilizer.js';
 import { get2dContext, drawImageSafe, tintAlphaMask, createOffscreenCanvas, type AnyCanvas } from './canvas-pool.js';
 import { PRESSURE_CURVES, quantizeDiameter, type BrushDescriptor, type TipDescriptor, type StampPoint, type InkState } from './types.js';
@@ -77,25 +77,44 @@ function transformDab(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingCo
   return true;
 }
 
-/** Tips whose footprint is a long w × w/aspect bar, or (calligraphy) an ellipse that long. */
+/**
+ * Tips whose footprint is a long 1 × 1/aspect bar: a rectangle, a chisel's
+ * parallelogram (its top and bottom edges shifted a third of its thickness
+ * apart, as generateChiselTip draws it) or calligraphy's ellipse.
+ */
 const BAR_TIPS = new Set(['flat', 'chisel', 'calligraphy']);
 
 /** Headings tried for a dab with none yet, the first of a stroke. */
 const ANY_HEADING = Array.from({ length: 8 }, (_, i) => i * Math.PI / 8);
 
 /**
- * How far apart two bar dabs (1 long, 1/aspect thick, turned by `rotation`
- * and stretched by `lean`) can sit along `heading` and still touch; an
- * elliptical bar's ends are round, so it reaches less far off its axes.
+ * How many times over two copies of a bar footprint (in its own frame, 1
+ * long) must be pushed apart by (qx, qy) to no longer touch: the gauge of
+ * the footprint doubled, which for these symmetric shapes is every offset
+ * at which two copies still touch.
  */
-function barReach(aspect: number, elliptical: boolean, rotation: number, lean: DabStretch, heading: number): number {
+function barGauge(shape: string, aspect: number, qx: number, qy: number): number {
+  const across = Math.abs(qy) * aspect;
+  if (shape === 'calligraphy') return Math.hypot(qx, across);
+  if (shape === 'chisel') {
+    // Rows run 1 - shear long, shifted along the bar by shear = thickness / 3.
+    return Math.max(across, Math.abs(qx + qy / 3) / (1 - 1 / (3 * aspect)));
+  }
+  return Math.max(Math.abs(qx), across);
+}
+
+/**
+ * How far apart two bar dabs (1 long, turned by `rotation` and stretched by
+ * `lean`) can sit along `heading` and still touch.
+ */
+function barReach(shape: string, aspect: number, rotation: number, lean: DabStretch, heading: number): number {
   // The heading back in the dab's own frame: R(az - rot) S⁻¹ R(-az).
   const a = heading - lean.azimuth;
   const ux = Math.cos(a) / lean.stretch, uy = Math.sin(a);
   const b = lean.azimuth - rotation;
-  const qx = Math.abs(ux * Math.cos(b) - uy * Math.sin(b));
-  const qy = Math.abs(ux * Math.sin(b) + uy * Math.cos(b)) * aspect;
-  return 1 / Math.max(elliptical ? Math.hypot(qx, qy) : Math.max(qx, qy), 1e-9);
+  const qx = ux * Math.cos(b) - uy * Math.sin(b);
+  const qy = ux * Math.sin(b) + uy * Math.cos(b);
+  return 1 / Math.max(barGauge(shape, aspect, qx, qy), 1e-9);
 }
 
 /** A dynamics factor: `control` (-1..1) applied at a speed `v` (0..1). */
@@ -387,9 +406,11 @@ export class StampStrokeEngine {
   /**
    * Distance from a dab to the next, from the dab's own size and lean: the
    * spline lays a segment a sample late, so the newest sample's would be
-   * another dab's (a pause after a thin, fast run would gap it).
+   * another dab's (a pause after a thin, fast run would gap it). Where the
+   * segment narrows, the smaller size it heads to sets it, so a steep taper
+   * stays joined to the small dabs ahead.
    */
-  private _dabSpacing = (stamp: StampPoint): number => {
+  private _dabSpacing = (stamp: StampPoint, ahead: PathTarget): number => {
     const d = this._descriptor!;
     const from = this._spacedFrom;
     if (from) {
@@ -397,7 +418,9 @@ export class StampStrokeEngine {
       if (dx * dx + dy * dy >= MIN_DIRECTION_DIST_SQ) this._spacedHeading = Math.atan2(dy, dx);
     }
     this._spacedFrom = stamp;
-    return Math.max(1, d.spacing * this._sizeAt(stamp.pressure, stamp.velocity) * this._leanSpacing(stamp, this._spacedHeading));
+    const size = Math.min(this._sizeAt(stamp.pressure, stamp.velocity), this._sizeAt(ahead.pressure, ahead.velocity));
+    const lean = Math.min(this._leanSpacing(stamp, this._spacedHeading), this._leanSpacing(ahead, this._spacedHeading));
+    return Math.max(1, d.spacing * size * lean);
   };
 
   /**
@@ -412,12 +435,12 @@ export class StampStrokeEngine {
     if (lean.stretch === 1 || !BAR_TIPS.has(d.tip.shape)) return 1;
     const angle = d.tip.angle * Math.PI / 180;
     const aspect = Math.max(1, d.tip.aspect);
-    const elliptical = d.tip.shape === 'calligraphy';
+    const shape = d.tip.shape;
     // As _stampPoints turns it: along the way from the dab before, or at
     // the tip's own angle when there is none yet (and then any way on).
     const shrink = (h: number) => {
       const rotation = d.tip.orientation === 'fixed' || heading === null ? angle : h + angle;
-      return barReach(aspect, elliptical, rotation, lean, h) / barReach(aspect, elliptical, rotation, NO_STRETCH, h);
+      return barReach(shape, aspect, rotation, lean, h) / barReach(shape, aspect, rotation, NO_STRETCH, h);
     };
     return Math.min(1, ...(heading === null ? ANY_HEADING : [heading]).map(shrink));
   }

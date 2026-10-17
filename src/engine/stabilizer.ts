@@ -27,7 +27,8 @@ export interface StabilizedPoint {
 }
 
 interface PenSample {
-  t: number;
+  /** How far the pen had gone along its path, in px. */
+  s: number;
   pressure: number;
   tiltX: number;
   tiltY: number;
@@ -41,26 +42,27 @@ interface PenSample {
  *
  * Pressure and tilt aren't averaged with it: a change would then start as
  * soon as the pen made it, a whole lag before the drawn point gets there.
- * They are read where the pen was at the timestamps averaged the same way,
- * which (the average being linear) is exactly where the drawn point is on
- * a straight, steady stroke, from the first sample on: so a taper lands
- * where the pen made it, and a light touchdown doesn't linger.
+ * They are read where the pen was when it had gone as far along its path as
+ * the average of that distance, which (the average being linear) is exactly
+ * the drawn point on a straight stroke at any pace, from the first sample
+ * on: a taper lands where the pen made it, a light touchdown doesn't linger,
+ * and a pen easing off as it stops does so at the stop.
  */
 export class Stabilizer {
   private _tau = 0;
   private _x = 0;
   private _y = 0;
   private _t = 0;
-  /** The timestamps averaged as the position is: when the pen was where the drawn point is. */
-  private _penT = 0;
   // The smoothed point before the last move, which paces the catch-up.
   private _prevX = 0;
   private _prevY = 0;
   private _prevT = 0;
   private _rawX = 0;
   private _rawY = 0;
-  private _rawT = 0;
-  /** The pen's pressure and tilt over the last time constant (and the one sample before), oldest first. */
+  /** How far the pen has gone, and that distance averaged as the position is. */
+  private _rawS = 0;
+  private _penS = 0;
+  /** The pen's pressure and tilt from the drawn point's distance on, oldest first. */
   private _history: PenSample[] = [];
   private _started = false;
 
@@ -72,22 +74,25 @@ export class Stabilizer {
 
   /** The smoothed sample for a raw one at `timestamp` (ms). */
   add(x: number, y: number, pressure: number, timestamp: number, tiltX = 0, tiltY = 0): Omit<StabilizedPoint, 'timestamp'> {
-    this._rawX = x;
-    this._rawY = y;
     if (!this._started || this._tau <= 0) {
+      this._rawX = x;
+      this._rawY = y;
       this._x = x;
       this._y = y;
       this._t = timestamp;
-      this._penT = timestamp;
       this._prevX = x;
       this._prevY = y;
       this._prevT = timestamp;
-      this._rawT = timestamp;
-      this._history = [{ t: timestamp, pressure, tiltX, tiltY }];
+      this._rawS = 0;
+      this._penS = 0;
+      this._history = [{ s: 0, pressure, tiltX, tiltY }];
       this._started = true;
       return { x, y, pressure, tiltX, tiltY };
     }
-    this._record({ t: Math.max(timestamp, this._rawT), pressure, tiltX, tiltY });
+    this._rawS += Math.hypot(x - this._rawX, y - this._rawY);
+    this._rawX = x;
+    this._rawY = y;
+    this._remember({ s: this._rawS, pressure, tiltX, tiltY });
     const dt = timestamp - this._t;
     if (dt > 0) {
       this._prevX = this._x;
@@ -96,10 +101,11 @@ export class Stabilizer {
       const a = 1 - Math.exp(-dt / this._tau);
       this._x += (x - this._x) * a;
       this._y += (y - this._y) * a;
-      this._penT += (timestamp - this._penT) * a;
+      this._penS += (this._rawS - this._penS) * a;
       this._t = timestamp;
     }
-    const pen = this._penAt(this._penT);
+    this._trim();
+    const pen = this._penAt(this._penS);
     return { x: this._x, y: this._y, pressure: pen.pressure, tiltX: pen.tiltX, tiltY: pen.tiltY };
   }
 
@@ -109,7 +115,7 @@ export class Stabilizer {
    * Laid in steps no longer than the last move, at its speed, so the spline
    * through them doesn't overshoot and speed dynamics and buildup see the
    * stroke's own pace; pressure and tilt play out what the pen did over the
-   * lag, so a taper at the lift lands at the end.
+   * rest of its path, so a taper at the lift lands at the end.
    */
   catchUp(): StabilizedPoint[] {
     if (!this._started || this._tau <= 0) return [];
@@ -122,14 +128,13 @@ export class Stabilizer {
     const speed = lastStep > 0 && lastDt > 0 ? lastStep / lastDt : 0;
     const n = Math.min(MAX_CATCH_UP_POINTS, Math.ceil(dist / Math.max(1, lastStep)));
     const dt = speed > 0 ? dist / n / speed : DEFAULT_STEP_MS;
-    // The pen's samples the drawn point hasn't reached yet.
-    const penFrom = Math.max(this._penT, this._history[0].t);
-    const penSpan = this._rawT - penFrom;
+    const penFrom = this._penS;
+    const penSpan = this._rawS - penFrom;
     const from = { x: this._x, y: this._y, t: this._t };
     const points: StabilizedPoint[] = [];
     for (let i = 1; i <= n; i++) {
       const f = i / n;
-      const pen = this._penAt(penFrom + penSpan * f);
+      const pen = i === n ? this._history[this._history.length - 1] : this._penAt(penFrom + penSpan * f);
       points.push({
         x: from.x + dx * f,
         y: from.y + dy * f,
@@ -146,34 +151,47 @@ export class Stabilizer {
     this._x = end.x;
     this._y = end.y;
     this._t = end.timestamp;
-    this._history = [this._history[this._history.length - 1]];
-    this._penT = this._rawT;
+    this._penS = this._rawS;
+    this._trim();
     return points;
   }
 
-  private _record(sample: PenSample) {
+  /**
+   * Add a pen sample. Standing still, only the first and the newest sample
+   * there matter (how it got there, how it is now), so a long hold doesn't
+   * pile up samples.
+   */
+  private _remember(sample: PenSample) {
     const h = this._history;
-    h.push(sample);
-    this._rawT = sample.t;
-    // Keep one sample at or before the averaged time, to interpolate from:
-    // it never lags the newest by more than the time constant.
-    const cutoff = sample.t - this._tau;
+    const n = h.length;
+    if (n >= 2 && h[n - 1].s === sample.s && h[n - 2].s === sample.s) h[n - 1] = sample;
+    else h.push(sample);
+  }
+
+  /** Drop samples the drawn point is past, keeping one at or before it to interpolate from. */
+  private _trim() {
+    const h = this._history;
     let drop = 0;
-    while (drop + 1 < h.length && h[drop + 1].t <= cutoff) drop++;
+    while (drop + 1 < h.length && h[drop + 1].s <= this._penS) drop++;
     if (drop > 0) h.splice(0, drop);
   }
 
-  /** The pen's pressure and tilt at time `t`, between the samples around it. */
-  private _penAt(t: number): PenSample {
+  /**
+   * The pen's pressure and tilt when it had gone `s` along its path, between
+   * the samples around it. Where it stood still, what it did there changes
+   * all at once as the drawn point arrives.
+   */
+  private _penAt(s: number): PenSample {
     const h = this._history;
-    if (t <= h[0].t) return h[0];
-    let i = h.length - 1;
-    while (i > 0 && h[i].t > t) i--;
-    if (i === h.length - 1) return h[i];
+    let i = 0;
+    while (i + 1 < h.length && h[i + 1].s <= s) i++;
+    // At or past the newest distance: what the pen does there now.
+    if (i + 1 >= h.length) return h[h.length - 1];
     const a = h[i], b = h[i + 1];
-    const f = (t - a.t) / (b.t - a.t);
+    if (!(s > a.s)) return a;
+    const f = (s - a.s) / (b.s - a.s);
     return {
-      t,
+      s,
       pressure: a.pressure + (b.pressure - a.pressure) * f,
       tiltX: a.tiltX + (b.tiltX - a.tiltX) * f,
       tiltY: a.tiltY + (b.tiltY - a.tiltY) * f,

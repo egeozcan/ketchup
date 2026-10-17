@@ -17,11 +17,17 @@ function lerpChannels(a: PathChannels, b: PathChannels, t: number): PathChannels
 
 const DEFAULT_SPEED_PX_PER_MS = 1;
 
-/** Distance from a stamp to the next: fixed, or worked out from the stamp itself. */
-export type Spacing = number | ((stamp: StampPoint) => number);
+/** The pressure and channels a segment heads to, where the stamps after one may get to. */
+export type PathTarget = PathChannels & { pressure: number };
 
-function spacingAfter(spacing: Spacing, stamp: StampPoint): number {
-  return typeof spacing === 'number' ? spacing : spacing(stamp);
+/**
+ * Distance from a stamp to the next: fixed, or worked out from the stamp
+ * and what the segment it is on heads to.
+ */
+export type Spacing = number | ((stamp: StampPoint, ahead: PathTarget) => number);
+
+function spacingAfter(spacing: Spacing, stamp: StampPoint, ahead: PathTarget): number {
+  return typeof spacing === 'number' ? spacing : spacing(stamp, ahead);
 }
 
 /**
@@ -71,7 +77,7 @@ export class PathSmoother {
     // Single point (stroke start dot)
     if (n === 1) {
       const stamp: StampPoint = { x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, velocity: pt.velocity, tiltX: pt.tiltX, tiltY: pt.tiltY };
-      this._remainder = spacingAfter(spacing, stamp);
+      this._remainder = spacingAfter(spacing, stamp, pt);
       return [stamp];
     }
 
@@ -150,7 +156,7 @@ export class PathSmoother {
         ...lerpChannels(from, to, t),
       };
       stamps.push(stamp);
-      d += spacingAfter(spacing, stamp);
+      d += spacingAfter(spacing, stamp, to);
     }
 
     this._remainder = d - dist;
@@ -204,7 +210,7 @@ export class PathSmoother {
         ...lerpChannels(p1, p2, t),
       };
       stamps.push(stamp);
-      d += spacingAfter(spacing, stamp);
+      d += spacingAfter(spacing, stamp, p2);
     }
 
     this._remainder = d - totalLen;

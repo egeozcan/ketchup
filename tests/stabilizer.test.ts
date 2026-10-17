@@ -68,6 +68,23 @@ describe('Stabilizer', () => {
     }
   });
 
+  it('keeps pressure eased off at a stop for the stop, not the way there', () => {
+    const s = new Stabilizer();
+    s.reset(120);
+    for (let t = 0; t <= 400; t += 4) s.add(100 + t, 0, 1, t);
+    let at = s.add(500, 0, 1, 404);
+    // Held still at x=500, easing off over 120 ms (and on, still, after).
+    for (let t = 408; t <= 1400; t += 4) {
+      at = s.add(500, 0, Math.max(0.2, 1 - (t - 404) / 150), t);
+      expect(at.pressure).toBe(1);
+    }
+    expect(at.x).toBeLessThan(500);
+    const way = s.catchUp();
+    expect(way[way.length - 1]).toMatchObject({ x: 500, pressure: 0.2 });
+    // A long hold keeps two samples there, not one for every report.
+    expect((s as any)._history.length).toBeLessThanOrEqual(3);
+  });
+
   it('plays out what the pen did over the lag on catching up', () => {
     const s = new Stabilizer();
     s.reset(100);
