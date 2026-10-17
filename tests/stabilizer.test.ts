@@ -99,7 +99,7 @@ describe('Stabilizer', () => {
     expect(way[way.length - 1].pressure).toBeCloseTo(0.2);
   });
 
-  it('reads what the pen did on turning back at most about twice the slack late', () => {
+  it('reads what the pen did turning back from a hold at most about twice the slack late', () => {
     const s = new Stabilizer();
     s.reset(120, 1);
     for (let t = 0; t <= 400; t += 4) s.add(t, 0, 1, t);

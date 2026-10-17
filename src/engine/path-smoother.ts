@@ -32,7 +32,10 @@ export type Spacing = number | ((at: StampPoint, heading: number | null) => numb
 const MIN_SPACING = 1e-3;
 /** Squared distance below which a stamp keeps the heading of the one before. */
 const MIN_HEADING_DIST_SQ = 0.25;
-/** Longest step, in px, taken looking for where the next stamp is due. */
+/**
+ * Longest step, in px, taken looking for where the next stamp is due: a
+ * spacing that narrows and widens again within less than this may be missed.
+ */
 const SEARCH_STEP = 1;
 /** Halvings that place a stamp within the step it fell due in. */
 const SEARCH_REFINE = 16;
@@ -247,7 +250,8 @@ export class PathSmoother {
           at = start;
         } else if (end > start) {
           // Step along to the first point it falls due, so a narrowing
-          // shorter than a spacing isn't stepped over, then close in on it.
+          // shorter than a spacing (if not shorter than a step) isn't
+          // stepped over, then close in on it.
           const steps = Math.ceil((end - start) / SEARCH_STEP);
           let lo = start;
           for (let i = 1; i <= steps; i++) {
