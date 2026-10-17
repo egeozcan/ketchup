@@ -587,6 +587,7 @@ describe('DrawingApp', () => {
         fontBold: true,
         fontItalic: true,
         eyedropperSampleAll: false,
+        stabilizer: 35,
       },
       canvasWidth: 100,
       canvasHeight: 100,
@@ -633,6 +634,7 @@ describe('DrawingApp', () => {
     expect((app as any)._state.fontBold).toBe(true);
     expect((app as any)._state.fontItalic).toBe(true);
     expect((app as any)._state.eyedropperSampleAll).toBe(false);
+    expect((app as any)._state.stabilizer).toBe(35);
 
     deserSpy.mockRestore();
   });
@@ -738,6 +740,7 @@ describe('DrawingApp', () => {
       fontBold: true,
       fontItalic: true,
       eyedropperSampleAll: false,
+      stabilizer: 35,
     });
     (app as any)._dirty = true;
     (app as any)._dirtyVersion = 1;
@@ -794,6 +797,7 @@ describe('DrawingApp', () => {
       fontBold: true,
       fontItalic: true,
       eyedropperSampleAll: false,
+      stabilizer: 35,
     });
 
     serSpy.mockRestore();

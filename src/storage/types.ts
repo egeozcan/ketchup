@@ -40,6 +40,7 @@ export interface ToolSettings {
   fontBold?: boolean;
   fontItalic?: boolean;
   eyedropperSampleAll?: boolean;
+  stabilizer?: number;
   childMode?: boolean;
 }
 

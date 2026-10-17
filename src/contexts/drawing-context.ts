@@ -44,6 +44,7 @@ export interface DrawingContextValue {
   selectPreset: (presetId: string) => void;
   setLayerBlendMode: (id: string, mode: BlendMode) => void;
   setEyedropperSampleAll: (v: boolean) => void;
+  setStabilizer: (percent: number) => void;
   /** Asks a yes/no question in the editor's own modal dialog (not `window.confirm`); resolves true to go ahead. */
   confirm: (options: ConfirmOptions) => Promise<boolean>;
   canUndo: boolean;

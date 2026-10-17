@@ -17,6 +17,7 @@ import {
 } from '../utils/storage-serialization.js';
 import { toolForShortcut, CHILD_TOOL_SET } from './tool-icons.js';
 import { DEFAULT_STAMP_SIZE, normalizeStampSize } from '../tools/stamp-size.js';
+import { normalizeStabilizer } from '../engine/stabilizer.js';
 import './app-toolbar.js';
 import './tool-settings.js';
 import { generateUUID } from '../utils/uuid.js';
@@ -509,6 +510,7 @@ export class DrawingApp extends LitElement {
       fontBold: false,
       fontItalic: false,
       eyedropperSampleAll: true,
+      stabilizer: 0,
       childMode: false,
     };
     this._provider = new ContextProvider(this, {
@@ -1836,6 +1838,7 @@ export class DrawingApp extends LitElement {
             fontBold: this._state.fontBold,
             fontItalic: this._state.fontItalic,
             eyedropperSampleAll: this._state.eyedropperSampleAll,
+            stabilizer: this._state.stabilizer,
             childMode: this._state.childMode,
           };
           const snapshotWidth = this._state.documentWidth;
@@ -2515,6 +2518,7 @@ export class DrawingApp extends LitElement {
       fontBold: false,
       fontItalic: false,
       eyedropperSampleAll: true,
+      stabilizer: 0,
       childMode: false,
     };
     // Child mode, which kept the compact layout at any width, is off now.
@@ -2685,6 +2689,7 @@ export class DrawingApp extends LitElement {
         fontBold: ts.fontBold ?? false,
         fontItalic: ts.fontItalic ?? false,
         eyedropperSampleAll: ts.eyedropperSampleAll ?? true,
+        stabilizer: normalizeStabilizer(ts.stabilizer),
         childMode: ts.childMode ?? false,
       };
       // The layout the view is restored into: the size observer may not have
@@ -3091,6 +3096,10 @@ export class DrawingApp extends LitElement {
         this._markDirty('setting');
       },
       setEyedropperSampleAll: (v: boolean) => { this._state = { ...this._state, eyedropperSampleAll: v }; this._markDirty('setting'); },
+      setStabilizer: (percent: number) => {
+        this._state = { ...this._state, stabilizer: normalizeStabilizer(percent, this._state.stabilizer) };
+        this._markDirty('setting');
+      },
       confirm: (options: ConfirmOptions) => this._confirm(options),
       canUndo: this._canUndo,
       canRedo: this._canRedo,

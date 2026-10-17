@@ -878,7 +878,7 @@ describe('DrawingCanvas', () => {
 
     (canvas as any)._onPointerDown(pen(10, 0.5, 0));
     stroke.mockClear();
-    // The last sample stands still; every sample reaches the brush.
+    // The last sample stands still; its time still matters to the stabilizer.
     const samples = [pen(20, 0.6, 4), pen(30, 0.7, 8), pen(40, 0.8, 12), pen(40, 0.8, 13)];
     (canvas as any)._onPointerMove(pen(40, 0.8, 13, samples));
 
@@ -907,6 +907,18 @@ describe('DrawingCanvas', () => {
     (canvas as any)._onPointerMove(pen(20, 0, 8, [pen(20, 0.5, 4), pen(20, 0.005, 6), pen(20, 0, 8)]));
 
     expect(stroke.mock.calls.map(c => c[2])).toEqual([0.5, 0.005, 0]);
+  });
+
+  it('starts each stroke with the stabilizer setting as a time constant', () => {
+    const { canvas } = setupCanvas({ stateOverrides: { activeTool: 'pencil', stabilizer: 50 } });
+    const begin = vi.spyOn((canvas as any)._engine, 'begin');
+
+    (canvas as any)._onPointerDown({
+      button: 0, buttons: 1, pointerId: 1, clientX: 10, clientY: 10, pointerType: 'pen', isPrimary: true,
+      pressure: 0.5, timeStamp: 0, preventDefault() {},
+    } as unknown as PointerEvent);
+
+    expect(begin.mock.lastCall![5]).toBe(60);
   });
 
   it('strokes the move itself when the browser reports no coalesced samples', () => {

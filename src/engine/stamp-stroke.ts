@@ -1,6 +1,7 @@
 import { BrushTipCache } from './brush-tip-cache.js';
 import { StrokeBufferPool } from './stroke-buffer-pool.js';
 import { PathSmoother } from './path-smoother.js';
+import { Stabilizer } from './stabilizer.js';
 import { get2dContext, drawImageSafe, tintAlphaMask, createOffscreenCanvas, type AnyCanvas } from './canvas-pool.js';
 import { PRESSURE_CURVES, quantizeDiameter, type BrushDescriptor, type TipDescriptor, type StampPoint, type InkState } from './types.js';
 import { TIP_VARIANT_COUNTS, tipFootprint } from './tip-generators.js';
@@ -31,6 +32,7 @@ export class StampStrokeEngine {
   private _tipCache = new BrushTipCache();
   private _bufferPool = new StrokeBufferPool();
   private _smoother = new PathSmoother();
+  private _stabilizer = new Stabilizer();
   private _descriptor: BrushDescriptor | null = null;
   private _color = '';
   private _eraser = false;
@@ -57,7 +59,11 @@ export class StampStrokeEngine {
   private _dirtyMaxX = -Infinity;
   private _dirtyMaxY = -Infinity;
 
-  begin(descriptor: BrushDescriptor, color: string, eraser: boolean, docWidth: number, docHeight: number) {
+  /**
+   * `stabilizerMs` is how far, in time, the stroke trails the pointer (0 =
+   * off); it needs stroke() given increasing timestamps.
+   */
+  begin(descriptor: BrushDescriptor, color: string, eraser: boolean, docWidth: number, docHeight: number, stabilizerMs = 0) {
     this._descriptor = { ...descriptor, tip: { ...descriptor.tip }, ink: { ...descriptor.ink } };
     this._color = eraser ? '' : (color.length === 9 ? color.slice(0, 7) : color);
     this._eraser = eraser;
@@ -66,6 +72,7 @@ export class StampStrokeEngine {
     this._docHeight = docHeight;
     this._bufferPool.acquire(docWidth, docHeight, this._rawDirtyRect());
     this._smoother.reset();
+    this._stabilizer.reset(stabilizerMs);
     this._prevStamp = null;
     this._variantCounter = 0;
     this._snapshotCaptured = false;
@@ -82,7 +89,11 @@ export class StampStrokeEngine {
     let inputPressure = pressure;
     if (!Number.isFinite(pressure) || pressure <= 0) {
       if (d.pressureSize || d.pressureOpacity) {
+        // A lift ends this part of the stroke where the pen was, then the
+        // next contact starts afresh.
+        this._finishSegment();
         this._smoother.reset();
+        this._stabilizer.reset();
         this._prevStamp = null;
         return;
       }
@@ -95,12 +106,10 @@ export class StampStrokeEngine {
     }
 
     const curveFn = PRESSURE_CURVES[d.pressureCurve];
-    const mappedPressure = curveFn(inputPressure);
-    this._lastMappedPressure = mappedPressure;
+    const at = this._stabilizer.add(x, y, curveFn(inputPressure), timestamp);
+    this._lastMappedPressure = at.pressure;
 
-    const effectiveSize = d.pressureSize ? Math.max(1, d.size * mappedPressure) : d.size;
-    const effectiveSpacing = Math.max(1, d.spacing * effectiveSize);
-    const stamps = this._smoother.addPoint(x, y, mappedPressure, effectiveSpacing, timestamp);
+    const stamps = this._smoother.addPoint(at.x, at.y, at.pressure, this._spacingAt(at.pressure), timestamp);
 
     this._stampPoints(stamps);
   }
@@ -227,14 +236,7 @@ export class StampStrokeEngine {
   commit(target: CanvasRenderingContext2D): boolean {
     if (!this._descriptor) return false;
 
-    const lastSize = this._descriptor.pressureSize
-      ? Math.max(1, this._descriptor.size * this._lastMappedPressure)
-      : this._descriptor.size;
-    const flushSpacing = Math.max(1, this._descriptor.spacing * lastSize);
-    const remaining = this._smoother.flush(flushSpacing);
-    if (remaining.length > 0) {
-      this._stampPoints(remaining);
-    }
+    this._finishSegment();
 
     this._bufferPool.commit(
       target,
@@ -253,6 +255,30 @@ export class StampStrokeEngine {
     this._descriptor = null;
     this._inkState = null;
     this._smoother.reset();
+    this._stabilizer.reset();
+  }
+
+  /**
+   * Lay the rest of the stroke so far: up to where the pointer last was (the
+   * stabilizer trails it) and the spline's last, still unwalked segment.
+   */
+  private _finishSegment() {
+    if (!this._descriptor) return;
+    for (const p of this._stabilizer.catchUp()) {
+      this._lastMappedPressure = p.pressure;
+      this._stampPoints(this._smoother.addPoint(p.x, p.y, p.pressure, this._spacingAt(p.pressure), p.timestamp));
+    }
+    const remaining = this._smoother.flush(this._spacingAt(this._lastMappedPressure));
+    if (remaining.length > 0) {
+      this._stampPoints(remaining);
+    }
+  }
+
+  /** Distance between dabs at a (curve-mapped) pressure. */
+  private _spacingAt(mappedPressure: number): number {
+    const d = this._descriptor!;
+    const size = d.pressureSize ? Math.max(1, d.size * mappedPressure) : d.size;
+    return Math.max(1, d.spacing * size);
   }
 
   /**

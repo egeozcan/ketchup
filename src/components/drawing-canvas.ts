@@ -5,6 +5,7 @@ import { drawingContext, type DrawingContextValue } from '../contexts/drawing-co
 import type { Point, HistoryEntry, Layer, LayerSnapshot } from '../types.js';
 import { drawShapePreview, isShapeTool, shapeBounds } from '../tools/shapes.js';
 import { StampStrokeEngine } from '../engine/stamp-stroke.js';
+import { stabilizerTimeConstant } from '../engine/stabilizer.js';
 import { blendModeToCompositeOp } from '../engine/types.js';
 import type { BrushDescriptor } from '../engine/types.js';
 import { tintAlphaMask } from '../engine/canvas-pool.js';
@@ -2645,7 +2646,7 @@ export class DrawingCanvas extends LitElement {
       const desc = this._brushDescriptor;
       const color = this.ctx.state.strokeColor;
       const eraser = this.ctx.state.activeTool === 'eraser';
-      this._engine.begin(desc, color, eraser, this._docWidth, this._docHeight);
+      this._engine.begin(desc, color, eraser, this._docWidth, this._docHeight, stabilizerTimeConstant(this.ctx.state.stabilizer));
       // The tint scratch canvas is only cleared inside the previous stroke's bounds,
       // so wipe it once per stroke before reusing it.
       this._strokeTintNeedsClear = true;
@@ -2811,7 +2812,8 @@ export class DrawingCanvas extends LitElement {
       const layerCtx = desc.ink.wetness > 0 ? this._getActiveLayerCtx() ?? undefined : undefined;
       // A fast pen reports several samples per frame; feed the brush each one
       // rather than letting the spline guess the curve between frames.
-      // Samples that don't move still count: their pressure may be a lift.
+      // Samples that don't move still count: their time lets the stabilizer
+      // catch up, and their pressure may be a lift.
       for (const sample of coalescedSamples(e)) {
         const sp = sample === e ? p : this._getDocPoint(sample);
         this._engine.stroke(sp.x, sp.y, normalizePointerPressure(sample), layerCtx, sample.timeStamp);

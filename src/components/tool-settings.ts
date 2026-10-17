@@ -1888,7 +1888,7 @@ export class ToolSettings extends LitElement {
    * panel so the bar stays one row; the mobile sheet shows them inline.
    */
   private _renderBrushDetails() {
-    const { brush, activeTool } = this.ctx.state;
+    const { brush, activeTool, stabilizer } = this.ctx.state;
     const tipCapabilities = getTipCapabilities(brush.tip.shape);
     const tipDefaults = getDefaultTipDescriptor(brush.tip.shape);
     const inPanel = !this.ctx.isMobile;
@@ -1919,6 +1919,12 @@ export class ToolSettings extends LitElement {
           <input type="range" min="5" max="100" aria-label="Spacing" .value=${String(Math.round(brush.spacing * 100))}
             @input=${(e: Event) => this.ctx.setBrush({ spacing: Number((e.target as HTMLInputElement).value) / 100 })} />
           <span class="size-value">${Math.round(brush.spacing * 100)}%</span>
+        </div>
+        <div class="section">
+          <label title="Steadies the line: it trails the pointer, more so the higher this is.">Stabilizer</label>
+          <input type="range" min="0" max="100" aria-label="Stabilizer" .value=${String(Math.round(stabilizer))}
+            @input=${(e: Event) => this.ctx.setStabilizer(Number((e.target as HTMLInputElement).value))} />
+          <span class="size-value">${Math.round(stabilizer)}%</span>
         </div>
         ${heading('Stylus')}
         <div class="section">
