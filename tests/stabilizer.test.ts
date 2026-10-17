@@ -54,17 +54,28 @@ describe('Stabilizer', () => {
     expect(s.catchUp()).toEqual([]);
   });
 
-  it('delays pressure and tilt by the time constant, and plays out the rest on catching up', () => {
+  it('gives the drawn point the pressure and tilt the pen had there, from the first sample on', () => {
+    const s = new Stabilizer();
+    s.reset(100);
+    // Steady at 1 px/ms with pressure and tilt rising along x, at uneven
+    // sample times.
+    let t = 0;
+    for (let i = 0; i < 80; i++, t += i % 3 === 0 ? 2 : 7) {
+      const at = s.add(t, 0, t / 1000, t, t / 10, -t / 20);
+      expect(at.pressure).toBeCloseTo(at.x / 1000, 9);
+      expect(at.tiltX).toBeCloseTo(at.x / 10, 9);
+      expect(at.tiltY).toBeCloseTo(-at.x / 20, 9);
+    }
+  });
+
+  it('plays out what the pen did over the lag on catching up', () => {
     const s = new Stabilizer();
     s.reset(100);
     s.add(0, 0, 1, 0, 0, 0);
-    // What the pen did a time constant ago, where the drawn point now is.
-    expect(s.add(100, 0, 0.5, 100, 60, -30)).toMatchObject({ pressure: 1, tiltX: 0, tiltY: 0 });
-    expect(s.add(150, 0, 0.5, 150, 60, -30)).toMatchObject({ pressure: 0.75, tiltX: 30, tiltY: -15 });
+    s.add(100, 0, 0.5, 100, 60, -30);
+    s.add(150, 0, 0.5, 150, 60, -30);
     s.add(200, 0, 0.2, 200, 80, 0);
     const way = s.catchUp();
-    // From the pen at t=100 (0.5) to its last sample (0.2), in time order.
-    expect(way[0].pressure).toBeLessThanOrEqual(0.5);
     for (let i = 1; i < way.length; i++) expect(way[i].pressure).toBeLessThanOrEqual(way[i - 1].pressure);
     expect(way[way.length - 1]).toMatchObject({ x: 200, pressure: 0.2, tiltX: 80, tiltY: 0 });
   });
@@ -152,6 +163,25 @@ describe('StampStrokeEngine with the stabilizer', () => {
     expect(last.w).toBeLessThan(6);
     expect(Math.min(...tail.map(d => d.w))).toBe(last.w);
     expect(tail.filter(d => d.x < 196)).toEqual([]);
+  });
+
+  it('reaches full pressure as soon after a light touchdown as the pen did', () => {
+    const drawImage = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage');
+    const engine = new StampStrokeEngine();
+    const brush = makeBrush({ size: 20, spacing: 0.1, pressureSize: true, pressureCurve: 'linear' });
+    engine.begin(brush, '#000000', false, 1000, 100, { stabilizerMs: 120 });
+    // 1 px/ms from x=100; pressure ramps 0.1 → 1 over the first 40 ms.
+    for (let t = 0; t <= 300; t += 4) engine.stroke(100 + t, 50, Math.min(1, 0.1 + 0.9 * t / 40), undefined, t);
+    const dabs = drawImage.mock.calls
+      .filter(call => (call as unknown[]).length === 5 && (call[3] as number) <= 20)
+      .map(call => ({ x: (call[1] as number) + (call[3] as number) / 2, w: call[3] as number }));
+    drawImage.mockRestore();
+
+    // The pen was at full pressure from x=140 on; a fixed delay would hold
+    // the touchdown to about x=172.
+    const past = dabs.filter(d => d.x > 145);
+    expect(past.length).toBeGreaterThan(5);
+    for (const d of past) expect(d.w).toBeGreaterThan(19.5);
   });
 
   it('catches up at the pace the stroke went, even when it crept', () => {

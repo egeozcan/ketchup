@@ -41,15 +41,18 @@ interface PenSample {
  *
  * Pressure and tilt aren't averaged with it: a change would then start as
  * soon as the pen made it, a whole lag before the drawn point gets there.
- * They are delayed by the time constant instead, which is how far behind
- * the drawn point runs on a steady stroke, so a taper lands where the pen
- * made it.
+ * They are read where the pen was at the timestamps averaged the same way,
+ * which (the average being linear) is exactly where the drawn point is on
+ * a straight, steady stroke, from the first sample on: so a taper lands
+ * where the pen made it, and a light touchdown doesn't linger.
  */
 export class Stabilizer {
   private _tau = 0;
   private _x = 0;
   private _y = 0;
   private _t = 0;
+  /** The timestamps averaged as the position is: when the pen was where the drawn point is. */
+  private _penT = 0;
   // The smoothed point before the last move, which paces the catch-up.
   private _prevX = 0;
   private _prevY = 0;
@@ -75,6 +78,7 @@ export class Stabilizer {
       this._x = x;
       this._y = y;
       this._t = timestamp;
+      this._penT = timestamp;
       this._prevX = x;
       this._prevY = y;
       this._prevT = timestamp;
@@ -92,9 +96,10 @@ export class Stabilizer {
       const a = 1 - Math.exp(-dt / this._tau);
       this._x += (x - this._x) * a;
       this._y += (y - this._y) * a;
+      this._penT += (timestamp - this._penT) * a;
       this._t = timestamp;
     }
-    const pen = this._penAt(this._rawT - this._tau);
+    const pen = this._penAt(this._penT);
     return { x: this._x, y: this._y, pressure: pen.pressure, tiltX: pen.tiltX, tiltY: pen.tiltY };
   }
 
@@ -118,7 +123,7 @@ export class Stabilizer {
     const n = Math.min(MAX_CATCH_UP_POINTS, Math.ceil(dist / Math.max(1, lastStep)));
     const dt = speed > 0 ? dist / n / speed : DEFAULT_STEP_MS;
     // The pen's samples the drawn point hasn't reached yet.
-    const penFrom = Math.max(this._rawT - this._tau, this._history[0].t);
+    const penFrom = Math.max(this._penT, this._history[0].t);
     const penSpan = this._rawT - penFrom;
     const from = { x: this._x, y: this._y, t: this._t };
     const points: StabilizedPoint[] = [];
@@ -142,6 +147,7 @@ export class Stabilizer {
     this._y = end.y;
     this._t = end.timestamp;
     this._history = [this._history[this._history.length - 1]];
+    this._penT = this._rawT;
     return points;
   }
 
@@ -149,7 +155,8 @@ export class Stabilizer {
     const h = this._history;
     h.push(sample);
     this._rawT = sample.t;
-    // Keep one sample at or before the delayed time, to interpolate from.
+    // Keep one sample at or before the averaged time, to interpolate from:
+    // it never lags the newest by more than the time constant.
     const cutoff = sample.t - this._tau;
     let drop = 0;
     while (drop + 1 < h.length && h[drop + 1].t <= cutoff) drop++;
