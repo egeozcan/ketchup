@@ -143,6 +143,81 @@ describe('dab spacing', () => {
     }
   });
 
+  it('keeps a taper joined that starts past where the spacing was set', () => {
+    const dabs: { x: number; w: number }[] = [];
+    const spy = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage').mockImplementation((...args: unknown[]) => {
+      if (args.length === 5 && (args[0] as HTMLCanvasElement).width <= 100) {
+        dabs.push({ x: (args[1] as number) + (args[3] as number) / 2, w: args[3] as number });
+      }
+    });
+    const engine = new StampStrokeEngine();
+    engine.begin(makeBrush({ size: 100, spacing: 0.75, pressureSize: true, pressureCurve: 'linear' }), '#000000', false, 600, 200);
+    [1, 1, 0.7, 0.3, 0.2, 0.8, 0.1].forEach((p, i) => engine.stroke(50 + 60 * i, 100, p, undefined, 60 * i));
+    engine.commit(document.createElement('canvas').getContext('2d')!);
+    spy.mockRestore();
+
+    for (let i = 1; i < dabs.length; i++) {
+      expect(dabs[i].x - dabs[i - 1].x).toBeLessThanOrEqual((dabs[i].w + dabs[i - 1].w) / 2 + 0.01);
+    }
+  });
+
+  it('keeps random pressure joined and about as dense at any report rate, straight or curved', () => {
+    // A seeded generator, so a failure reproduces.
+    let seed = 7;
+    const random = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let r = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
+      return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    };
+    const lay = (path: (u: number) => [number, number], pressure: (u: number) => number, step: number, spacing: number) => {
+      const dabs: { x: number; y: number; w: number }[] = [];
+      const spy = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage').mockImplementation((...args: unknown[]) => {
+        if (args.length === 5 && (args[0] as HTMLCanvasElement).width <= 100) {
+          const w = args[3] as number;
+          dabs.push({ x: (args[1] as number) + w / 2, y: (args[2] as number) + (args[4] as number) / 2, w });
+        }
+      });
+      const engine = new StampStrokeEngine();
+      engine.begin(makeBrush({ size: 100, spacing, pressureSize: true, pressureCurve: 'linear' }), '#000000', false, 800, 800);
+      for (let d = 0; ; d += step) {
+        const u = Math.min(1, d / 600);
+        const [x, y] = path(u);
+        engine.stroke(x, y, pressure(u), undefined, d);
+        if (u === 1) break;
+      }
+      engine.commit(document.createElement('canvas').getContext('2d')!);
+      spy.mockRestore();
+      return dabs;
+    };
+    const straight = (u: number): [number, number] => [100 + 600 * u, 400];
+    const curved = (u: number): [number, number] => [400 + 250 * Math.cos(u * 2.4), 400 + 250 * Math.sin(u * 2.4)];
+    for (let trial = 0; trial < 4; trial++) {
+      // Pressure through random knots, dips to nearly nothing included.
+      const knots = Array.from({ length: 9 }, () => (random() < 0.3 ? 0.02 : 0.05 + 0.95 * random()));
+      const pressure = (u: number) => {
+        const k = u * (knots.length - 1), i = Math.min(knots.length - 2, Math.floor(k));
+        return knots[i] + (knots[i + 1] - knots[i]) * (k - i);
+      };
+      for (const spacing of [0.1, 0.5, 0.75]) {
+        for (const path of [straight, curved]) {
+          const fine = lay(path, pressure, 1, spacing).length;
+          for (const step of [1, 3, 15, 17, 25, 60, 75, 100]) {
+            const dabs = lay(path, pressure, step, spacing);
+            for (let i = 1; i < dabs.length; i++) {
+              const gap = Math.hypot(dabs[i].x - dabs[i - 1].x, dabs[i].y - dabs[i - 1].y) - (dabs[i].w + dabs[i - 1].w) / 2;
+              expect(gap, `trial ${trial}, spacing ${spacing}, step ${step}, dab ${i}`).toBeLessThanOrEqual(0.01);
+            }
+            // Reports that miss knots draw a different pressure; compare those that don't.
+            if (path === straight && 75 % step === 0) {
+              expect(Math.abs(dabs.length - fine) / fine, `trial ${trial}, spacing ${spacing}, step ${step}`).toBeLessThan(0.2);
+            }
+          }
+        }
+      }
+    }
+  });
+
   it('lays a taper about as densely however often the pen reported it', () => {
     const taperDabs = (step: number) => {
       let count = 0;

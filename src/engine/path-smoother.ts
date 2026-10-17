@@ -21,27 +21,24 @@ const DEFAULT_SPEED_PX_PER_MS = 1;
 export type PathTarget = PathChannels & { pressure: number };
 
 /**
- * The pressure and channels `distance` further along the path from a stamp,
- * as far as the segment it is on goes (past its end, at its end).
+ * Distance from a stamp to the next: fixed, or what a stamp at `at`,
+ * heading `heading` (radians, null before the path has a direction) from
+ * the stamp before, would want. Asked of many points along the way, so it
+ * must not change anything.
  */
-export type PathProbe = (distance: number) => PathTarget;
+export type Spacing = number | ((at: StampPoint, heading: number | null) => number);
 
-/**
- * Distance from a stamp to the next: fixed, or worked out from the stamp
- * and, through `ahead`, the path past it.
- */
-export type Spacing = number | ((stamp: StampPoint, ahead: PathProbe) => number);
+/** Shortest spacing honoured, so a careless one can't stall a walk. */
+const MIN_SPACING = 1e-3;
+/** Squared distance below which a stamp keeps the heading of the one before. */
+const MIN_HEADING_DIST_SQ = 0.25;
+/** Longest step, in px, taken looking for where the next stamp is due. */
+const SEARCH_STEP = 1;
+/** Halvings that place a stamp within the step it fell due in. */
+const SEARCH_REFINE = 16;
 
-function spacingAfter(spacing: Spacing, stamp: StampPoint, ahead: PathProbe): number {
-  return typeof spacing === 'number' ? spacing : spacing(stamp, ahead);
-}
-
-function targetOf(p: RawPoint): PathTarget {
-  return { pressure: p.pressure, velocity: p.velocity, tiltX: p.tiltX, tiltY: p.tiltY };
-}
-
-function targetBetween(a: RawPoint, b: RawPoint, t: number): PathTarget {
-  return { pressure: a.pressure + (b.pressure - a.pressure) * t, ...lerpChannels(a, b, t) };
+function spacingOf(spacing: Spacing, at: StampPoint, heading: number | null): number {
+  return Math.max(MIN_SPACING, typeof spacing === 'number' ? spacing : spacing(at, heading));
 }
 
 /**
@@ -56,20 +53,30 @@ export class PathSmoother {
   private _window: RawPoint[] = [];
   /** Total number of points received (not stored). */
   private _count = 0;
-  private _remainder = 0; // leftover distance from last subdivision
+  /** The stamp laid last, the spacing it wanted, and the heading it was laid at. */
+  private _last: StampPoint | null = null;
+  private _lastSpacing = 0;
+  private _heading: number | null = null;
+  /** How far the path has gone since the last stamp, up to the end of the segments walked. */
+  private _since = 0;
 
   reset() {
     this._window = [];
     this._count = 0;
-    this._remainder = 0;
+    this._last = null;
+    this._lastSpacing = 0;
+    this._heading = null;
+    this._since = 0;
   }
 
   /**
    * Feed a new raw pointer sample. Returns stamp positions along the
-   * smoothed path spaced at `spacing` pixel intervals (or, given a function,
-   * at the spacing each stamp asks for after it). `channels` are carried
-   * to the stamps like pressure, so a segment drawn a sample late still gets
-   * the speed and tilt it was drawn with.
+   * smoothed path spaced at `spacing` pixel intervals or, given a function,
+   * each at the first point where the way since the stamp before reaches
+   * the spacing either of them wants: a stamp narrowing ahead pulls the
+   * next one in, wherever the samples fell. `channels` are carried to the
+   * stamps like pressure, so a segment drawn a sample late still gets the
+   * speed and tilt it was drawn with.
    */
   addPoint(x: number, y: number, pressure: number, spacing: Spacing, timestamp = 0, channels: Partial<PathChannels> = {}): StampPoint[] {
     const pt: RawPoint = {
@@ -91,7 +98,7 @@ export class PathSmoother {
     // Single point (stroke start dot)
     if (n === 1) {
       const stamp: StampPoint = { x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, velocity: pt.velocity, tiltX: pt.tiltX, tiltY: pt.tiltY };
-      this._remainder = spacingAfter(spacing, stamp, () => targetOf(pt));
+      this._lay(stamp, spacing);
       return [stamp];
     }
 
@@ -155,26 +162,18 @@ export class PathSmoother {
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (dist < 0.001) return [];
 
-    const stamps: StampPoint[] = [];
     const elapsed = to.timestamp - from.timestamp;
     const speedPxPerMs = elapsed > 0 ? dist / elapsed : DEFAULT_SPEED_PX_PER_MS;
-    let d = this._remainder;
-
-    while (d <= dist) {
+    return this._walk(dist, spacing, (d) => {
       const t = d / dist;
-      const stamp: StampPoint = {
+      return {
         x: from.x + dx * t,
         y: from.y + dy * t,
+        pressure: from.pressure + (to.pressure - from.pressure) * t,
         speedPxPerMs,
-        ...targetBetween(from, to, t),
+        ...lerpChannels(from, to, t),
       };
-      stamps.push(stamp);
-      const at = d;
-      d += spacingAfter(spacing, stamp, (ahead) => targetBetween(from, to, Math.min(1, (at + ahead) / dist)));
-    }
-
-    this._remainder = d - dist;
-    return stamps;
+    });
   }
 
   private _walkCatmullRom(p0: RawPoint, p1: RawPoint, p2: RawPoint, p3: RawPoint, spacing: Spacing): StampPoint[] {
@@ -198,42 +197,99 @@ export class PathSmoother {
 
     if (totalLen < 0.001) return [];
 
-    const stamps: StampPoint[] = [];
     const elapsed = p2.timestamp - p1.timestamp;
     const speedPxPerMs = elapsed > 0 ? totalLen / elapsed : DEFAULT_SPEED_PX_PER_MS;
-    let d = this._remainder;
-
-    // The curve's parameter at arc length `at` along it.
-    const paramAt = (at: number): number => {
-      if (at >= totalLen) return 1;
-      // Find the subdivision segment containing distance `at`
-      let segIdx = 0;
+    return this._walk(totalLen, spacing, (d) => {
+      // Find the subdivision segment containing distance d
+      let segIdx = SUBDIV - 1;
       for (let i = 1; i < lengths.length; i++) {
-        if (lengths[i] >= at) { segIdx = i - 1; break; }
+        if (lengths[i] >= d) { segIdx = i - 1; break; }
       }
 
       // Interpolate t within this subdivision segment
       const segStart = lengths[segIdx];
       const segEnd = lengths[segIdx + 1];
-      const segFrac = segEnd > segStart ? (at - segStart) / (segEnd - segStart) : 0;
-      return (segIdx + segFrac) / SUBDIV;
-    };
-
-    while (d <= totalLen) {
-      const t = paramAt(d);
-      const stamp: StampPoint = {
+      const segFrac = segEnd > segStart ? Math.min(1, (d - segStart) / (segEnd - segStart)) : 0;
+      const t = (segIdx + segFrac) / SUBDIV;
+      return {
         x: catmullRom(p0.x, p1.x, p2.x, p3.x, t),
         y: catmullRom(p0.y, p1.y, p2.y, p3.y, t),
+        pressure: p1.pressure + (p2.pressure - p1.pressure) * t,
         speedPxPerMs,
-        ...targetBetween(p1, p2, t),
+        ...lerpChannels(p1, p2, t),
       };
-      stamps.push(stamp);
-      const at = d;
-      d += spacingAfter(spacing, stamp, (ahead) => targetBetween(p1, p2, paramAt(at + ahead)));
-    }
+    });
+  }
 
-    this._remainder = d - totalLen;
-    return stamps;
+  /**
+   * Lay the stamps due on a segment `length` long, `pointAt` giving the
+   * stamp at a distance along it, carrying the way left over to the next.
+   */
+  private _walk(length: number, spacing: Spacing, pointAt: (d: number) => StampPoint): StampPoint[] {
+    const stamps: StampPoint[] = [];
+    // Where on the segment the way since the last stamp (`_since`) was measured to.
+    let start = 0;
+    for (;;) {
+      const since = this._since;
+      const owed = this._lastSpacing - since;
+      // The last stamp's own spacing runs out here; a narrower stamp ahead may be due sooner.
+      const latest = start + owed;
+      let at = -1;
+      if (typeof spacing === 'number') {
+        if (latest <= length) at = latest;
+      } else {
+        const due = (d: number) => {
+          const p = pointAt(d);
+          return since + (d - start) >= Math.min(this._lastSpacing, spacingOf(spacing, p, this._headingTo(p)));
+        };
+        const end = Math.min(length, latest);
+        if (since > 0 && due(start)) {
+          at = start;
+        } else if (end > start) {
+          // Step along to the first point it falls due, so a narrowing
+          // shorter than a spacing isn't stepped over, then close in on it.
+          const steps = Math.ceil((end - start) / SEARCH_STEP);
+          let lo = start;
+          for (let i = 1; i <= steps; i++) {
+            const d = i === steps ? end : start + (end - start) * i / steps;
+            if (d >= latest || due(d)) {
+              let hi = d;
+              for (let k = 0; k < SEARCH_REFINE; k++) {
+                const mid = (lo + hi) / 2;
+                if (due(mid)) hi = mid;
+                else lo = mid;
+              }
+              at = hi;
+              break;
+            }
+            lo = d;
+          }
+        }
+      }
+      if (at < 0) {
+        this._since = since + (length - start);
+        return stamps;
+      }
+      const stamp = pointAt(at);
+      this._lay(stamp, spacing);
+      stamps.push(stamp);
+      start = at;
+    }
+  }
+
+  /** The heading from the last stamp to one at `at`. */
+  private _headingTo(at: StampPoint): number | null {
+    const last = this._last;
+    if (!last) return null;
+    const dx = at.x - last.x, dy = at.y - last.y;
+    return dx * dx + dy * dy >= MIN_HEADING_DIST_SQ ? Math.atan2(dy, dx) : this._heading;
+  }
+
+  private _lay(stamp: StampPoint, spacing: Spacing) {
+    this._heading = this._headingTo(stamp);
+    this._last = stamp;
+    this._lastSpacing = spacingOf(spacing, stamp, this._heading);
+    this._since = 0;
   }
 }
 

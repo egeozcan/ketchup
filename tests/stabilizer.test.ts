@@ -87,7 +87,7 @@ describe('Stabilizer', () => {
 
   it('keeps pressure eased off at a stop for the stop through a trembling hold', () => {
     const s = new Stabilizer();
-    s.reset(120, 3);
+    s.reset(120, 1);
     for (let t = 0; t <= 400; t += 4) s.add(100 + t, 0, 1, t);
     let at = s.add(500, 0, 1, 404);
     // Held at x=500 trembling a pixel either way, easing off over 120 ms.
@@ -97,6 +97,23 @@ describe('Stabilizer', () => {
     }
     const way = s.catchUp();
     expect(way[way.length - 1].pressure).toBeCloseTo(0.2);
+  });
+
+  it('reads what the pen did on turning back at most about twice the slack late', () => {
+    const s = new Stabilizer();
+    s.reset(120, 1);
+    for (let t = 0; t <= 400; t += 4) s.add(t, 0, 1, t);
+    for (let t = 404; t <= 1000; t += 4) s.add(400, 0, 1, t);
+    // Creeping back at 0.01 px/ms, easing off and leaning as it goes.
+    let worst = 0;
+    for (let t = 1004; t <= 2000; t += 4) {
+      const at = s.add(400 - (t - 1000) / 100, 0, 1 - 0.0009 * (t - 1000), t, 0.09 * (t - 1000), 0);
+      // How far back the pen was when it had the pressure read, against where the point is.
+      const readBack = (1 - at.pressure) / 0.0009 / 100;
+      worst = Math.max(worst, Math.abs(readBack - (400 - at.x)));
+      expect(at.tiltX / 0.09 / 100).toBeCloseTo(readBack, 6);
+    }
+    expect(worst).toBeLessThan(2);
   });
 
   it('plays out what the pen did over the lag on catching up', () => {

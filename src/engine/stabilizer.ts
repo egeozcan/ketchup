@@ -48,8 +48,11 @@ interface PenSample {
  * on: a taper lands where the pen made it, a light touchdown doesn't linger,
  * and a pen easing off as it stops does so at the stop. The distance is
  * taken up like a string pulled behind the pen with `slack` to spare, so a
- * hand trembling where it holds doesn't add up to a way it never went (and
- * read what the pen did there before the drawn point gets there).
+ * hand trembling where it holds (up to twice the slack from side to side)
+ * doesn't add up to a way it never went, reading what the pen did there
+ * before the drawn point gets there. The price is at a turn back: the
+ * first twice the slack of the way back adds nothing, so what the pen did
+ * there is read up to that much late.
  */
 export class Stabilizer {
   private _tau = 0;

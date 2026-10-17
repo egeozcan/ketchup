@@ -1,6 +1,6 @@
 import { BrushTipCache } from './brush-tip-cache.js';
 import { StrokeBufferPool } from './stroke-buffer-pool.js';
-import { PathSmoother, type PathProbe, type PathTarget } from './path-smoother.js';
+import { PathSmoother } from './path-smoother.js';
 import { Stabilizer, type StabilizedPoint } from './stabilizer.js';
 import { get2dContext, drawImageSafe, tintAlphaMask, createOffscreenCanvas, type AnyCanvas } from './canvas-pool.js';
 import { PRESSURE_CURVES, quantizeDiameter, type BrushDescriptor, type TipDescriptor, type StampPoint, type InkState } from './types.js';
@@ -18,7 +18,7 @@ const MAX_TILT_STRETCH = 2;
 /** Tilt short of flat, so its tangent stays finite. */
 const MAX_TILT_DEG = 89.9;
 /** Screen (CSS) pixels a hand may tremble without the stabilizer counting it as way gone. */
-const STABILIZER_SLACK_PX = 3;
+const STABILIZER_SLACK_PX = 1;
 
 export interface StrokeOptions {
   /** How far, in time, the stroke trails the pointer (0 = off); needs increasing stroke() timestamps. */
@@ -161,10 +161,6 @@ export class StampStrokeEngine {
   private _colorMode = false;
   private _docWidth = 0;
   private _docHeight = 0;
-  /** The way the stroke last headed, in radians, and the point it was measured from. */
-  /** The last dab spaced, whose direction to the next sets how the next is turned. */
-  private _spacedFrom: StampPoint | null = null;
-  private _spacedHeading: number | null = null;
   private _inkState: InkState | null = null;
   private _prevStamp: StampPoint | null = null;
   private _variantCounter = 0;
@@ -406,29 +402,16 @@ export class StampStrokeEngine {
   }
 
   /**
-   * Distance from a dab to the next, from the dab's own size and lean: the
-   * spline lays a segment a sample late, so the newest sample's would be
-   * another dab's (a pause after a thin, fast run would gap it). Where the
-   * path narrows, the spacing where that would put the next dab sets it, so
-   * a steep taper stays joined to the small dabs ahead, as densely however
-   * often the pen reported.
+   * The distance a dab at `at`, laid along `heading`, wants to the next,
+   * from its own size and lean (the spline lays a segment a sample late,
+   * so the newest sample's would be another dab's: a pause after a thin,
+   * fast run would gap it). The smoother lays the next dab where either
+   * dab's spacing runs out, so a steep taper stays joined.
    */
-  private _dabSpacing = (stamp: StampPoint, ahead: PathProbe): number => {
-    const from = this._spacedFrom;
-    if (from) {
-      const dx = stamp.x - from.x, dy = stamp.y - from.y;
-      if (dx * dx + dy * dy >= MIN_DIRECTION_DIST_SQ) this._spacedHeading = Math.atan2(dy, dx);
-    }
-    this._spacedFrom = stamp;
-    const own = this._spacingAt(stamp);
-    return Math.min(own, this._spacingAt(ahead(own)));
-  };
-
-  /** The spacing a dab with `at`'s pressure, speed and lean would get, along the current heading. */
-  private _spacingAt(at: PathTarget): number {
+  private _dabSpacing = (at: StampPoint, heading: number | null): number => {
     const d = this._descriptor!;
-    return Math.max(1, d.spacing * this._sizeAt(at.pressure, at.velocity) * this._leanSpacing(at, this._spacedHeading));
-  }
+    return Math.max(1, d.spacing * this._sizeAt(at.pressure, at.velocity) * this._leanSpacing(at, heading));
+  };
 
   /**
    * Stretching a bar along a lean across it shears it, which can pull
@@ -456,8 +439,6 @@ export class StampStrokeEngine {
     this._velocity = 0;
     this._velocityLast = null;
     this._velocityDist = 0;
-    this._spacedFrom = null;
-    this._spacedHeading = null;
   }
 
   /**
