@@ -7,8 +7,9 @@ import { makeState } from './helpers.ts';
 function renderBrushSettings(
   shape: TipShape,
   activeTool: 'pencil' | 'eraser' = 'pencil',
-  brushOverrides: { flow?: number; pressureOpacity?: boolean } = {},
+  brushOverrides: { flow?: number; pressureOpacity?: boolean; dynamics?: { flowVelocity?: number } } = {},
   setBrushTip = vi.fn(),
+  setBrushDynamics = vi.fn(),
 ): HTMLElement {
   const settings = new ToolSettings();
   (settings as any)._advancedOpen = true;
@@ -21,6 +22,7 @@ function renderBrushSettings(
       setBrush: vi.fn(),
       setBrushTip,
       setBrushInk: vi.fn(),
+      setBrushDynamics,
       selectPreset: vi.fn(),
     },
   };
@@ -115,9 +117,26 @@ describe('ToolSettings brush controls', () => {
     const lowerFlow = renderBrushSettings('round', 'pencil', { flow: 0.5 }).textContent ?? '';
     const pressureFlow = renderBrushSettings('round', 'pencil', { pressureOpacity: true }).textContent ?? '';
 
+    const speedFlow = renderBrushSettings('round', 'pencil', { dynamics: { flowVelocity: -0.5 } }).textContent ?? '';
+
     expect(saturated).not.toContain('Buildup');
     expect(lowerFlow).toContain('Buildup');
     expect(pressureFlow).toContain('Buildup');
+    expect(speedFlow).toContain('Buildup');
+  });
+
+  it('sets speed dynamics from their sliders, as -1..1', () => {
+    const setBrushDynamics = vi.fn();
+    const controls = renderBrushSettings('round', 'pencil', { dynamics: { flowVelocity: -0.5 } }, vi.fn(), setBrushDynamics);
+    const size = controls.querySelector<HTMLInputElement>('input[aria-label="Size by speed"]')!;
+    const flow = controls.querySelector<HTMLInputElement>('input[aria-label="Flow by speed"]')!;
+    expect(flow.value).toBe('-50');
+    expect(controls.textContent).toContain('-50%');
+
+    size.value = '30';
+    size.dispatchEvent(new Event('input'));
+
+    expect(setBrushDynamics).toHaveBeenCalledWith({ sizeVelocity: 0.3 });
   });
 
   it('does not reset custom tip values when the active shape is clicked again', () => {

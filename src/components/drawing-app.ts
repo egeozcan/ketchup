@@ -2,8 +2,8 @@ import { LitElement, html, css, type PropertyValues } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import { blendModeToCompositeOp, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor } from '../engine/types.js';
-import { getDefaultDescriptor, getPresetById } from '../engine/brush-presets.js';
+import { blendModeToCompositeOp, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics } from '../engine/types.js';
+import { copyDescriptor, getDefaultDescriptor, getPresetById, normalizeDynamics } from '../engine/brush-presets.js';
 import type { DrawingState, HistoryEntry, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
 import { IndexedDBBackend, MemoryBackend, ProjectService, StorageQuotaError, StorageNotFoundError, StorageClosedError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
@@ -1830,6 +1830,7 @@ export class DrawingApp extends LitElement {
             pressureCurve: this._state.brush.pressureCurve,
             tip: { ...this._state.brush.tip },
             ink: { ...this._state.brush.ink },
+            dynamics: { ...this._state.brush.dynamics },
             activePreset: this._state.activePreset,
             isPresetModified: this._state.isPresetModified,
             cropAspectRatio: this._state.cropAspectRatio,
@@ -2666,6 +2667,7 @@ export class DrawingApp extends LitElement {
         pressureCurve: ts.pressureCurve ?? defaultDesc.pressureCurve,
         tip: { ...defaultDesc.tip, ...(ts.tip ?? {}) },
         ink: { ...defaultDesc.ink, ...(ts.ink ?? {}) },
+        dynamics: normalizeDynamics(ts.dynamics),
       };
       this._state = {
         activeTool: ts.activeTool === 'marker' as string ? 'pencil' : ts.activeTool,
@@ -3083,13 +3085,16 @@ export class DrawingApp extends LitElement {
       setBrushInk: (ink: Partial<InkDescriptor>) => {
         this._updateBrush({ ink: { ...this._state.brush.ink, ...ink } });
       },
+      setBrushDynamics: (dynamics: Partial<BrushDynamics>) => {
+        this._updateBrush({ dynamics: { ...this._state.brush.dynamics, ...dynamics } });
+      },
       selectPreset: (presetId: string) => {
         const preset = getPresetById(presetId);
         if (!preset) return;
         const desc = preset.descriptor;
         this._state = {
           ...this._state,
-          brush: { ...desc, tip: { ...desc.tip }, ink: { ...desc.ink } },
+          brush: copyDescriptor(desc),
           activePreset: presetId,
           isPresetModified: false,
         };

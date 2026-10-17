@@ -80,7 +80,7 @@ describe('StampStrokeEngine with the stabilizer', () => {
 
   it('trails the pointer while drawing and finishes where it was let go', () => {
     const engine = new StampStrokeEngine();
-    engine.begin(makeBrush({ size: 4, spacing: 0.25, pressureSize: false }), '#000000', false, 200, 20, 100);
+    engine.begin(makeBrush({ size: 4, spacing: 0.25, pressureSize: false }), '#000000', false, 200, 20, { stabilizerMs: 100 });
     drag(engine, 5, 105, 0);
     const during = engine.getDirtyBounds()!;
     expect(during.x + during.w).toBeLessThan(90);
@@ -95,7 +95,7 @@ describe('StampStrokeEngine with the stabilizer', () => {
   it('finishes each part of a stroke where the pen lifted, without joining the next', () => {
     const engine = new StampStrokeEngine();
     const brush = makeBrush({ size: 4, spacing: 0.25, pressureSize: true, pressureCurve: 'linear' });
-    engine.begin(brush, '#000000', false, 300, 20, 100);
+    engine.begin(brush, '#000000', false, 300, 20, { stabilizerMs: 100 });
     drag(engine, 5, 105, 0);
     engine.stroke(105, 10, 0, undefined, 104);
 
@@ -115,7 +115,7 @@ describe('StampStrokeEngine with the stabilizer', () => {
     const drawImage = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage');
     const engine = new StampStrokeEngine();
     const brush = makeBrush({ size: 20, spacing: 0.1, pressureSize: true, pressureCurve: 'linear' });
-    engine.begin(brush, '#000000', false, 400, 40, 100);
+    engine.begin(brush, '#000000', false, 400, 40, { stabilizerMs: 100 });
     // Full pressure to x=200, then a quick release to 0.2 over the last samples.
     for (let x = 0, t = 0; x <= 200; x += 4, t += 4) engine.stroke(x, 20, 1, undefined, t);
     for (let i = 1, t = 204; i <= 4; i++, t += 4) engine.stroke(200 + i * 4, 20, 1 - i * 0.2, undefined, t);
@@ -139,7 +139,7 @@ describe('StampStrokeEngine with the stabilizer', () => {
   it('carries on forward when it catches up, never back over the stroke', () => {
     const drawImage = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage');
     const engine = new StampStrokeEngine();
-    engine.begin(makeBrush({ size: 4, spacing: 0.25, pressureSize: false }), '#000000', false, 400, 40, 100);
+    engine.begin(makeBrush({ size: 4, spacing: 0.25, pressureSize: false }), '#000000', false, 400, 40, { stabilizerMs: 100 });
     for (let x = 50, t = 0; x <= 150; x += 10, t += 4) engine.stroke(x, 20, 1, undefined, t);
     const centre = (call: unknown[]) => (call[1] as number) + (call[3] as number) / 2;
     const before = drawImage.mock.calls.map(centre);
@@ -160,7 +160,7 @@ describe('StampStrokeEngine with the stabilizer', () => {
   it('reaches the end of a taper even when the full-size spacing is wide', () => {
     const engine = new StampStrokeEngine();
     const brush = makeBrush({ size: 100, spacing: 0.5, pressureSize: true, pressureCurve: 'linear' });
-    engine.begin(brush, '#000000', false, 400, 300, 100);
+    engine.begin(brush, '#000000', false, 400, 300, { stabilizerMs: 100 });
     engine.stroke(5, 150, 1, undefined, 0);
     engine.stroke(125, 150, 0.01, undefined, 1);
     engine.commit(document.createElement('canvas').getContext('2d')!);

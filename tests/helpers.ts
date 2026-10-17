@@ -1,11 +1,12 @@
 import { vi } from 'vitest';
 import { getDefaultDescriptor } from '../src/engine/brush-presets.ts';
-import type { BrushDescriptor, InkDescriptor, TipDescriptor } from '../src/engine/types.ts';
+import type { BrushDescriptor, BrushDynamics, InkDescriptor, TipDescriptor } from '../src/engine/types.ts';
 import type { DrawingState, Layer } from '../src/types.ts';
 
-type BrushOverrides = Omit<Partial<BrushDescriptor>, 'tip' | 'ink'> & {
+type BrushOverrides = Omit<Partial<BrushDescriptor>, 'tip' | 'ink' | 'dynamics'> & {
   tip?: Partial<TipDescriptor>;
   ink?: Partial<InkDescriptor>;
+  dynamics?: Partial<BrushDynamics>;
 };
 
 export function makeBrush(overrides: BrushOverrides = {}): BrushDescriptor {
@@ -20,6 +21,10 @@ export function makeBrush(overrides: BrushOverrides = {}): BrushDescriptor {
     ink: {
       ...base.ink,
       ...(overrides.ink ?? {}),
+    },
+    dynamics: {
+      ...base.dynamics,
+      ...(overrides.dynamics ?? {}),
     },
   };
 }

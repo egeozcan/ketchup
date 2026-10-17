@@ -2,7 +2,7 @@ import { createContext } from '@lit/context';
 import type { DrawingState, ToolType } from '../types.js';
 import type { ProjectMeta } from '../storage/types.js';
 import type { ConfirmOptions } from '../components/confirm-dialog.js';
-import type { BlendMode, BrushDescriptor, TipDescriptor, InkDescriptor } from '../engine/types.js';
+import type { BlendMode, BrushDescriptor, TipDescriptor, InkDescriptor, BrushDynamics } from '../engine/types.js';
 
 export interface DrawingContextValue {
   state: DrawingState;
@@ -41,6 +41,7 @@ export interface DrawingContextValue {
   setBrush: (partial: Partial<BrushDescriptor>) => void;
   setBrushTip: (tip: Partial<TipDescriptor>) => void;
   setBrushInk: (ink: Partial<InkDescriptor>) => void;
+  setBrushDynamics: (dynamics: Partial<BrushDynamics>) => void;
   selectPreset: (presetId: string) => void;
   setLayerBlendMode: (id: string, mode: BlendMode) => void;
   setEyedropperSampleAll: (v: boolean) => void;

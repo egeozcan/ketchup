@@ -909,6 +909,22 @@ describe('DrawingCanvas', () => {
     expect(stroke.mock.calls.map(c => c[2])).toEqual([0.5, 0.005, 0]);
   });
 
+  it('measures brush speed in screen pixels, through zoom and a host CSS zoom', () => {
+    const { canvas } = setupCanvas({ stateOverrides: { activeTool: 'pencil' } });
+    const begin = vi.spyOn((canvas as any)._engine, 'begin');
+    (canvas as any)._zoom = 2;
+    // Shown at 1.5 times its CSS size, as under a host's `zoom: 1.5`.
+    const vw = (canvas as any)._vw, vh = (canvas as any)._vh;
+    vi.spyOn(canvas as any, '_getCanvasRect').mockReturnValue(new DOMRect(0, 0, vw * 1.5, vh * 1.5));
+
+    (canvas as any)._onPointerDown({
+      button: 0, buttons: 1, pointerId: 1, clientX: 10, clientY: 10, pointerType: 'pen', isPrimary: true,
+      pressure: 0.5, timeStamp: 0, preventDefault() {},
+    } as unknown as PointerEvent);
+
+    expect((begin.mock.lastCall![5] as { viewScale: number }).viewScale).toBeCloseTo(3);
+  });
+
   it('starts each stroke with the stabilizer setting as a time constant', () => {
     const { canvas } = setupCanvas({ stateOverrides: { activeTool: 'pencil', stabilizer: 50 } });
     const begin = vi.spyOn((canvas as any)._engine, 'begin');
@@ -918,7 +934,7 @@ describe('DrawingCanvas', () => {
       pressure: 0.5, timeStamp: 0, preventDefault() {},
     } as unknown as PointerEvent);
 
-    expect(begin.mock.lastCall![5]).toBe(60);
+    expect(begin.mock.lastCall![5]).toMatchObject({ stabilizerMs: 60 });
   });
 
   it('strokes the move itself when the browser reports no coalesced samples', () => {

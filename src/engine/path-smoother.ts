@@ -5,6 +5,7 @@ interface RawPoint {
   y: number;
   pressure: number;
   timestamp: number;
+  velocity: number;
 }
 
 const DEFAULT_SPEED_PX_PER_MS = 1;
@@ -12,7 +13,7 @@ const DEFAULT_SPEED_PX_PER_MS = 1;
 /**
  * Catmull-Rom spline interpolator for pointer events.
  * Subdivides curves by arc-length spacing, never by timestamp.
- * Lerps pressure between bracketing raw samples.
+ * Lerps pressure and velocity between bracketing raw samples.
  *
  * Uses a rolling window of 4 points to avoid unbounded array growth.
  */
@@ -31,10 +32,12 @@ export class PathSmoother {
 
   /**
    * Feed a new raw pointer sample. Returns stamp positions along the
-   * smoothed path spaced at `spacing` pixel intervals.
+   * smoothed path spaced at `spacing` pixel intervals. `velocity` is carried
+   * to the stamps like pressure, so a segment drawn a sample late still gets
+   * the speed it was drawn at.
    */
-  addPoint(x: number, y: number, pressure: number, spacing: number, timestamp = 0): StampPoint[] {
-    const pt: RawPoint = { x, y, pressure, timestamp };
+  addPoint(x: number, y: number, pressure: number, spacing: number, timestamp = 0, velocity = 0): StampPoint[] {
+    const pt: RawPoint = { x, y, pressure, timestamp, velocity };
     this._count++;
 
     // Maintain rolling window of at most 4 points
@@ -48,7 +51,7 @@ export class PathSmoother {
     // Single point (stroke start dot)
     if (n === 1) {
       this._remainder = spacing;
-      return [{ x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS }];
+      return [{ x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, velocity }];
     }
 
     // Second point: linear interpolation (only linear segment we emit)
@@ -98,6 +101,7 @@ export class PathSmoother {
       y: p2.y + (p2.y - p1.y),
       pressure: p2.pressure,
       timestamp: p2.timestamp + Math.max(0, p2.timestamp - p1.timestamp),
+      velocity: p2.velocity,
     };
     return this._walkCatmullRom(p0, p1, p2, p3, spacing);
   }
@@ -120,6 +124,7 @@ export class PathSmoother {
         y: from.y + dy * t,
         pressure: from.pressure + (to.pressure - from.pressure) * t,
         speedPxPerMs,
+        velocity: from.velocity + (to.velocity - from.velocity) * t,
       });
       d += spacing;
     }
@@ -172,6 +177,7 @@ export class PathSmoother {
         y: catmullRom(p0.y, p1.y, p2.y, p3.y, t),
         pressure: p1.pressure + (p2.pressure - p1.pressure) * t,
         speedPxPerMs,
+        velocity: p1.velocity + (p2.velocity - p1.velocity) * t,
       });
       d += spacing;
     }

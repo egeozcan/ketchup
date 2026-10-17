@@ -1,7 +1,8 @@
-import type { BrushDescriptor, BrushPreset } from './types.js';
+import type { BrushDescriptor, BrushDynamics, BrushPreset } from './types.js';
 import { getDefaultTipDescriptor } from './brush-capabilities.js';
 
 const NO_INK = { depletion: 0, depletionLength: 500, buildup: 0, wetness: 0 };
+export const NO_DYNAMICS: BrushDynamics = { sizeVelocity: 0, flowVelocity: 0 };
 
 export const BRUSH_PRESETS: BrushPreset[] = [
   {
@@ -13,6 +14,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       pressureSize: true, pressureOpacity: false, pressureCurve: 'linear',
       tip: getDefaultTipDescriptor('round'),
       ink: { ...NO_INK },
+      dynamics: { ...NO_DYNAMICS },
     },
   },
   {
@@ -24,6 +26,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       pressureSize: true, pressureOpacity: true, pressureCurve: 'light',
       tip: getDefaultTipDescriptor('round'),
       ink: { ...NO_INK },
+      dynamics: { ...NO_DYNAMICS },
     },
   },
   {
@@ -35,6 +38,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       pressureSize: true, pressureOpacity: false, pressureCurve: 'linear',
       tip: getDefaultTipDescriptor('flat'),
       ink: { depletion: 0.3, depletionLength: 800, buildup: 0, wetness: 0 },
+      dynamics: { ...NO_DYNAMICS },
     },
   },
   {
@@ -46,6 +50,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       pressureSize: true, pressureOpacity: false, pressureCurve: 'linear',
       tip: getDefaultTipDescriptor('chisel'),
       ink: { depletion: 0.2, depletionLength: 600, buildup: 0.3, wetness: 0 },
+      dynamics: { ...NO_DYNAMICS },
     },
   },
   {
@@ -57,6 +62,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       pressureSize: true, pressureOpacity: false, pressureCurve: 'linear',
       tip: getDefaultTipDescriptor('calligraphy'),
       ink: { ...NO_INK },
+      dynamics: { ...NO_DYNAMICS },
     },
   },
   {
@@ -68,6 +74,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       pressureSize: true, pressureOpacity: false, pressureCurve: 'linear',
       tip: getDefaultTipDescriptor('fan'),
       ink: { depletion: 0.5, depletionLength: 600, buildup: 0, wetness: 0 },
+      dynamics: { ...NO_DYNAMICS },
     },
   },
   {
@@ -79,6 +86,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       pressureSize: false, pressureOpacity: true, pressureCurve: 'linear',
       tip: getDefaultTipDescriptor('splatter'),
       ink: { depletion: 0.7, depletionLength: 400, buildup: 0, wetness: 0 },
+      dynamics: { ...NO_DYNAMICS },
     },
   },
   {
@@ -90,6 +98,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       pressureSize: true, pressureOpacity: true, pressureCurve: 'heavy',
       tip: getDefaultTipDescriptor('round'),
       ink: { depletion: 0.8, depletionLength: 300, buildup: 0.4, wetness: 0 },
+      dynamics: { ...NO_DYNAMICS },
     },
   },
   {
@@ -101,6 +110,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       pressureSize: false, pressureOpacity: false, pressureCurve: 'linear',
       tip: getDefaultTipDescriptor('round'),
       ink: { depletion: 0, depletionLength: 500, buildup: 0.2, wetness: 0.91 },
+      dynamics: { ...NO_DYNAMICS },
     },
   },
 ];
@@ -110,5 +120,20 @@ export function getPresetById(id: string): BrushPreset | undefined {
 }
 
 export function getDefaultDescriptor(): BrushDescriptor {
-  return { ...BRUSH_PRESETS[0].descriptor, tip: { ...BRUSH_PRESETS[0].descriptor.tip }, ink: { ...BRUSH_PRESETS[0].descriptor.ink } };
+  return copyDescriptor(BRUSH_PRESETS[0].descriptor);
+}
+
+/** A descriptor that shares no nested object with `d`. */
+export function copyDescriptor(d: BrushDescriptor): BrushDescriptor {
+  return { ...d, tip: { ...d.tip }, ink: { ...d.ink }, dynamics: { ...d.dynamics } };
+}
+
+/** Stored dynamics over the defaults, each clamped to -1..1; a value that isn't a number keeps its default. */
+export function normalizeDynamics(stored: Partial<BrushDynamics> | undefined): BrushDynamics {
+  const out = { ...NO_DYNAMICS };
+  for (const key of Object.keys(out) as (keyof BrushDynamics)[]) {
+    const v = stored?.[key];
+    if (typeof v === 'number' && Number.isFinite(v)) out[key] = Math.max(-1, Math.min(1, v));
+  }
+  return out;
 }

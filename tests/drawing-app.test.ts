@@ -579,6 +579,7 @@ describe('DrawingApp', () => {
         pressureCurve: 'heavy' as const,
         tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' as const },
         ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
+        dynamics: { sizeVelocity: -0.5, flowVelocity: 7 },
         activePreset: 'flat',
         isPresetModified: true,
         cropAspectRatio: '16:9',
@@ -624,6 +625,8 @@ describe('DrawingApp', () => {
       pressureCurve: 'heavy',
       tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' },
       ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
+      // Out of range, so clamped.
+      dynamics: { sizeVelocity: -0.5, flowVelocity: 1 },
     });
     expect((app as any)._state.stampSize).toBe(320);
     expect((app as any)._state.activePreset).toBe('flat');

@@ -545,8 +545,6 @@ export class DrawingCanvas extends LitElement {
     return {
       ...fallback,
       size: state.brushSize ?? fallback.size,
-      tip: { ...fallback.tip },
-      ink: { ...fallback.ink },
     };
   }
 
@@ -2646,7 +2644,11 @@ export class DrawingCanvas extends LitElement {
       const desc = this._brushDescriptor;
       const color = this.ctx.state.strokeColor;
       const eraser = this.ctx.state.activeTool === 'eraser';
-      this._engine.begin(desc, color, eraser, this._docWidth, this._docHeight, stabilizerTimeConstant(this.ctx.state.stabilizer));
+      this._engine.begin(desc, color, eraser, this._docWidth, this._docHeight, {
+        stabilizerMs: stabilizerTimeConstant(this.ctx.state.stabilizer),
+        // Client (screen) pixels per document pixel, through a host's CSS zoom too.
+        viewScale: this._zoom / this._clientScale(this._getCanvasRect()).x,
+      });
       // The tint scratch canvas is only cleared inside the previous stroke's bounds,
       // so wipe it once per stroke before reusing it.
       this._strokeTintNeedsClear = true;

@@ -5,8 +5,8 @@ import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import { storageBackendContext, projectServiceContext } from '../storage/storage-context.js';
 import type { StampEntry } from '../storage/types.js';
-import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushPreset } from '../engine/types.js';
-import { BRUSH_PRESETS } from '../engine/brush-presets.js';
+import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushDynamics, BrushPreset } from '../engine/types.js';
+import { BRUSH_PRESETS, copyDescriptor } from '../engine/brush-presets.js';
 import { getDefaultTipDescriptor, getTipCapabilities } from '../engine/brush-capabilities.js';
 import { StampStrokeEngine } from '../engine/stamp-stroke.js';
 import { getStampThumbnailUrl, removeStampThumbnail } from '../utils/stamp-thumbnail-cache.js';
@@ -1550,12 +1550,7 @@ export class ToolSettings extends LitElement {
     ctx.fillRect(0, 0, W, H);
 
     const previewSize = Math.max(2, Math.min(18, 2 + Math.log2(Math.max(1, descriptor.size)) * 2.5));
-    const d: BrushDescriptor = {
-      ...descriptor,
-      size: previewSize,
-      tip: { ...descriptor.tip },
-      ink: { ...descriptor.ink },
-    };
+    const d: BrushDescriptor = { ...copyDescriptor(descriptor), size: previewSize };
 
     // Generate S-curve points — keep amplitude small enough that
     // the largest stamp (previewSize) stays fully within the canvas
@@ -1900,6 +1895,17 @@ export class ToolSettings extends LitElement {
         @click=${() => { this._advancedOpen = !this._advancedOpen; }}
       >Advanced ${this._advancedOpen ? html`&#9650;` : html`&#9660;`}</button>
     `;
+    const speedControl = (label: string, key: keyof BrushDynamics, hint: string) => {
+      const value = Math.round(brush.dynamics[key] * 100);
+      return html`
+        <div class="section">
+          <label title=${hint}>${label}</label>
+          <input type="range" min="-100" max="100" aria-label=${label} .value=${String(value)}
+            @input=${(e: Event) => this.ctx.setBrushDynamics({ [key]: Number((e.target as HTMLInputElement).value) / 100 })} />
+          <span class="size-value">${value > 0 ? '+' : ''}${value}%</span>
+        </div>
+      `;
+    };
     return html`
         ${heading('Stroke')}
         <div class="section">
@@ -1952,6 +1958,9 @@ export class ToolSettings extends LitElement {
           </select>
         </div>
         ` : nothing}
+        ${heading('Dynamics')}
+        ${speedControl('Size by speed', 'sizeVelocity', 'Positive: dabs grow the faster you draw. Negative: they shrink.')}
+        ${speedControl('Flow by speed', 'flowVelocity', 'Positive: ink flows more the faster you draw. Negative: less.')}
         <div class="section">${advancedToggle}</div>
         ${this._advancedOpen ? html`
           <div class="section advanced-group">
@@ -2027,7 +2036,7 @@ export class ToolSettings extends LitElement {
                 <span class="size-value">${brush.ink.depletionLength}px</span>
               </div>
             ` : nothing}
-            ${(brush.flow < 1 || brush.pressureOpacity) ? html`
+            ${(brush.flow < 1 || brush.pressureOpacity || brush.dynamics.flowVelocity !== 0) ? html`
             <div class="section">
               <label>Buildup</label>
               <input type="range" min="0" max="100" .value=${String(Math.round(brush.ink.buildup * 100))}

@@ -5,9 +5,26 @@ import { Stabilizer } from './stabilizer.js';
 import { get2dContext, drawImageSafe, tintAlphaMask, createOffscreenCanvas, type AnyCanvas } from './canvas-pool.js';
 import { PRESSURE_CURVES, quantizeDiameter, type BrushDescriptor, type TipDescriptor, type StampPoint, type InkState } from './types.js';
 import { TIP_VARIANT_COUNTS, tipFootprint } from './tip-generators.js';
+import { copyDescriptor } from './brush-presets.js';
 import { initInkState, applyDepletion, applyBuildup, applyPickup } from './ink-model.js';
 
 const MIN_DIRECTION_DIST_SQ = 0.25;
+/** How quickly the speed that drives dynamics follows the pointer's, in ms. */
+const VELOCITY_SMOOTHING_MS = 40;
+/** Screen speed (CSS px per ms) at which speed dynamics reach their full effect. */
+const FULL_VELOCITY_PX_PER_MS = 2;
+
+export interface StrokeOptions {
+  /** How far, in time, the stroke trails the pointer (0 = off); needs increasing stroke() timestamps. */
+  stabilizerMs?: number;
+  /** Screen pixels per document pixel, so speed dynamics feel the same at any zoom. */
+  viewScale?: number;
+}
+
+/** A dynamics factor: `control` (-1..1) applied at a speed `v` (0..1). */
+function speedFactor(control: number, v: number): number {
+  return control >= 0 ? 1 - control + control * v : 1 + control * v;
+}
 
 function computeStampRotation(
   stamp: StampPoint,
@@ -33,6 +50,13 @@ export class StampStrokeEngine {
   private _bufferPool = new StrokeBufferPool();
   private _smoother = new PathSmoother();
   private _stabilizer = new Stabilizer();
+  private _viewScale = 1;
+  /** Smoothed pointer speed, in screen px per ms. */
+  private _velocity = 0;
+  /** The last sample's position and the time of the last that moved time on. */
+  private _velocityLast: { x: number; y: number; t: number } | null = null;
+  /** The way gone since time last moved on. */
+  private _velocityDist = 0;
   private _descriptor: BrushDescriptor | null = null;
   private _color = '';
   private _eraser = false;
@@ -59,12 +83,10 @@ export class StampStrokeEngine {
   private _dirtyMaxX = -Infinity;
   private _dirtyMaxY = -Infinity;
 
-  /**
-   * `stabilizerMs` is how far, in time, the stroke trails the pointer (0 =
-   * off); it needs stroke() given increasing timestamps.
-   */
-  begin(descriptor: BrushDescriptor, color: string, eraser: boolean, docWidth: number, docHeight: number, stabilizerMs = 0) {
-    this._descriptor = { ...descriptor, tip: { ...descriptor.tip }, ink: { ...descriptor.ink } };
+  begin(descriptor: BrushDescriptor, color: string, eraser: boolean, docWidth: number, docHeight: number, options: StrokeOptions = {}) {
+    this._descriptor = copyDescriptor(descriptor);
+    this._viewScale = options.viewScale && options.viewScale > 0 ? options.viewScale : 1;
+    this._resetVelocity();
     this._color = eraser ? '' : (color.length === 9 ? color.slice(0, 7) : color);
     this._eraser = eraser;
     this._colorMode = !eraser && descriptor.ink.wetness > 0;
@@ -72,7 +94,7 @@ export class StampStrokeEngine {
     this._docHeight = docHeight;
     this._bufferPool.acquire(docWidth, docHeight, this._rawDirtyRect());
     this._smoother.reset();
-    this._stabilizer.reset(stabilizerMs);
+    this._stabilizer.reset(options.stabilizerMs ?? 0);
     this._prevStamp = null;
     this._variantCounter = 0;
     this._snapshotCaptured = false;
@@ -94,6 +116,7 @@ export class StampStrokeEngine {
         this._finishSegment();
         this._smoother.reset();
         this._stabilizer.reset();
+        this._resetVelocity();
         this._prevStamp = null;
         return;
       }
@@ -108,8 +131,10 @@ export class StampStrokeEngine {
     const curveFn = PRESSURE_CURVES[d.pressureCurve];
     const at = this._stabilizer.add(x, y, curveFn(inputPressure), timestamp);
     this._lastMappedPressure = at.pressure;
+    // Speed is measured along the stabilized path, the one the dabs follow.
+    const v = this._trackVelocity(at.x, at.y, timestamp);
 
-    const stamps = this._smoother.addPoint(at.x, at.y, at.pressure, this._spacingAt(at.pressure), timestamp);
+    const stamps = this._smoother.addPoint(at.x, at.y, at.pressure, this._spacingAt(at.pressure, v), timestamp, v);
 
     this._stampPoints(stamps);
   }
@@ -142,10 +167,11 @@ export class StampStrokeEngine {
         continue;
       }
 
-      const baseFlow = d.pressureOpacity ? d.flow * stamp.pressure : d.flow;
+      const baseFlow = (d.pressureOpacity ? d.flow * stamp.pressure : d.flow) *
+        speedFactor(d.dynamics.flowVelocity, stamp.velocity);
       const effectiveFlow = applyBuildup(ink, baseFlow, stamp.speedPxPerMs);
 
-      const stampSize = d.pressureSize ? Math.max(1, d.size * stamp.pressure) : d.size;
+      const stampSize = this._sizeAt(stamp.pressure, stamp.velocity);
       applyPickup(ink, state, stamp.x, stamp.y, stampSize / 2);
       const diam = quantizeDiameter(stampSize);
 
@@ -266,19 +292,54 @@ export class StampStrokeEngine {
     if (!this._descriptor) return;
     for (const p of this._stabilizer.catchUp()) {
       this._lastMappedPressure = p.pressure;
-      this._stampPoints(this._smoother.addPoint(p.x, p.y, p.pressure, this._spacingAt(p.pressure), p.timestamp));
+      const v = this._trackVelocity(p.x, p.y, p.timestamp);
+      this._stampPoints(this._smoother.addPoint(p.x, p.y, p.pressure, this._spacingAt(p.pressure, v), p.timestamp, v));
     }
-    const remaining = this._smoother.flush(this._spacingAt(this._lastMappedPressure));
+    const remaining = this._smoother.flush(this._spacingAt(this._lastMappedPressure, this._normalizedVelocity()));
     if (remaining.length > 0) {
       this._stampPoints(remaining);
     }
   }
 
-  /** Distance between dabs at a (curve-mapped) pressure. */
-  private _spacingAt(mappedPressure: number): number {
+  /** A dab's diameter at a (curve-mapped) pressure and a normalized speed. */
+  private _sizeAt(mappedPressure: number, velocity: number): number {
     const d = this._descriptor!;
-    const size = d.pressureSize ? Math.max(1, d.size * mappedPressure) : d.size;
-    return Math.max(1, d.spacing * size);
+    const size = d.pressureSize ? d.size * mappedPressure : d.size;
+    return Math.max(1, size * speedFactor(d.dynamics.sizeVelocity, velocity));
+  }
+
+  /** Distance between dabs at a (curve-mapped) pressure and a normalized speed. */
+  private _spacingAt(mappedPressure: number, velocity: number): number {
+    return Math.max(1, this._descriptor!.spacing * this._sizeAt(mappedPressure, velocity));
+  }
+
+  private _resetVelocity() {
+    this._velocity = 0;
+    this._velocityLast = null;
+    this._velocityDist = 0;
+  }
+
+  /**
+   * Follow the pointer's speed over time, in screen pixels, and return it
+   * normalized. Samples at the same time add the way they went to the next
+   * one that moves time on.
+   */
+  private _trackVelocity(x: number, y: number, t: number): number {
+    const last = this._velocityLast;
+    this._velocityLast = { x, y, t: last && !(t > last.t) ? last.t : t };
+    if (!last) return this._normalizedVelocity();
+    this._velocityDist += Math.hypot(x - last.x, y - last.y);
+    const dt = t - last.t;
+    if (!(dt > 0)) return this._normalizedVelocity();
+    const speed = this._velocityDist * this._viewScale / dt;
+    this._velocity += (speed - this._velocity) * (1 - Math.exp(-dt / VELOCITY_SMOOTHING_MS));
+    this._velocityDist = 0;
+    return this._normalizedVelocity();
+  }
+
+  /** The smoothed speed as a share (0..1) of the speed dynamics take full effect at. */
+  private _normalizedVelocity(): number {
+    return Math.min(1, this._velocity / FULL_VELOCITY_PX_PER_MS);
   }
 
   /**

@@ -19,6 +19,16 @@ export interface InkDescriptor {
   wetness: number;
 }
 
+/**
+ * How the stroke's speed shapes each dab, as -1..1: positive grows it with
+ * speed (from 1 - c of its value at rest), negative shrinks it (to 1 + c
+ * at full speed), 0 leaves it alone.
+ */
+export interface BrushDynamics {
+  sizeVelocity: number;
+  flowVelocity: number;
+}
+
 export interface BrushDescriptor {
   size: number;
   opacity: number;
@@ -30,6 +40,7 @@ export interface BrushDescriptor {
   pressureCurve: PressureCurveName;
   tip: TipDescriptor;
   ink: InkDescriptor;
+  dynamics: BrushDynamics;
 }
 
 export interface BrushPreset {
@@ -54,6 +65,8 @@ export interface StampPoint {
   y: number;
   pressure: number;
   speedPxPerMs: number;
+  /** Smoothed screen speed as a share (0..1) of the speed dynamics take full effect at. */
+  velocity: number;
 }
 
 export type BlendMode =
