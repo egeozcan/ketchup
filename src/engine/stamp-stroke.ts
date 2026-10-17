@@ -136,8 +136,6 @@ export class StampStrokeEngine {
   private _colorMode = false;
   private _docWidth = 0;
   private _docHeight = 0;
-  private _lastMappedPressure = 0.5;
-  private _lastTilt: PenTilt = UPRIGHT;
   /** The way the stroke last headed, in radians, and the point it was measured from. */
   private _heading = 0;
   private _headingFrom: { x: number; y: number } | null = null;
@@ -164,7 +162,6 @@ export class StampStrokeEngine {
     this._descriptor = copyDescriptor(descriptor);
     this._viewScale = options.viewScale && options.viewScale > 0 ? options.viewScale : 1;
     this._resetMotion();
-    this._lastTilt = UPRIGHT;
     this._color = eraser ? '' : (color.length === 9 ? color.slice(0, 7) : color);
     this._eraser = eraser;
     this._colorMode = !eraser && descriptor.ink.wetness > 0;
@@ -213,12 +210,10 @@ export class StampStrokeEngine {
 
   /** Feed a (stabilized) sample to the spline, returning the dabs it lays. */
   private _feed(p: StabilizedPoint): StampPoint[] {
-    this._lastMappedPressure = p.pressure;
-    this._lastTilt = { tiltX: p.tiltX, tiltY: p.tiltY };
     // Speed and heading are measured along the stabilized path, the one the dabs follow.
     const v = this._trackVelocity(p.x, p.y, p.timestamp);
     this._trackHeading(p.x, p.y);
-    return this._smoother.addPoint(p.x, p.y, p.pressure, this._spacingAt(p.pressure, v, this._lastTilt), p.timestamp,
+    return this._smoother.addPoint(p.x, p.y, p.pressure, this._dabSpacing, p.timestamp,
       { velocity: v, tiltX: p.tiltX, tiltY: p.tiltY });
   }
 
@@ -371,7 +366,7 @@ export class StampStrokeEngine {
     for (const p of this._stabilizer.catchUp()) {
       this._stampPoints(this._feed(p));
     }
-    const remaining = this._smoother.flush(this._spacingAt(this._lastMappedPressure, this._normalizedVelocity(), this._lastTilt));
+    const remaining = this._smoother.flush(this._dabSpacing);
     if (remaining.length > 0) {
       this._stampPoints(remaining);
     }
@@ -385,11 +380,15 @@ export class StampStrokeEngine {
     return Math.max(1, size * speedFactor(d.dynamics.sizeVelocity, velocity));
   }
 
-  /** Distance between dabs at a (curve-mapped) pressure, a normalized speed and a tilt. */
-  private _spacingAt(mappedPressure: number, velocity: number, tilt: PenTilt): number {
+  /**
+   * Distance from a dab to the next, from the dab's own size and lean: the
+   * spline lays a segment a sample late, so the newest sample's would be
+   * another dab's (a pause after a thin, fast run would gap it).
+   */
+  private _dabSpacing = (stamp: StampPoint): number => {
     const d = this._descriptor!;
-    return Math.max(1, d.spacing * this._sizeAt(mappedPressure, velocity) * this._leanSpacing(tilt));
-  }
+    return Math.max(1, d.spacing * this._sizeAt(stamp.pressure, stamp.velocity) * this._leanSpacing(stamp));
+  };
 
   /**
    * Stretching a bar along a lean across it shears it, which can pull

@@ -17,6 +17,13 @@ function lerpChannels(a: PathChannels, b: PathChannels, t: number): PathChannels
 
 const DEFAULT_SPEED_PX_PER_MS = 1;
 
+/** Distance from a stamp to the next: fixed, or worked out from the stamp itself. */
+export type Spacing = number | ((stamp: StampPoint) => number);
+
+function spacingAfter(spacing: Spacing, stamp: StampPoint): number {
+  return typeof spacing === 'number' ? spacing : spacing(stamp);
+}
+
 /**
  * Catmull-Rom spline interpolator for pointer events.
  * Subdivides curves by arc-length spacing, never by timestamp.
@@ -39,11 +46,12 @@ export class PathSmoother {
 
   /**
    * Feed a new raw pointer sample. Returns stamp positions along the
-   * smoothed path spaced at `spacing` pixel intervals. `channels` are carried
+   * smoothed path spaced at `spacing` pixel intervals (or, given a function,
+   * at the spacing each stamp asks for after it). `channels` are carried
    * to the stamps like pressure, so a segment drawn a sample late still gets
    * the speed and tilt it was drawn with.
    */
-  addPoint(x: number, y: number, pressure: number, spacing: number, timestamp = 0, channels: Partial<PathChannels> = {}): StampPoint[] {
+  addPoint(x: number, y: number, pressure: number, spacing: Spacing, timestamp = 0, channels: Partial<PathChannels> = {}): StampPoint[] {
     const pt: RawPoint = {
       x, y, pressure, timestamp,
       velocity: channels.velocity ?? 0,
@@ -62,8 +70,9 @@ export class PathSmoother {
 
     // Single point (stroke start dot)
     if (n === 1) {
-      this._remainder = spacing;
-      return [{ x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, velocity: pt.velocity, tiltX: pt.tiltX, tiltY: pt.tiltY }];
+      const stamp: StampPoint = { x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, velocity: pt.velocity, tiltX: pt.tiltX, tiltY: pt.tiltY };
+      this._remainder = spacingAfter(spacing, stamp);
+      return [stamp];
     }
 
     // Second point: linear interpolation (only linear segment we emit)
@@ -86,7 +95,7 @@ export class PathSmoother {
   }
 
   /** Flush: emit stamps for any remaining un-emitted segment at stroke end. */
-  flush(spacing: number): StampPoint[] {
+  flush(spacing: Spacing): StampPoint[] {
     const n = this._count;
     const w = this._window;
     if (n < 2) return [];
@@ -120,7 +129,7 @@ export class PathSmoother {
     return this._walkCatmullRom(p0, p1, p2, p3, spacing);
   }
 
-  private _walkLinear(from: RawPoint, to: RawPoint, spacing: number): StampPoint[] {
+  private _walkLinear(from: RawPoint, to: RawPoint, spacing: Spacing): StampPoint[] {
     const dx = to.x - from.x;
     const dy = to.y - from.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
@@ -133,21 +142,22 @@ export class PathSmoother {
 
     while (d <= dist) {
       const t = d / dist;
-      stamps.push({
+      const stamp: StampPoint = {
         x: from.x + dx * t,
         y: from.y + dy * t,
         pressure: from.pressure + (to.pressure - from.pressure) * t,
         speedPxPerMs,
         ...lerpChannels(from, to, t),
-      });
-      d += spacing;
+      };
+      stamps.push(stamp);
+      d += spacingAfter(spacing, stamp);
     }
 
     this._remainder = d - dist;
     return stamps;
   }
 
-  private _walkCatmullRom(p0: RawPoint, p1: RawPoint, p2: RawPoint, p3: RawPoint, spacing: number): StampPoint[] {
+  private _walkCatmullRom(p0: RawPoint, p1: RawPoint, p2: RawPoint, p3: RawPoint, spacing: Spacing): StampPoint[] {
     // Estimate total arc length with 20 subdivisions
     const SUBDIV = 20;
     let totalLen = 0;
@@ -186,14 +196,15 @@ export class PathSmoother {
       const segFrac = segEnd > segStart ? (d - segStart) / (segEnd - segStart) : 0;
       const t = (segIdx + segFrac) / SUBDIV;
 
-      stamps.push({
+      const stamp: StampPoint = {
         x: catmullRom(p0.x, p1.x, p2.x, p3.x, t),
         y: catmullRom(p0.y, p1.y, p2.y, p3.y, t),
         pressure: p1.pressure + (p2.pressure - p1.pressure) * t,
         speedPxPerMs,
         ...lerpChannels(p1, p2, t),
-      });
-      d += spacing;
+      };
+      stamps.push(stamp);
+      d += spacingAfter(spacing, stamp);
     }
 
     this._remainder = d - totalLen;

@@ -109,10 +109,13 @@ export function generateChiselTip(diameter: number, hardness: number, tip: TipDe
 }
 
 export function generateCalligraphyTip(diameter: number, hardness: number, tip: TipDescriptor): AnyCanvas {
-  const rx = Math.max(1, diameter / 2);
-  const ry = Math.max(1, (diameter / Math.max(1, tip.aspect)) / 2);
   const w = Math.max(1, diameter);
-  const h = Math.max(1, Math.ceil(ry * 2));
+  const h = Math.max(2, Math.ceil(diameter / Math.max(1, tip.aspect)));
+  // The ellipse fills its canvas, which is drawn stretched to the dab's exact
+  // footprint: one left short of a rounded-up height would draw thinner than
+  // the size asks, and jump thinner as the size grows past a cached one.
+  const rx = w / 2;
+  const ry = h / 2;
   const canvas = createOffscreenCanvas(w, h);
   const ctx = get2dContext(canvas);
   const cx = w / 2, cy = h / 2;

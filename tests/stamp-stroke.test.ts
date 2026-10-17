@@ -107,3 +107,19 @@ describe('StampStrokeEngine pressure and buildup', () => {
   });
 });
 
+describe('calligraphy tips', () => {
+  it('fill their canvas, so a dab is as thick as its footprint at any size', async () => {
+    const { generateCalligraphyTip } = await import('../src/engine/tip-generators.ts');
+    const ellipse = vi.spyOn(CanvasRenderingContext2D.prototype, 'ellipse');
+    const tip = { shape: 'calligraphy' as const, aspect: 4, angle: 0, orientation: 'fixed' as const };
+    for (const diameter of [8, 10, 22]) {
+      ellipse.mockClear();
+      const canvas = generateCalligraphyTip(diameter, 1, tip) as HTMLCanvasElement;
+      const [, , rx, ry] = ellipse.mock.calls[0] as number[];
+      expect(rx * 2).toBe(canvas.width);
+      expect(ry * 2).toBe(canvas.height);
+    }
+    ellipse.mockRestore();
+  });
+});
+

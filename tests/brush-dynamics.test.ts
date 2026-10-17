@@ -80,7 +80,7 @@ describe('speed dynamics', () => {
 });
 
 describe('speed dynamics along the spline', () => {
-  function widths(feed: (engine: StampStrokeEngine) => void): Dab[] {
+  function widths(feed: (engine: StampStrokeEngine) => void, spacing = 0.1): Dab[] {
     const out: Dab[] = [];
     const spy = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage').mockImplementation((...args: unknown[]) => {
       if (args.length === 5 && (args[0] as HTMLCanvasElement).width < 100) {
@@ -88,7 +88,7 @@ describe('speed dynamics along the spline', () => {
       }
     });
     const engine = new StampStrokeEngine();
-    engine.begin(makeBrush({ size: 20, spacing: 0.1, pressureSize: false, dynamics: { sizeVelocity: -1 } }), '#000000', false, 1000, 100);
+    engine.begin(makeBrush({ size: 20, spacing, pressureSize: false, dynamics: { sizeVelocity: -1 } }), '#000000', false, 1000, 100);
     feed(engine);
     engine.commit(document.createElement('canvas').getContext('2d')!);
     spy.mockRestore();
@@ -106,6 +106,18 @@ describe('speed dynamics along the spline', () => {
     const fastEnd = all.filter(d => d.x > 300.5 && d.x < 309);
     expect(fastEnd.length).toBeGreaterThan(0);
     expect(Math.max(...fastEnd.map(d => d.w))).toBeLessThan(8);
+  });
+
+  it('keeps the dabs of a thin, fast run touching when a pause comes before it is laid', () => {
+    const all = widths(engine => {
+      for (let i = 0, t = 0; i <= 30; i++, t += 4) engine.stroke(10 + i * 10, 50, 1, undefined, t);
+      engine.stroke(311, 50, 1, undefined, 1120);
+    }, 0.25);
+    const run = all.filter(d => d.x > 250);
+    for (let i = 1; i < run.length; i++) {
+      // Within the spline's arc-length estimate; before, the gap was the full 5px spacing.
+      expect(run[i].x - run[i - 1].x).toBeLessThanOrEqual((run[i].w + run[i - 1].w) / 2 + 0.01);
+    }
   });
 
   it('counts a back-and-forth within one timestamp as speed', () => {
