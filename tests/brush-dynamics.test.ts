@@ -120,10 +120,55 @@ describe('speed dynamics along the spline', () => {
   });
 });
 
+describe('minimum size', () => {
+  function sizesAt(pressures: number[], minSize: number, pressureSize = true): number[] {
+    const out: number[] = [];
+    const spy = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage').mockImplementation((...args: unknown[]) => {
+      if (args.length === 5 && (args[0] as HTMLCanvasElement).width < 100) out.push(args[3] as number);
+    });
+    const engine = new StampStrokeEngine();
+    engine.begin(makeBrush({ size: 20, spacing: 0.1, pressureSize, pressureCurve: 'linear', dynamics: { minSize } }), '#000000', false, 1000, 100);
+    pressures.forEach((p, i) => engine.stroke(10 + i * 20, 50, p, undefined, i * 4));
+    engine.commit(document.createElement('canvas').getContext('2d')!);
+    spy.mockRestore();
+    return out;
+  }
+
+  it('keeps the lightest touch at a share of the size, and full pressure at full size', () => {
+    const light = sizesAt([0.01, 0.01, 0.01], 0.3);
+    expect(Math.min(...light)).toBeGreaterThan(6);
+    expect(Math.max(...light)).toBeLessThan(6.5);
+    expect(Math.max(...sizesAt([1, 1, 1], 0.3))).toBeCloseTo(20);
+    // Half pressure lands halfway between.
+    expect(sizesAt([0.5, 0.5, 0.5], 0.3)[0]).toBeCloseTo(13);
+  });
+
+  it('holds through a stabilized taper to the lift, catch-up included', () => {
+    const out: number[] = [];
+    const spy = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage').mockImplementation((...args: unknown[]) => {
+      if (args.length === 5 && (args[0] as HTMLCanvasElement).width < 100) out.push(args[3] as number);
+    });
+    const engine = new StampStrokeEngine();
+    engine.begin(makeBrush({ size: 20, spacing: 0.1, pressureSize: true, pressureCurve: 'heavy', dynamics: { minSize: 0.3 } }), '#000000', false, 1000, 100, { stabilizerMs: 100 });
+    for (let i = 0; i <= 30; i++) engine.stroke(10 + i * 4, 50, Math.max(0.001, 1 - i / 30), undefined, i * 4);
+    engine.stroke(130, 50, 0, undefined, 124);
+    spy.mockRestore();
+    expect(Math.min(...out)).toBeGreaterThanOrEqual(6 - 1e-9);
+    expect(out[out.length - 1]).toBeLessThan(6.5);
+  });
+
+  it('changes nothing without stylus size', () => {
+    expect(sizesAt([0.2, 0.2], 0.5, false).every(w => Math.abs(w - 20) < 1e-9)).toBe(true);
+  });
+});
+
 describe('normalizeDynamics', () => {
   it('clamps stored values and keeps defaults for missing or non-numbers', () => {
     expect(normalizeDynamics(undefined)).toEqual(NO_DYNAMICS);
     expect(normalizeDynamics({ sizeVelocity: -3, flowVelocity: NaN })).toEqual({ ...NO_DYNAMICS, sizeVelocity: -1 });
     expect(normalizeDynamics({ flowVelocity: 0.4, sizeVelocity: 'x' as unknown as number })).toEqual({ ...NO_DYNAMICS, flowVelocity: 0.4 });
+    expect(normalizeDynamics({ minSize: -0.5 }).minSize).toBe(0);
+    expect(normalizeDynamics({ minSize: 2 }).minSize).toBe(1);
+    expect(normalizeDynamics({ minSize: 0.25 }).minSize).toBe(0.25);
   });
 });

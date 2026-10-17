@@ -1940,6 +1940,14 @@ export class ToolSettings extends LitElement {
             Stylus Size
           </label>
         </div>
+        ${brush.pressureSize ? html`
+        <div class="section">
+          <label title="How thick the lightest touch draws, as a share of the size.">Minimum Size</label>
+          <input type="range" min="0" max="100" aria-label="Minimum size" .value=${String(Math.round(brush.dynamics.minSize * 100))}
+            @input=${(e: Event) => this.ctx.setBrushDynamics({ minSize: Number((e.target as HTMLInputElement).value) / 100 })} />
+          <span class="size-value">${Math.round(brush.dynamics.minSize * 100)}%</span>
+        </div>
+        ` : nothing}
         <div class="section">
           <label class="checkbox-label" title="Affects pressure-sensitive pen or stylus input; mouse input uses full pressure.">
             <input type="checkbox" .checked=${brush.pressureOpacity}

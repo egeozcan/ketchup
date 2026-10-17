@@ -7,7 +7,7 @@ import { makeState } from './helpers.ts';
 function renderBrushSettings(
   shape: TipShape,
   activeTool: 'pencil' | 'eraser' = 'pencil',
-  brushOverrides: { flow?: number; pressureOpacity?: boolean; dynamics?: { flowVelocity?: number } } = {},
+  brushOverrides: { flow?: number; pressureOpacity?: boolean; pressureSize?: boolean; dynamics?: { flowVelocity?: number; minSize?: number } } = {},
   setBrushTip = vi.fn(),
   setBrushDynamics = vi.fn(),
 ): HTMLElement {
@@ -137,6 +137,18 @@ describe('ToolSettings brush controls', () => {
     size.dispatchEvent(new Event('input'));
 
     expect(setBrushDynamics).toHaveBeenCalledWith({ sizeVelocity: 0.3 });
+  });
+
+  it('offers a minimum size only with stylus size, and sets it as a share', () => {
+    expect(renderBrushSettings('round', 'pencil', { pressureSize: false }).querySelector('input[aria-label="Minimum size"]')).toBeNull();
+
+    const setBrushDynamics = vi.fn();
+    const controls = renderBrushSettings('round', 'pencil', { pressureSize: true, dynamics: { minSize: 0.25 } }, vi.fn(), setBrushDynamics);
+    const min = controls.querySelector<HTMLInputElement>('input[aria-label="Minimum size"]')!;
+    expect(min.value).toBe('25');
+    min.value = '40';
+    min.dispatchEvent(new Event('input'));
+    expect(setBrushDynamics).toHaveBeenCalledWith({ minSize: 0.4 });
   });
 
   it('does not reset custom tip values when the active shape is clicked again', () => {

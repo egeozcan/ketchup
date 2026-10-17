@@ -19,14 +19,17 @@ export interface InkDescriptor {
   wetness: number;
 }
 
-/**
- * How the stroke's speed shapes each dab, as -1..1: positive grows it with
- * speed (from 1 - c of its value at rest), negative shrinks it (to 1 + c
- * at full speed), 0 leaves it alone.
- */
+/** How pen pressure and the stroke's speed shape each dab. */
 export interface BrushDynamics {
+  /**
+   * How speed scales dab size and flow, as -1..1: positive grows it with
+   * speed (from 1 - c of its value at rest), negative shrinks it (to 1 + c
+   * at full speed), 0 leaves it alone.
+   */
   sizeVelocity: number;
   flowVelocity: number;
+  /** With stylus size, the share (0..1) of the size the lightest touch draws at. */
+  minSize: number;
 }
 
 export interface BrushDescriptor {

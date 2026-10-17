@@ -304,7 +304,8 @@ export class StampStrokeEngine {
   /** A dab's diameter at a (curve-mapped) pressure and a normalized speed. */
   private _sizeAt(mappedPressure: number, velocity: number): number {
     const d = this._descriptor!;
-    const size = d.pressureSize ? d.size * mappedPressure : d.size;
+    const min = d.dynamics.minSize;
+    const size = d.pressureSize ? d.size * (min + (1 - min) * mappedPressure) : d.size;
     return Math.max(1, size * speedFactor(d.dynamics.sizeVelocity, velocity));
   }
 

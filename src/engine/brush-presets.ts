@@ -2,7 +2,7 @@ import type { BrushDescriptor, BrushDynamics, BrushPreset } from './types.js';
 import { getDefaultTipDescriptor } from './brush-capabilities.js';
 
 const NO_INK = { depletion: 0, depletionLength: 500, buildup: 0, wetness: 0 };
-export const NO_DYNAMICS: BrushDynamics = { sizeVelocity: 0, flowVelocity: 0 };
+export const NO_DYNAMICS: BrushDynamics = { sizeVelocity: 0, flowVelocity: 0, minSize: 0 };
 
 export const BRUSH_PRESETS: BrushPreset[] = [
   {
@@ -129,11 +129,18 @@ export function copyDescriptor(d: BrushDescriptor): BrushDescriptor {
 }
 
 /** Stored dynamics over the defaults, each clamped to -1..1; a value that isn't a number keeps its default. */
+const DYNAMICS_RANGES: Record<keyof BrushDynamics, [number, number]> = {
+  sizeVelocity: [-1, 1],
+  flowVelocity: [-1, 1],
+  minSize: [0, 1],
+};
+
 export function normalizeDynamics(stored: Partial<BrushDynamics> | undefined): BrushDynamics {
   const out = { ...NO_DYNAMICS };
   for (const key of Object.keys(out) as (keyof BrushDynamics)[]) {
     const v = stored?.[key];
-    if (typeof v === 'number' && Number.isFinite(v)) out[key] = Math.max(-1, Math.min(1, v));
+    const [min, max] = DYNAMICS_RANGES[key];
+    if (typeof v === 'number' && Number.isFinite(v)) out[key] = Math.max(min, Math.min(max, v));
   }
   return out;
 }
