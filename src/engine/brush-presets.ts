@@ -11,6 +11,16 @@ export const MAX_SCATTER = 5;
 export const MAX_SCATTER_COUNT = 16;
 export const NO_SCATTER: BrushScatter = { amount: 0, bothAxes: false, count: 1, countJitter: 0 };
 
+/** The ranges the airbrush rate (dabs per second) and its stored values stay within. */
+export const MIN_AIRBRUSH_RATE = 5;
+export const MAX_AIRBRUSH_RATE = 60;
+export const DEFAULT_AIRBRUSH_RATE = 20;
+
+/** A stored airbrush rate clamped to its range; the default when it isn't a number (older stored brushes have none). */
+export function normalizeAirbrushRate(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? Math.max(MIN_AIRBRUSH_RATE, Math.min(MAX_AIRBRUSH_RATE, v)) : DEFAULT_AIRBRUSH_RATE;
+}
+
 export const NO_COLOR: BrushColorDynamics = { hue: 0, saturation: 0, brightness: 0, purity: 0, fgBg: 0, fgBgPressure: false, perTip: true };
 
 /**
@@ -36,6 +46,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       blendMode: 'normal',
+      airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
   },
   {
@@ -52,6 +63,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       blendMode: 'normal',
+      airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
   },
   {
@@ -68,6 +80,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       blendMode: 'normal',
+      airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
   },
   {
@@ -84,6 +97,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       blendMode: 'normal',
+      airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
   },
   {
@@ -100,6 +114,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       blendMode: 'normal',
+      airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
   },
   {
@@ -116,6 +131,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       blendMode: 'normal',
+      airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
   },
   {
@@ -132,6 +148,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       blendMode: 'normal',
+      airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
   },
   {
@@ -148,6 +165,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { amount: 2, bothAxes: true, count: 8, countJitter: 0.5 },
       color: { ...NO_COLOR },
       blendMode: 'normal',
+      airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
   },
   {
@@ -164,6 +182,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       blendMode: 'normal',
+      airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
   },
   {
@@ -180,6 +199,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       blendMode: 'normal',
+      airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
   },
   {
@@ -197,6 +217,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       // Toward the fill colour as well as around the stroke's own hue, so it also shows on black.
       color: { hue: 1, saturation: 0.3, brightness: 0.2, purity: 0, fgBg: 1, fgBgPressure: false, perTip: true },
       blendMode: 'normal',
+      airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
   },
 ];
@@ -211,7 +232,7 @@ export function getDefaultDescriptor(): BrushDescriptor {
 
 /** A descriptor that shares no nested object with `d`. */
 export function copyDescriptor(d: BrushDescriptor): BrushDescriptor {
-  return { ...d, tip: { ...d.tip }, ink: { ...d.ink }, dynamics: { ...d.dynamics }, jitter: { ...NO_JITTER, ...d.jitter }, scatter: { ...NO_SCATTER, ...d.scatter }, color: { ...NO_COLOR, ...d.color }, blendMode: isBrushBlendMode(d.blendMode) ? d.blendMode : 'normal' };
+  return { ...d, tip: { ...d.tip }, ink: { ...d.ink }, dynamics: { ...d.dynamics }, jitter: { ...NO_JITTER, ...d.jitter }, scatter: { ...NO_SCATTER, ...d.scatter }, color: { ...NO_COLOR, ...d.color }, blendMode: isBrushBlendMode(d.blendMode) ? d.blendMode : 'normal', airbrush: d.airbrush === true, airbrushRate: normalizeAirbrushRate(d.airbrushRate) };
 }
 
 /** Stored dynamics over the defaults, each clamped to -1..1; a value that isn't a number keeps its default. */

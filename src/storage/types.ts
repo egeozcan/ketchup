@@ -38,6 +38,9 @@ export interface ToolSettings {
   color?: Partial<BrushColorDynamics>;
   /** The brush's blend mode; absent in settings stored before it existed: 'normal'. */
   blendMode?: string;
+  /** Absent in settings stored before the airbrush existed: off. */
+  airbrush?: boolean;
+  airbrushRate?: number;
   activePreset?: string;
   isPresetModified?: boolean;
   cropAspectRatio?: string;

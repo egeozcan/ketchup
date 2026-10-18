@@ -155,6 +155,15 @@ export interface BrushDescriptor {
    * eraser tool ignores it: it always erases.
    */
   blendMode: BrushBlendMode;
+  /**
+   * Build-up: while the pen is down and still (or moving slower than the
+   * spacing lays dabs), dabs keep landing at the stroke's position at
+   * `airbrushRate`. Paint then accumulates in the stroke buffer, up to the
+   * stroke opacity, as fast as flow allows (flow under 100% is what builds).
+   */
+  airbrush: boolean;
+  /** Dabs per second a held airbrush lays (5..60). */
+  airbrushRate: number;
 }
 
 export interface BrushPreset {

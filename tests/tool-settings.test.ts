@@ -363,3 +363,41 @@ describe('ToolSettings stamp controls', () => {
     expect(setStampImage).not.toHaveBeenCalled();
   });
 });
+
+describe('ToolSettings airbrush', () => {
+  function render_(airbrush: boolean, airbrushRate = 20, activeTool: 'pencil' | 'eraser' = 'pencil') {
+    const setBrush = vi.fn();
+    const settings = new ToolSettings();
+    (settings as any)._ctx = {
+      value: {
+        state: makeState({ activeTool, brush: { airbrush, airbrushRate } }),
+        isMobile: true,
+        setBrush, setBrushTip: vi.fn(), setBrushInk: vi.fn(), setBrushDynamics: vi.fn(), setBrushJitter: vi.fn(), selectPreset: vi.fn(),
+      },
+    };
+    const container = document.createElement('div');
+    render(settings.render(), container);
+    return { container, setBrush };
+  }
+
+  it('toggles the airbrush and shows its rate only while on', () => {
+    const off = render_(false);
+    const toggle = off.container.querySelector<HTMLInputElement>('input[aria-label="Airbrush"]')!;
+    expect(toggle.checked).toBe(false);
+    expect(off.container.querySelector('input[aria-label="Airbrush rate"]')).toBeNull();
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change'));
+    expect(off.setBrush).toHaveBeenCalledWith({ airbrush: true });
+
+    const on = render_(true, 35);
+    const rate = on.container.querySelector<HTMLInputElement>('input[aria-label="Airbrush rate"]')!;
+    expect(rate.value).toBe('35');
+    rate.value = '50';
+    rate.dispatchEvent(new Event('input'));
+    expect(on.setBrush).toHaveBeenCalledWith({ airbrushRate: 50 });
+  });
+
+  it('is offered to the eraser too', () => {
+    expect(render_(false, 20, 'eraser').container.querySelector('input[aria-label="Airbrush"]')).not.toBeNull();
+  });
+});

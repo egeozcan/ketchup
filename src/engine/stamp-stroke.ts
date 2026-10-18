@@ -37,6 +37,17 @@ const MAX_TILT_STRETCH = 2;
 const MAX_TILT_DEG = 89.9;
 /** Screen (CSS) pixels a hand may tremble without the stabilizer counting it as way gone. */
 const STABILIZER_SLACK_PX = 1;
+/** The most time an airbrush owes after a stall (a busy frame, a hidden tab), in ms; the rest is forgiven rather than sprayed at once. */
+export const AIRBRUSH_MAX_CATCH_UP_MS = 250;
+/** Quiet, in ms, after which a pen counts as held still (or a dab's time, if longer). */
+const AIRBRUSH_STOPPED_MS = 32;
+/** How close (document px) the stabilizer's drawn point must come to a stopped pen before the airbrush holds, well under a dab's spacing so release adds nothing. */
+const AIRBRUSH_SETTLED_PX = 0.25;
+/** Lag (document px) the stabilizer's own catch-up at a release ignores. */
+const STABILIZER_LAG_EPSILON_PX = 0.01;
+/** A stalled tick settles the stabilizer's lag in steps of this many ms, at most this many. */
+const AIRBRUSH_SETTLE_STEP_MS = 16;
+const AIRBRUSH_MAX_SETTLE_STEPS = 24;
 
 export interface StrokeOptions {
   /** How far, in time, the stroke trails the pointer (0 = off); needs increasing stroke() timestamps. */
@@ -245,6 +256,20 @@ export class StampStrokeEngine {
   private _scatterRng = new Rng(0);
   /** The stroke's direction between the last two stamps (radians), for scatter across it; null before it has one. */
   private _heading: number | null = null;
+  /**
+   * The airbrush's clock: the time up to which held dabs are accounted for.
+   * Movement resets it to the time of the sample that laid dabs, so a moving
+   * stroke has its spacing's density and the timer only fills what movement
+   * leaves. Null before the first dab and after a pressure lift.
+   */
+  private _airClock: number | null = null;
+  /**
+   * Samples have been fed since the spline last caught up with them: it lays a
+   * segment a sample late, so a pen that stops leaves its last one unwalked.
+   */
+  private _tailPending = false;
+  /** The time of the last pen sample, to tell a pen at rest from one that moves slowly. */
+  private _lastEvent = 0;
   private _snapshotCaptured = false;
   // Reusable tinting canvas for color mode — avoids per-stamp allocation
   private _tintCanvas: AnyCanvas | null = null;
@@ -291,6 +316,8 @@ export class StampStrokeEngine {
     this._stabilizer.reset(options.stabilizerMs ?? 0, STABILIZER_SLACK_PX / this._viewScale);
     this._prevStamp = null;
     this._heading = null;
+    this._airClock = null;
+    this._tailPending = false;
     this._variantCounter = 0;
     const seed = options.seed ?? freshSeed();
     this._rng = new Rng(seed);
@@ -324,6 +351,9 @@ export class StampStrokeEngine {
         this._resetMotion();
         this._prevStamp = null;
         this._heading = null;
+        // A lifted pen holds nothing: the airbrush pauses until the next contact lays a dab.
+        this._airClock = null;
+        this._tailPending = false;
         return;
       }
       inputPressure = 1;
@@ -337,7 +367,139 @@ export class StampStrokeEngine {
 
     const curveFn = PRESSURE_CURVES[d.pressureCurve];
     const at = this._stabilizer.add(x, y, curveFn(inputPressure), timestamp, clampTilt(tilt.tiltX), clampTilt(tilt.tiltY), cleanTwist(tilt.twist));
-    this._stampPoints(this._feed({ ...at, timestamp }));
+    const stamps = this._feed({ ...at, timestamp });
+    this._stampPoints(stamps);
+    if (d.airbrush) {
+      this._lastEvent = timestamp;
+      this._tailPending = true;
+      // Also the first sample after a suspension, whatever it lays: the time between is not owed.
+      if (stamps.length > 0 || (this._airClock === null && this._prevStamp)) this._airClock = timestamp;
+    }
+  }
+
+  /**
+   * Stop counting time until the pen reports again (the window lost focus, so no
+   * frames ran): what elapsed meanwhile is not owed as dabs at the release.
+   */
+  suspendAirbrush() {
+    this._airClock = null;
+  }
+
+  /**
+   * Walk the path up to the pen's present position and return the dabs that
+   * laid. While the stabilizer lags that is time passing with the pen at rest
+   * (its last position fed in again, which closes the lag); otherwise it is the
+   * spline's last segment, laid without ending the path.
+   */
+  private _settlePath(timestamp: number, lagging: boolean): number {
+    let stamps: StampPoint[];
+    if (lagging) {
+      // In steps of a frame, as the pen's own events would have come, so a stall
+      // between ticks doesn't feed the spline one long jump (it would overshoot and
+      // hook back). The average is the same however it is stepped.
+      const from = this._velocityLast ? Math.min(this._velocityLast.t, timestamp) : timestamp;
+      const steps = Math.max(1, Math.min(AIRBRUSH_MAX_SETTLE_STEPS, Math.ceil((timestamp - from) / AIRBRUSH_SETTLE_STEP_MS)));
+      stamps = [];
+      for (let i = 1; i <= steps; i++) {
+        const t = i === steps ? timestamp : from + i * AIRBRUSH_SETTLE_STEP_MS;
+        let at = this._stabilizer.hold(t);
+        // The last fraction of a pixel would take the average ever longer: close it
+        // at once, so the held spot is the spot a release commits at. One point,
+        // not both: two almost alike would make the spline overshoot.
+        const settled = this._stabilizer.lag() <= AIRBRUSH_SETTLED_PX;
+        if (settled) at = this._stabilizer.snap(t);
+        stamps.push(...this._feed({ ...at, timestamp: t }));
+        if (settled) break;
+      }
+    } else {
+      stamps = this._smoother.settle(this._dabSpacing);
+      this._tailPending = false;
+    }
+    this._stampPoints(stamps);
+    return stamps.length;
+  }
+
+  /** Whether the stroke under way is an airbrush, for a driver deciding to call tick(). */
+  get airbrushActive(): boolean {
+    return !!this._descriptor?.airbrush;
+  }
+
+  /**
+   * Airbrush build-up: lay the dabs that time owes since the last dab, at
+   * `timestamp` (ms, the clock stroke() timestamps use). Returns how many were
+   * laid (0 when the brush isn't an airbrush, the pen is lifted, or nothing is
+   * due yet), so the caller knows whether the preview needs redoing.
+   *
+   * It is the time between calls that counts, never the number of calls, so it
+   * lays the same at 60 and 120 Hz and in a throttled tab. After a stall at
+   * most AIRBRUSH_MAX_CATCH_UP_MS is owed. A leftover less than one dab's time
+   * carries to the next call.
+   *
+   * Held dabs go where the stroke's last dab went, through the same per-dab
+   * path as any other: jitter, scatter, colour dynamics, pickup, dirty bounds.
+   * The path trails the pen (the spline by a segment, the stabilizer by its
+   * lag), so once the pen has been quiet the path is first walked up to it: the
+   * spline's last segment is laid as movement (PathSmoother.settle, which keeps
+   * the path going without laying it twice), and while the stabilizer lags,
+   * time moves the drawn point instead. The dabs the clock lays after that sit
+   * at the end of the path, within a spacing of the pen. They take the pen's
+   * present pressure, tilt and twist; speed is 0, so speed dynamics and ink
+   * build-up see a pen at rest, and the smoothed velocity fades from what it
+   * was (VELOCITY_SMOOTHING_MS).
+   *
+   * With a stabilizer the drawn point trails a pen that has stopped. Then time
+   * moves the stroke, not the timer: the point closes in on the pen and dabs
+   * come from that movement, and the clock stays pinned to now so no backlog
+   * builds up to burst out once it arrives. While the pen still reports (slow
+   * movement) the timer builds up at the path's last dab as without one.
+   */
+  tick(timestamp: number): number {
+    const d = this._descriptor;
+    if (!d || !d.airbrush || !this._inkState || !this._prevStamp || this._airClock === null) return 0;
+    if (!Number.isFinite(timestamp) || !(timestamp > this._airClock)) return 0;
+
+    const interval = 1000 / d.airbrushRate;
+    // A pen that is moving, however slowly, reports every few ms; one that
+    // has been quiet for a dab's time (or this long, for a fast rate) is held.
+    const stopped = timestamp - this._lastEvent >= Math.max(AIRBRUSH_STOPPED_MS, interval);
+
+    if (stopped && this._stabilizer.lag() > STABILIZER_LAG_EPSILON_PX) {
+      // The pen has stopped but the stabilizer is still closing in on it: that
+      // is movement's to lay, and time moves it. The clock stays at now so no
+      // backlog is left to burst out when it arrives.
+      this._airClock = timestamp;
+      return this._settlePath(timestamp, true);
+    }
+
+    if (timestamp - this._airClock > AIRBRUSH_MAX_CATCH_UP_MS) this._airClock = timestamp - AIRBRUSH_MAX_CATCH_UP_MS;
+    // The epsilon keeps a dab due exactly now from slipping a frame to rounding.
+    const due = Math.floor((timestamp - this._airClock) / interval + 1e-9);
+    if (due <= 0) return 0;
+
+    // The spline lays a segment a sample late: a pen that has stopped leaves its
+    // last one unwalked. Walk it before holding, as movement; if that lays dabs
+    // they are this call's.
+    if (stopped && this._tailPending) {
+      const laid = this._settlePath(timestamp, false);
+      if (laid > 0) {
+        this._airClock = timestamp;
+        return laid;
+      }
+    }
+
+    const held: StampPoint[] = [];
+    // Where the pen is now, not where the path's last dab saw it.
+    const pen = this._stabilizer.rawPen();
+    for (let i = 1; i <= due; i++) {
+      const t = this._airClock + i * interval;
+      const last = this._velocityLast;
+      // Standing at the last point the velocity tracker saw, so only time passes.
+      const velocity = last ? this._trackVelocity(last.x, last.y, t) : 0;
+      held.push({ ...this._prevStamp, ...pen, speedPxPerMs: 0, velocity });
+    }
+    this._airClock += due * interval;
+    this._stampPoints(held);
+    return due;
   }
 
   /** Feed a (stabilized) sample to the spline, returning the dabs it lays. */

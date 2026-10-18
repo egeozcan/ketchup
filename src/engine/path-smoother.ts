@@ -65,6 +65,8 @@ export class PathSmoother {
   private _heading: number | null = null;
   /** How far the path has gone since the last stamp, up to the end of the segments walked. */
   private _since = 0;
+  /** The unwalked last segment was laid by settle(); the next point's walk would lay it again. */
+  private _tailLaid = false;
 
   reset() {
     this._window = [];
@@ -73,6 +75,7 @@ export class PathSmoother {
     this._lastSpacing = 0;
     this._heading = null;
     this._since = 0;
+    this._tailLaid = false;
   }
 
   /**
@@ -101,6 +104,8 @@ export class PathSmoother {
     }
 
     const n = this._count;
+    const tailLaid = this._tailLaid;
+    this._tailLaid = false;
 
     // Single point (stroke start dot)
     if (n === 1) {
@@ -124,12 +129,30 @@ export class PathSmoother {
     // 4+ points: Catmull-Rom between window[1] and window[2]
     // window has exactly 4 entries: [P0, P1, P2, P3]
     // CR curve goes from P1 to P2, using P0 and P3 as control points.
+    // That segment is the one settle() laid: not again.
+    if (tailLaid) return [];
     const [p0, p1, p2, p3] = this._window;
     return this._walkCatmullRom(p0, p1, p2, p3, spacing);
   }
 
+  /**
+   * Lay the unwalked last segment now, as flush() would, but keep the path
+   * going: the next point does not lay it again, and a flush right after
+   * lays nothing. For a pen that has stopped mid-stroke (an airbrush holds
+   * there) where the path should end at the pen without ending the stroke.
+   */
+  settle(spacing: Spacing): StampPoint[] {
+    if (this._tailLaid) return [];
+    const stamps = this.flush(spacing);
+    // Two points: addPoint laid the segment already and the third point is
+    // buffered either way, so there is nothing to skip.
+    if (this._count >= 3) this._tailLaid = true;
+    return stamps;
+  }
+
   /** Flush: emit stamps for any remaining un-emitted segment at stroke end. */
   flush(spacing: Spacing): StampPoint[] {
+    if (this._tailLaid) return [];
     const n = this._count;
     const w = this._window;
     if (n < 2) return [];

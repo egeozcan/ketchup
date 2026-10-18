@@ -578,6 +578,36 @@ describe('DrawingApp', () => {
     expect((app as any)._state.brush.blendMode).toBe('normal');
   });
 
+  it.each([
+    [{}, false, 20],
+    [{ airbrush: true, airbrushRate: 45 }, true, 45],
+    [{ airbrush: 'yes', airbrushRate: 1e9 }, false, 60],
+    [{ airbrush: true, airbrushRate: 'fast' }, true, 20],
+  ])('loads stored airbrush settings %j as %s at %s a second', async (stored, airbrush, rate) => {
+    const app = createAppWithCanvasSpies();
+    Object.defineProperty(app, 'updateComplete', { configurable: true, get: () => Promise.resolve(true) });
+    (app as any)._backend = {
+      state: { get: vi.fn(async () => ({
+        toolSettings: { activeTool: 'pencil', strokeColor: '#000000', fillColor: '#ff0000', useFill: false, brushSize: 4, ...stored },
+        canvasWidth: 100,
+        canvasHeight: 100,
+        layers: [{ id: 'real-layer', name: 'Layer 1', visible: true, opacity: 1, imageBlobRef: 'ref1' }],
+        activeLayerId: 'real-layer',
+        layersPanelOpen: true,
+        historyIndex: -1,
+      })) },
+      history: { getEntries: vi.fn(async () => []) },
+      blobs: { get: vi.fn(async () => new Blob([new Uint8Array(4)], { type: 'image/png' })) },
+    };
+    const serMod = await import('../src/utils/storage-serialization.js');
+    vi.spyOn(serMod, 'deserializeLayer').mockResolvedValue(makeLayer(100, 100, { id: 'real-layer', name: 'Layer 1' }));
+
+    await (app as any)._loadProject('test-project');
+
+    expect((app as any)._state.brush.airbrush).toBe(airbrush);
+    expect((app as any)._state.brush.airbrushRate).toBe(rate);
+  });
+
   it('restores advanced brush, crop, and text settings from saved project state', async () => {
     const app = createAppWithCanvasSpies();
 

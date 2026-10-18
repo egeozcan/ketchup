@@ -7,7 +7,7 @@ import { storageBackendContext, projectServiceContext } from '../storage/storage
 import type { StampEntry } from '../storage/types.js';
 import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushDynamics, BrushJitter, BrushPreset, BrushBlendMode } from '../engine/types.js';
 import { BRUSH_BLEND_MODE_LABELS } from '../engine/types.js';
-import { BRUSH_PRESETS, MAX_SCATTER, MAX_SCATTER_COUNT, colorDynamicsActive, copyDescriptor } from '../engine/brush-presets.js';
+import { BRUSH_PRESETS, MAX_SCATTER, MAX_SCATTER_COUNT, colorDynamicsActive, copyDescriptor, MIN_AIRBRUSH_RATE, MAX_AIRBRUSH_RATE, normalizeAirbrushRate } from '../engine/brush-presets.js';
 import { getDefaultTipDescriptor, getTipCapabilities } from '../engine/brush-capabilities.js';
 import { StampStrokeEngine, tiltStretch } from '../engine/stamp-stroke.js';
 import { getStampThumbnailUrl, removeStampThumbnail } from '../utils/stamp-thumbnail-cache.js';
@@ -1996,6 +1996,21 @@ export class ToolSettings extends LitElement {
             @input=${(e: Event) => this.ctx.setBrush({ flow: Number((e.target as HTMLInputElement).value) / 100 })} />
           <span class="size-value">${Math.round(brush.flow * 100)}%</span>
         </div>
+        <div class="section">
+          <label class="checkbox-label" title="Keep laying dabs while the pen is held still or moves slowly, so paint builds up toward the opacity. Needs a flow under 100%.">
+            <input type="checkbox" aria-label="Airbrush" .checked=${brush.airbrush}
+              @change=${(e: Event) => this.ctx.setBrush({ airbrush: (e.target as HTMLInputElement).checked })} />
+            Airbrush
+          </label>
+        </div>
+        ${brush.airbrush ? html`
+        <div class="section">
+          <label title="How many dabs a held airbrush lays per second.">Rate</label>
+          <input type="range" aria-label="Airbrush rate" min=${MIN_AIRBRUSH_RATE} max=${MAX_AIRBRUSH_RATE} .value=${String(Math.round(brush.airbrushRate))}
+            @input=${(e: Event) => this.ctx.setBrush({ airbrushRate: normalizeAirbrushRate(Number((e.target as HTMLInputElement).value)) })} />
+          <span class="size-value">${Math.round(brush.airbrushRate)}/s</span>
+        </div>
+        ` : nothing}
         <div class="section">
           <label>Hardness</label>
           <input type="range" aria-label="Brush hardness" min="0" max="100" .value=${String(Math.round(brush.hardness * 100))}

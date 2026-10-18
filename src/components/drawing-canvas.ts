@@ -1143,6 +1143,7 @@ export class DrawingCanvas extends LitElement {
    * in progress (the change, if any, is then not bounded by a stroke).
    */
   private _commitStroke(layerCtx: CanvasRenderingContext2D): PixelRect | undefined {
+    this._stopAirbrush();
     if (!this._engine.commit(layerCtx)) return undefined;
     const bounds = this._engine.getDirtyBounds();
     if (!bounds) return { x: 0, y: 0, w: 0, h: 0 };
@@ -1150,6 +1151,35 @@ export class DrawingCanvas extends LitElement {
     const pad = 2;
     return { x: bounds.x - pad, y: bounds.y - pad, w: bounds.w + pad * 2, h: bounds.h + pad * 2 };
   }
+
+  /**
+   * The airbrush loop: one requestAnimationFrame at a time, only while a brush
+   * stroke whose brush is an airbrush is under way. Each frame asks the engine
+   * for the dabs time owes (it counts time, not frames) and redoes the preview
+   * as a move does. It ends itself when the stroke is gone, and every end of a
+   * stroke (commit, cancel, blur, leaving the document) stops it outright.
+   */
+  private _airbrushFrame = 0;
+
+  private _startAirbrush() {
+    if (this._airbrushFrame || !this._drawing || !this._engine.airbrushActive) return;
+    this._airbrushFrame = requestAnimationFrame(this._onAirbrushFrame);
+  }
+
+  private _stopAirbrush() {
+    if (!this._airbrushFrame) return;
+    cancelAnimationFrame(this._airbrushFrame);
+    this._airbrushFrame = 0;
+  }
+
+  private _onAirbrushFrame = (now: number) => {
+    this._airbrushFrame = 0;
+    const { activeTool } = this.ctx.state;
+    if (!this._drawing || !this._engine.airbrushActive || (activeTool !== 'pencil' && activeTool !== 'eraser')) return;
+    // In-progress frames change no layer pixels, as with movement.
+    if (this._engine.tick(now) > 0) this.scheduleComposite(false);
+    this._airbrushFrame = requestAnimationFrame(this._onAirbrushFrame);
+  };
 
   /** Called by drawing-app for layer structural operations */
   public pushLayerOperation(entry: HistoryEntry) {
@@ -2286,6 +2316,8 @@ export class DrawingCanvas extends LitElement {
   };
 
   private _onWindowBlur = () => {
+    this._stopAirbrush();
+    this._engine.suspendAirbrush();
     this._altSampling = false;
     this._clearEyedropperPreview();
     // Something may be copied elsewhere now; see paste().
@@ -2693,6 +2725,7 @@ export class DrawingCanvas extends LitElement {
       this._tintPreviewNeedsCopy = true;
       const layerCtx = desc.ink.wetness > 0 ? this._getActiveLayerCtx() ?? undefined : undefined;
       this._engine.stroke(p.x, p.y, normalizePointerPressure(e), layerCtx, e.timeStamp, { ...pointerTilt(e), twist: pointerTwist(e) });
+      this._startAirbrush();
       this.composite();
     }
   }
@@ -2859,6 +2892,8 @@ export class DrawingCanvas extends LitElement {
         this._engine.stroke(sp.x, sp.y, normalizePointerPressure(sample), layerCtx, sample.timeStamp, { ...pointerTilt(sample), twist: pointerTwist(sample) });
       }
       this._lastPoint = p;
+      // A blur stopped the loop; a pen still moving brings it back.
+      this._startAirbrush();
       // The stroke stays in the engine's buffer until pointerup; the layer is unchanged.
       this.scheduleComposite(false);
     } else if (isShapeTool(activeTool)) {
@@ -3043,6 +3078,8 @@ export class DrawingCanvas extends LitElement {
     if (activeTool === 'pencil' || activeTool === 'eraser') {
       const layerCtx = this._getActiveLayerCtx();
       if (layerCtx) {
+        // Time owed since the last frame is still owed: density follows the clock, not the frames.
+        if (this._engine.airbrushActive) this._engine.tick(e.timeStamp);
         region = this._commitStroke(layerCtx);
       }
     }
@@ -3107,6 +3144,7 @@ export class DrawingCanvas extends LitElement {
     try { this.mainCanvas.releasePointerCapture(pointerId); } catch { /* not captured */ }
 
     // Cancel brush/shape strokes
+    this._stopAirbrush();
     this._engine.cancel();
     if (this._drawing) {
       this._drawing = false;
@@ -4320,6 +4358,7 @@ export class DrawingCanvas extends LitElement {
     this._resizeObserver?.disconnect();
     this._resizeObserver = null;
     this._unwatchDevicePixelRatio();
+    this._stopAirbrush();
     this._compositeScheduler.cancel();
     // drawing-app flushes a pending viewport change from its own disconnect,
     // before deciding whether to save; by now it would only re-arm a save.
