@@ -45,9 +45,8 @@ const AIRBRUSH_STOPPED_MS = 32;
 const AIRBRUSH_SETTLED_PX = 0.25;
 /** Lag (document px) the stabilizer's own catch-up at a release ignores. */
 const STABILIZER_LAG_EPSILON_PX = 0.01;
-/** A stalled tick settles the stabilizer's lag in steps of this many ms, at most this many. */
-const AIRBRUSH_SETTLE_STEP_MS = 16;
-const AIRBRUSH_MAX_SETTLE_STEPS = 24;
+/** Most steps a settling tick feeds the spline in. */
+const AIRBRUSH_MAX_SETTLE_STEPS = 64;
 
 export interface StrokeOptions {
   /** How far, in time, the stroke trails the pointer (0 = off); needs increasing stroke() timestamps. */
@@ -268,6 +267,8 @@ export class StampStrokeEngine {
    * segment a sample late, so a pen that stops leaves its last one unwalked.
    */
   private _tailPending = false;
+  /** The distance the path's last two samples were apart, the pace a recovery steps at. */
+  private _lastFeedStep = 0;
   /** The time of the last pen sample, to tell a pen at rest from one that moves slowly. */
   private _lastEvent = 0;
   private _snapshotCaptured = false;
@@ -317,6 +318,7 @@ export class StampStrokeEngine {
     this._prevStamp = null;
     this._heading = null;
     this._airClock = null;
+    this._lastFeedStep = 0;
     this._tailPending = false;
     this._variantCounter = 0;
     const seed = options.seed ?? freshSeed();
@@ -394,22 +396,29 @@ export class StampStrokeEngine {
   private _settlePath(timestamp: number, lagging: boolean): number {
     let stamps: StampPoint[];
     if (lagging) {
-      // In steps of a frame, as the pen's own events would have come, so a stall
-      // between ticks doesn't feed the spline one long jump (it would overshoot and
-      // hook back). The average is the same however it is stepped.
-      const from = this._velocityLast ? Math.min(this._velocityLast.t, timestamp) : timestamp;
-      const steps = Math.max(1, Math.min(AIRBRUSH_MAX_SETTLE_STEPS, Math.ceil((timestamp - from) / AIRBRUSH_SETTLE_STEP_MS)));
+      // The drawn point moves to where the average puts it at `timestamp` (or the
+      // pen, when that is close), but is fed to the spline in steps no longer than
+      // the stroke's own pace (a dab's spacing at least) along the way, timed between the last sample and now: one
+      // long jump after a stall, or steps of another size than the stroke's own,
+      // would make the spline overshoot and hook back.
+      const here = this._stabilizer.position();
+      const penAt = this._stabilizer.penTrail();
+      const fromT = this._velocityLast ? Math.min(this._velocityLast.t, timestamp) : timestamp;
+      let to = this._stabilizer.hold(timestamp);
+      // The last fraction of a pixel would take the average ever longer: close it
+      // at once, so the held spot is the spot a release commits at.
+      if (this._stabilizer.lag() <= AIRBRUSH_SETTLED_PX) to = this._stabilizer.snap(timestamp);
+      const dist = Math.hypot(to.x - here.x, to.y - here.y);
+      const step = Math.max(1, this._lastFeedStep, this._prevStamp ? this._dabSpacing(this._prevStamp, this._heading) : 1);
+      const n = Math.max(1, Math.min(AIRBRUSH_MAX_SETTLE_STEPS, Math.ceil(dist / step)));
       stamps = [];
-      for (let i = 1; i <= steps; i++) {
-        const t = i === steps ? timestamp : from + i * AIRBRUSH_SETTLE_STEP_MS;
-        let at = this._stabilizer.hold(t);
-        // The last fraction of a pixel would take the average ever longer: close it
-        // at once, so the held spot is the spot a release commits at. One point,
-        // not both: two almost alike would make the spline overshoot.
-        const settled = this._stabilizer.lag() <= AIRBRUSH_SETTLED_PX;
-        if (settled) at = this._stabilizer.snap(t);
-        stamps.push(...this._feed({ ...at, timestamp: t }));
-        if (settled) break;
+      for (let k = 1; k <= n; k++) {
+        const f = k / n;
+        stamps.push(...this._feed({ ...to, ...penAt(f), x: here.x + (to.x - here.x) * f, y: here.y + (to.y - here.y) * f, timestamp: fromT + (timestamp - fromT) * f }));
+      }
+      if (n > 1) {
+        const f = (n - 1) / n;
+        this._stabilizer.setPrevious(here.x + (to.x - here.x) * f, here.y + (to.y - here.y) * f, fromT + (timestamp - fromT) * f);
       }
     } else {
       stamps = this._smoother.settle(this._dabSpacing);
@@ -446,6 +455,13 @@ export class StampStrokeEngine {
    * present pressure, tilt and twist; speed is 0, so speed dynamics and ink
    * build-up see a pen at rest, and the smoothed velocity fades from what it
    * was (VELOCITY_SMOOTHING_MS).
+   *
+   * Time and distance do not share a budget: a timed dab sits at the last dab,
+   * so it cannot stand in for travel, and movement dabs still land after it.
+   * Where a slow stroke's movement dabs come about as often as the timer's,
+   * density is up to the sum of the two (twice the rate at most), which only
+   * ever builds up; sharing the count would let the timer hold a creeping
+   * stroke in place.
    *
    * With a stabilizer the drawn point trails a pen that has stopped. Then time
    * moves the stroke, not the timer: the point closes in on the pen and dabs
@@ -499,12 +515,14 @@ export class StampStrokeEngine {
     }
     this._airClock += due * interval;
     this._stampPoints(held);
+
     return due;
   }
 
   /** Feed a (stabilized) sample to the spline, returning the dabs it lays. */
   private _feed(p: StabilizedPoint): StampPoint[] {
     // Speed and heading are measured along the stabilized path, the one the dabs follow.
+    if (this._velocityLast) this._lastFeedStep = Math.hypot(p.x - this._velocityLast.x, p.y - this._velocityLast.y);
     const v = this._trackVelocity(p.x, p.y, p.timestamp);
     return this._smoother.addPoint(p.x, p.y, p.pressure, this._dabSpacing, p.timestamp,
       { velocity: v, tiltX: p.tiltX, tiltY: p.tiltY, twist: p.twist });

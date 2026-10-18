@@ -129,6 +129,27 @@ describe('airbrush engine', () => {
     expect(built).toBeLessThanOrEqual(2000 / 50 + plain + 2);
   });
 
+  it('keeps a slow stroke advancing and never past the sum of the timer\'s and the movement\'s density', () => {
+    const run = (speedPxPerSec: number, airbrush: boolean) => {
+      const { engine, dabs } = start({ size: 20, spacing: 0.25, flow: 0.2, airbrushRate: 20, airbrush });
+      let x = 20;
+      for (let t = 0; t <= 2000; t += 16) {
+        engine.stroke(x, 50, 1, undefined, t);
+        engine.tick(t + 8);
+        x += speedPxPerSec * 0.016;
+      }
+      return { n: dabs.length, furthest: Math.max(...dabs.map(d => d.cx)) };
+    };
+    for (const v of [10, 40, 75, 100, 150]) {
+      const built = run(v, true), plain = run(v, false);
+      // The pen's way is covered: dabs reach (within a spacing of) where it went.
+      expect(built.furthest).toBeGreaterThan(20 + v * 2 - 12);
+      expect(built.n).toBeGreaterThanOrEqual(plain.n);
+      // Timed dabs only add; at most one per interval.
+      expect(built.n).toBeLessThanOrEqual(plain.n + 2000 / 50 + 1);
+    }
+  });
+
   it('owes at most a quarter second after a stall', () => {
     const { engine, dabs } = start({ airbrushRate: 40 });
     engine.stroke(50, 50, 1, undefined, 0);
@@ -342,6 +363,38 @@ describe('airbrush engine', () => {
       const xs = dabs.map(d => d.cx);
       for (let i = 1; i < xs.length; i++) expect(xs[i]).toBeGreaterThanOrEqual(xs[i - 1] - 0.05);
       expect(Math.max(...xs)).toBeLessThanOrEqual(140.5);
+    });
+
+    it('does not backtrack after a stall following dense, fast input', () => {
+      const { engine, dabs } = start({ size: 4, spacing: 0.25, flow: 1 }, { stabilizerMs: 120 });
+      for (let i = 0; i <= 30; i++) engine.stroke(20 + i * 40, 50, 1, undefined, i);
+      engine.tick(2000);
+      engine.tick(2050);
+      engine.commit(document.createElement('canvas').getContext('2d')!);
+      const xs = dabs.map(d => d.cx);
+      for (let i = 1; i < xs.length; i++) expect(xs[i]).toBeGreaterThanOrEqual(xs[i - 1] - 0.05);
+    });
+
+    it('replays the pen\'s taper along a stall recovery instead of its end values', () => {
+      const { engine, dabs } = start({ size: 20, spacing: 0.25, flow: 1, pressureSize: true }, { stabilizerMs: 120 });
+      engine.stroke(20, 50, 1, undefined, 0);
+      for (let i = 1; i <= 20; i++) engine.stroke(20 + i * 10, 50, 1 - i * 0.04, undefined, i * 4);
+      const n = dabs.length;
+      engine.tick(2000);
+      engine.tick(2050);
+      const w = dabs.slice(n).filter(d => d.cx > 60 && d.cx < 120).map(d => d.w);
+      expect(w.length).toBeGreaterThan(5);
+      // Pressure there was around .5..: dabs well over the end pressure's (.2) size.
+      expect(Math.max(...w)).toBeGreaterThan(20 * 0.45);
+    });
+
+    it('releases cleanly before a stall recovery has settled', () => {
+      const { engine, dabs } = start({ size: 4, spacing: 0.25, flow: 1 }, { stabilizerMs: 120 });
+      for (let i = 0; i <= 30; i++) engine.stroke(20 + 4 * i, 50, 1, undefined, i);
+      engine.tick(80);
+      engine.commit(document.createElement('canvas').getContext('2d')!);
+      const xs = dabs.map(d => d.cx);
+      for (let i = 1; i < xs.length; i++) expect(xs[i]).toBeGreaterThanOrEqual(xs[i - 1] - 0.05);
     });
 
     it('follows the pen again when it resumes after a hold settled the lag', () => {

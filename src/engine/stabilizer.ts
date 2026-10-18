@@ -175,6 +175,36 @@ export class Stabilizer {
     return { x: this._x, y: this._y, ...this.rawPen() };
   }
 
+  /**
+   * Call before hold() or snap(): afterwards, the pen's pressure, tilt and
+   * twist at a fraction (0..1) of the way the drawn point's progress along the
+   * pen's path went, read from the history as it was before that trimmed it,
+   * so a move made in steps replays what the pen did along the way.
+   */
+  penTrail(): (f: number) => Pick<StabilizedPoint, 'pressure' | 'tiltX' | 'tiltY' | 'twist'> {
+    const before = this._history.slice();
+    const from = this._penS;
+    return (f) => {
+      const kept = this._history;
+      this._history = before;
+      const pen = this._penAt(from + (this._penS - from) * f);
+      this._history = kept;
+      return { pressure: pen.pressure, tiltX: pen.tiltX, tiltY: pen.tiltY, twist: pen.twist };
+    };
+  }
+
+  /** Say the drawn point's move to here came from `x, y` at `t` (a move fed in steps), which paces a later catchUp(). */
+  setPrevious(x: number, y: number, t: number) {
+    this._prevX = x;
+    this._prevY = y;
+    this._prevT = t;
+  }
+
+  /** The drawn point. */
+  position(): { x: number; y: number } {
+    return { x: this._x, y: this._y };
+  }
+
   /** What the pen last reported besides its position: where it is now, whatever the drawn point still has to catch up with. */
   rawPen(): Pick<StabilizedPoint, 'pressure' | 'tiltX' | 'tiltY' | 'twist'> {
     return { pressure: this._rawPressure, tiltX: this._rawTiltX, tiltY: this._rawTiltY, twist: this._rawTwist };
