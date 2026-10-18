@@ -5,6 +5,7 @@ import { Stabilizer, type StabilizedPoint } from './stabilizer.js';
 import { get2dContext, drawImageSafe, tintAlphaMask, createOffscreenCanvas, type AnyCanvas } from './canvas-pool.js';
 import { PRESSURE_CURVES, quantizeDiameter, type BrushDescriptor, type BrushBlendMode, type TipDescriptor, type StampPoint, type InkState } from './types.js';
 import { TIP_VARIANT_COUNTS, tipFootprint } from './tip-generators.js';
+import { resolveTipForStroke } from './tip-images.js';
 import { copyDescriptor, colorDynamicsActive } from './brush-presets.js';
 import { Rng, freshSeed } from './rng.js';
 import { resolveGrain, applyGrain, type Grain } from './brush-texture.js';
@@ -314,6 +315,9 @@ export class StampStrokeEngine {
 
   begin(descriptor: BrushDescriptor, color: string, eraser: boolean, docWidth: number, docHeight: number, options: StrokeOptions = {}) {
     this._descriptor = copyDescriptor(descriptor);
+    // A sampled tip whose image isn't loaded paints round for the whole stroke,
+    // so one that arrives meanwhile can't change the shape and spacing partway.
+    this._descriptor.tip = resolveTipForStroke(this._descriptor.tip);
     this._viewScale = options.viewScale && options.viewScale > 0 ? options.viewScale : 1;
     this._resetMotion();
     this._color = eraser ? '' : (color.length === 9 ? color.slice(0, 7) : color);

@@ -10,6 +10,8 @@ import { BRUSH_BLEND_MODE_LABELS, TEXTURE_MODE_LABELS } from '../engine/types.js
 import { BRUSH_PRESETS, MAX_SCATTER, MAX_SCATTER_COUNT, colorDynamicsActive, copyDescriptor, MIN_AIRBRUSH_RATE, MAX_AIRBRUSH_RATE, normalizeAirbrushRate } from '../engine/brush-presets.js';
 import { texturePatternList } from '../engine/brush-texture.js';
 import { getDefaultTipDescriptor, getTipCapabilities } from '../engine/brush-capabilities.js';
+import { tipMaskRevision } from '../engine/tip-images.js';
+import type { BrushTipMeta } from '../storage/types.js';
 import { StampStrokeEngine, tiltStretch } from '../engine/stamp-stroke.js';
 import { getStampThumbnailUrl, removeStampThumbnail } from '../utils/stamp-thumbnail-cache.js';
 import { MAX_STAMP_SIZE, MIN_STAMP_SIZE } from '../tools/stamp-size.js';
@@ -706,6 +708,84 @@ export class ToolSettings extends LitElement {
       text-align: left;
     }
 
+    .brush-dropdown-row {
+      display: flex;
+      align-items: center;
+    }
+    .brush-dropdown-row .brush-dropdown-item {
+      flex: 1;
+      min-width: 0;
+    }
+    .brush-dropdown-delete {
+      background: none;
+      border: none;
+      color: #999;
+      cursor: pointer;
+      padding: 0.25rem 0.5rem;
+      font-size: 1rem;
+      line-height: 1;
+    }
+    .brush-dropdown-delete:hover {
+      color: #f88;
+    }
+    .brush-dropdown-heading {
+      padding: 0.25rem 0.5rem;
+      font-size: 0.6875rem;
+      color: #999;
+      text-transform: uppercase;
+      border-top: 1px solid #444;
+    }
+    .tip-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+      max-height: 7.5rem;
+      overflow-y: auto;
+    }
+    .tip-cell {
+      position: relative;
+    }
+    .tip-cell > button.tip-pick {
+      display: block;
+      width: 2.5rem;
+      height: 2.5rem;
+      padding: 0;
+      background: #fff;
+      border: 2px solid #555;
+      border-radius: 0.25rem;
+      cursor: pointer;
+    }
+    .tip-cell > button.tip-pick.active {
+      border-color: #7ab8ff;
+    }
+    .tip-cell > button.tip-pick img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+    .tip-cell > button.tip-delete {
+      position: absolute;
+      top: -0.25rem;
+      right: -0.25rem;
+      width: 1rem;
+      height: 1rem;
+      padding: 0;
+      border-radius: 50%;
+      background: #222;
+      color: #ddd;
+      border: 1px solid #666;
+      font-size: 0.75rem;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .tip-message {
+      font-size: 0.75rem;
+      color: #bbb;
+    }
+    .tip-message.error {
+      color: #f99;
+    }
     .brush-dropdown-item:hover {
       background: #444;
     }
@@ -1119,6 +1199,9 @@ export class ToolSettings extends LitElement {
   @state() private _colorOpen = false;
   @state() private _textureOpen = false;
   @state() private _brushDropdownOpen = false;
+  @state() private _tipMessage = '';
+  @state() private _tipMessageError = false;
+  private _tipThumbUrls = new Map<string, string>();
   /** Which desktop settings panel (color or brush) is open, if any. */
   @state() private _openPanel: 'color' | 'brush' | null = null;
   private _refocusAfterClose = false;
@@ -1526,7 +1609,8 @@ export class ToolSettings extends LitElement {
   }
 
   private _generatePreview(preset: BrushPreset, eraser = false): string {
-    const cacheKey = `${eraser ? 'eraser' : 'paint'}:${preset.id}`;
+    // A sampled tip's image may arrive after the first preview, which showed it round.
+    const cacheKey = `${eraser ? 'eraser' : 'paint'}:${preset.id}:${tipMaskRevision(preset.descriptor.tip.imageId)}`;
     const cached = this._previewCache.get(cacheKey);
     if (cached) return cached;
 
@@ -1536,7 +1620,7 @@ export class ToolSettings extends LitElement {
   }
 
   private _generateCustomPreview(descriptor: BrushDescriptor, eraser = false): string {
-    const key = `${eraser ? 'eraser' : 'paint'}:${JSON.stringify(descriptor)}`;
+    const key = `${eraser ? 'eraser' : 'paint'}:${tipMaskRevision(descriptor.tip.imageId)}:${JSON.stringify(descriptor)}`;
     if (key === this._customPreviewKey) return this._customPreviewUrl;
 
     this._customPreviewKey = key;
@@ -1744,6 +1828,7 @@ export class ToolSettings extends LitElement {
   private _toggleBrushDropdown() {
     this._brushDropdownOpen = !this._brushDropdownOpen;
     if (this._brushDropdownOpen) {
+      this.ctx.loadUserTips?.();
       // Close on outside click
       requestAnimationFrame(() => {
         document.addEventListener('click', this._onBrushDropdownOutsideClick);
@@ -1892,6 +1977,114 @@ export class ToolSettings extends LitElement {
             </svg>
           </button>
         </div>
+      </div>
+      <div class="separator"></div>
+      <div class="transform-section">
+        <label>Brush</label>
+        <div class="transform-row">
+          <button
+            class="pill-btn"
+            title="Make a brush tip from the selection: dark parts paint, light and transparent parts don't."
+            @click=${this._defineFromSelection}
+          >Define brush</button>
+        </div>
+        ${this._renderTipMessage()}
+      </div>
+    `;
+  }
+
+  private _renderTipMessage() {
+    return this._tipMessage
+      ? html`<div class="tip-message ${this._tipMessageError ? 'error' : ''}" role="status">${this._tipMessage}</div>`
+      : nothing;
+  }
+
+  private _showTipMessage(message: string | null, ok = '') {
+    this._tipMessage = message ?? ok;
+    this._tipMessageError = message !== null;
+  }
+
+  private _defineFromSelection = async () => {
+    this._showTipMessage(null);
+    this._showTipMessage(await this.ctx.defineBrushFromSelection(), 'Brush added to Custom.');
+  };
+
+  private _defineFromFile = async (e: Event) => {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    // Cleared so choosing the same file again fires change.
+    input.value = '';
+    if (!file) return;
+    this._showTipMessage(null);
+    this._showTipMessage(await this.ctx.defineBrushFromFile(file, file.name), 'Brush added to Custom.');
+  };
+
+  /** A small picture of a library tip: its mask in black on white, as sampled brushes are drawn. */
+  private _tipThumbUrl(tip: BrushTipMeta): string {
+    const cached = this._tipThumbUrls.get(tip.id);
+    if (cached) return cached;
+    const { width, height, alpha } = tip.thumb;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d')!;
+    const img = ctx.createImageData(width, height);
+    for (let i = 0, p = 0; i < alpha.length; i++, p += 4) {
+      img.data[p] = img.data[p + 1] = img.data[p + 2] = 255 - alpha[i];
+      img.data[p + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    const url = canvas.toDataURL();
+    this._tipThumbUrls.set(tip.id, url);
+    return url;
+  }
+
+  private _renderTipLibrary() {
+    const tips = this.ctx.userTips ?? [];
+    const imageId = this.ctx.state.brush.tip.shape === 'image' ? this.ctx.state.brush.tip.imageId : undefined;
+    return html`
+      <div class="section">
+        <label>Custom tips</label>
+        <button class="pill-btn" title="Make a brush tip from an image: dark parts paint, light and transparent parts don't."
+          @click=${(e: Event) => ((e.currentTarget as HTMLElement).nextElementSibling as HTMLInputElement | null)?.click()}
+        >From image…</button>
+        <input type="file" accept="image/*" hidden aria-label="Image to make a brush tip from" @change=${this._defineFromFile} />
+      </div>
+      ${this._renderTipMessage()}
+      ${tips.length > 0 ? html`
+        <div class="tip-grid" role="list">
+          ${tips.map(tip => html`
+            <div class="tip-cell" role="listitem">
+              <button class="tip-pick ${imageId === tip.id ? 'active' : ''}" title=${tip.name} aria-label=${`Use tip ${tip.name}`}
+                aria-pressed=${imageId === tip.id ? 'true' : 'false'}
+                @click=${() => this.ctx.selectUserTip(tip.id)}>
+                <img src=${this._tipThumbUrl(tip)} alt="" />
+              </button>
+              <button class="tip-delete" title="Delete tip" aria-label=${`Delete tip ${tip.name}`}
+                @click=${() => { void this.ctx.deleteUserTip(tip.id); }}>&times;</button>
+            </div>
+          `)}
+        </div>
+      ` : nothing}
+    `;
+  }
+
+  private _renderPresetRow(preset: BrushPreset, deletable: boolean) {
+    const { state } = this.ctx;
+    const eraser = state.activeTool === 'eraser';
+    return html`
+      <div class="brush-dropdown-row">
+        <button
+          class="brush-dropdown-item ${state.activePreset === preset.id && !state.isPresetModified ? 'active' : ''}"
+          @click=${() => this._selectPreset(preset.id)}
+        >
+          <img src=${this._generatePreview(preset, eraser)} alt="" />
+          <span>${preset.name}</span>
+        </button>
+        ${deletable ? html`
+          <button class="brush-dropdown-delete" title="Delete brush" aria-label=${`Delete brush ${preset.name}`}
+            @click=${() => { void this.ctx.deleteUserPreset(preset.id); }}>&times;</button>
+        ` : nothing}
       </div>
     `;
   }
@@ -2048,12 +2241,12 @@ export class ToolSettings extends LitElement {
           <span class="size-value">${Math.round(brush.airbrushRate)}/s</span>
         </div>
         ` : nothing}
-        <div class="section">
+        ${tipCapabilities.hardness ? html`<div class="section">
           <label>Hardness</label>
           <input type="range" aria-label="Brush hardness" min="0" max="100" .value=${String(Math.round(brush.hardness * 100))}
             @input=${(e: Event) => this.ctx.setBrush({ hardness: Number((e.target as HTMLInputElement).value) / 100 })} />
           <span class="size-value">${Math.round(brush.hardness * 100)}%</span>
-        </div>
+        </div>` : nothing}
         <div class="section">
           <label>Spacing</label>
           <input type="range" min="5" max="100" aria-label="Spacing" .value=${String(Math.round(brush.spacing * 100))}
@@ -2194,6 +2387,7 @@ export class ToolSettings extends LitElement {
                 `)}
               </div>
             </div>
+            ${this._renderTipLibrary()}
             ${tipCapabilities.aspect ? html`
             <div class="section">
               <label>Aspect</label>
@@ -2279,6 +2473,13 @@ export class ToolSettings extends LitElement {
 
     const state = this.ctx.state;
     const { strokeColor, fillColor, useFill, activeTool, stampImage, stampSize, brush } = state;
+    const userPresets = this.ctx.userPresets ?? [];
+    const knownPreset = BRUSH_PRESETS.find(p => p.id === state.activePreset)
+      ?? userPresets.find(p => p.id === state.activePreset);
+    const activePreset = knownPreset ?? BRUSH_PRESETS[0];
+    // A custom preset deleted (here or in another tab) leaves its settings in use, as a brush of no preset.
+    const presetModified = state.isPresetModified || (!knownPreset && state.activePreset !== 'round');
+    if (this._brushDropdownOpen) this.ctx.loadUserTips?.();
 
     // Select tool: show transform controls or a hint
     if (activeTool === 'select') {
@@ -2434,26 +2635,19 @@ export class ToolSettings extends LitElement {
         <div class="section">
           <div class="brush-dropdown-wrap">
             <button class="brush-dropdown-btn" @click=${() => this._toggleBrushDropdown()}>
-              <img src=${state.isPresetModified
+              <img src=${presetModified
                 ? this._generateCustomPreview(brush, activeTool === 'eraser')
-                : this._generatePreview(
-                    BRUSH_PRESETS.find(p => p.id === state.activePreset) ?? BRUSH_PRESETS[0],
-                    activeTool === 'eraser',
-                  )} alt="" />
-              <span>${(BRUSH_PRESETS.find(p => p.id === state.activePreset) ?? BRUSH_PRESETS[0]).name}${state.isPresetModified ? ' *' : ''}</span>
+                : this._generatePreview(activePreset, activeTool === 'eraser')} alt="" />
+              <span>${knownPreset || !presetModified ? activePreset.name : 'Custom'}${presetModified ? ' *' : ''}</span>
               <span class="chevron">&#9660;</span>
             </button>
             ${this._brushDropdownOpen ? html`
               <div class="brush-dropdown-panel">
-                ${BRUSH_PRESETS.map(preset => html`
-                  <button
-                    class="brush-dropdown-item ${state.activePreset === preset.id && !state.isPresetModified ? 'active' : ''}"
-                    @click=${() => this._selectPreset(preset.id)}
-                  >
-                    <img src=${this._generatePreview(preset, activeTool === 'eraser')} alt="" />
-                    <span>${preset.name}</span>
-                  </button>
-                `)}
+                ${BRUSH_PRESETS.map(preset => this._renderPresetRow(preset, false))}
+                ${userPresets.length > 0 ? html`
+                  <div class="brush-dropdown-heading">Custom</div>
+                  ${userPresets.map(preset => this._renderPresetRow(preset, true))}
+                ` : nothing}
               </div>
             ` : nothing}
           </div>

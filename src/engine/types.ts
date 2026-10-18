@@ -1,6 +1,13 @@
 export type PressureCurveName = 'linear' | 'light' | 'heavy';
 
-export type TipShape = 'round' | 'flat' | 'chisel' | 'calligraphy' | 'fan' | 'splatter';
+export type TipShape = 'round' | 'flat' | 'chisel' | 'calligraphy' | 'fan' | 'splatter' | 'image';
+
+/** Every tip shape, for validating stored values. */
+export const TIP_SHAPES: readonly TipShape[] = ['round', 'flat', 'chisel', 'calligraphy', 'fan', 'splatter', 'image'];
+
+export function isTipShape(v: unknown): v is TipShape {
+  return typeof v === 'string' && (TIP_SHAPES as readonly string[]).includes(v);
+}
 /**
  * What turns the tip: nothing, the stroke's direction, the way the pen leans
  * (its azimuth) or the pen barrel's rotation (twist). `TipDescriptor.angle`
@@ -15,6 +22,12 @@ export interface TipDescriptor {
   orientation: OrientationMode;
   bristles?: number;
   spread?: number;
+  /**
+   * With shape 'image': the id of a sampled tip in the user's brush library
+   * (see tip-images.ts). The tip is the image's mask, `size` along its longer
+   side, at the image's own proportions; `aspect` and the hardness are unused.
+   */
+  imageId?: string;
 }
 
 export interface InkDescriptor {
@@ -229,7 +242,7 @@ export interface BrushDescriptor {
 export interface BrushPreset {
   id: string;
   name: string;
-  category: 'basic' | 'artistic' | 'effects';
+  category: 'basic' | 'artistic' | 'effects' | 'custom';
   descriptor: BrushDescriptor;
 }
 

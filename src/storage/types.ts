@@ -1,6 +1,7 @@
 // src/storage/types.ts
 import type { ToolType } from '../types.js';
-import type { PressureCurveName, TipDescriptor, InkDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushFade, BrushTexture } from '../engine/types.js';
+import type { TipMask } from '../engine/tip-mask.js';
+import type { PressureCurveName, BrushDescriptor, TipDescriptor, InkDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushFade, BrushTexture } from '../engine/types.js';
 
 // ---------------------------------------------------------------------------
 // BlobRef — branded string, opaque to consumers
@@ -203,6 +204,55 @@ export interface StampStore {
   deleteForProject(projectId: string): Promise<void>;
 }
 
+/**
+ * A sampled brush tip in the user's library, without its mask (see
+ * `BrushLibraryStore.getMask`): enough to list it. The library is the user's
+ * own, shared by every project.
+ */
+export interface BrushTipMeta {
+  id: string;
+  name: string;
+  /** The mask's size in pixels. */
+  width: number;
+  height: number;
+  /** The spacing (share of the dab size) the tip is laid with by default. */
+  spacing: number;
+  createdAt: number;
+  /** A small copy of the mask, for lists. */
+  thumb: TipMask;
+}
+
+/** A brush the user defined or imported: a full descriptor under a name, listed under "Custom". */
+export interface UserBrushPreset {
+  id: string;
+  name: string;
+  /** Stored as the descriptor was; read it through `normalizeBrushDescriptor`. */
+  descriptor: BrushDescriptor;
+  /** The sampled tip the descriptor uses, if any: deleting that tip deletes this preset. */
+  tipId?: string;
+  createdAt: number;
+}
+
+/**
+ * The user's custom brushes: sampled tips with their masks, and presets built
+ * on them. Not tied to a project. Optional on a backend; without it the editor
+ * has no custom brushes.
+ */
+export interface BrushLibraryStore {
+  list(): Promise<{ tips: BrushTipMeta[]; presets: UserBrushPreset[] }>;
+  /** A tip's mask, or null when there is none (or it is unreadable). */
+  getMask(id: string): Promise<TipMask | null>;
+  /**
+   * Adds or replaces tips (with their masks) and presets in one step: all or
+   * none are stored. Importing many brushes at once is a single call.
+   */
+  putBatch(batch: { tips?: { meta: BrushTipMeta; mask: TipMask }[]; presets?: UserBrushPreset[] }): Promise<void>;
+  /** Deletes a preset, and its tip when no other preset uses it. */
+  deletePreset(id: string): Promise<void>;
+  /** Deletes a tip, its mask, and every preset that uses it. */
+  deleteTip(id: string): Promise<void>;
+}
+
 // ---------------------------------------------------------------------------
 // Root interface
 // ---------------------------------------------------------------------------
@@ -213,6 +263,8 @@ export interface StorageBackend {
   readonly history: ProjectHistoryStore;
   readonly stamps: StampStore;
   readonly blobs: BlobStore;
+  /** The user's custom brushes (sampled tips and presets); absent on a backend that keeps none. */
+  readonly brushes?: BrushLibraryStore;
   init(): Promise<void>;
   dispose(): Promise<void>;
   /**

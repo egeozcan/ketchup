@@ -1,5 +1,5 @@
-import type { BrushDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushFade, BrushTexture, BrushPreset } from './types.js';
-import { isBrushBlendMode, isTextureMode } from './types.js';
+import type { BrushDescriptor, TipDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushFade, BrushTexture, BrushPreset } from './types.js';
+import { isBrushBlendMode, isTextureMode, isTipShape } from './types.js';
 import { MAX_PATTERN_ID_LENGTH } from './brush-texture.js';
 import { getDefaultTipDescriptor } from './brush-capabilities.js';
 
@@ -381,4 +381,54 @@ export function normalizeColorDynamics(stored: Partial<BrushColorDynamics> | und
   if (typeof stored?.fgBgPressure === 'boolean') out.fgBgPressure = stored.fgBgPressure;
   if (typeof stored?.perTip === 'boolean') out.perTip = stored.perTip;
   return out;
+}
+
+/** Longest sampled-tip id a stored brush may name. */
+export const MAX_TIP_ID_LENGTH = 128;
+
+/**
+ * A stored tip over the round default. An unknown shape, or a sampled tip
+ * that names no image, is the round default (a brush saved by a newer build
+ * must still paint here); the other shapes merge over the default as ever.
+ */
+export function normalizeTip(stored: Partial<TipDescriptor> | undefined): TipDescriptor {
+  const base = getDefaultTipDescriptor('round');
+  if (!stored || typeof stored !== 'object' || !isTipShape(stored.shape)) return base;
+  const { imageId, ...rest } = stored;
+  if (stored.shape === 'image') {
+    if (typeof imageId !== 'string' || imageId.length === 0 || imageId.length > MAX_TIP_ID_LENGTH) return base;
+    return { ...getDefaultTipDescriptor('image'), ...rest, imageId };
+  }
+  return { ...base, ...rest };
+}
+
+/**
+ * A stored brush over the default one: every field present and in range,
+ * whatever an older build (or an imported file) left out. The one place
+ * stored brushes are read through: project state, user presets, imports.
+ */
+export function normalizeBrushDescriptor(stored: Partial<BrushDescriptor> | undefined): BrushDescriptor {
+  const base = getDefaultDescriptor();
+  const s = stored ?? {};
+  return {
+    size: s.size ?? base.size,
+    opacity: s.opacity ?? base.opacity,
+    flow: s.flow ?? base.flow,
+    hardness: s.hardness ?? base.hardness,
+    spacing: s.spacing ?? base.spacing,
+    pressureSize: s.pressureSize ?? base.pressureSize,
+    pressureOpacity: s.pressureOpacity ?? base.pressureOpacity,
+    pressureCurve: s.pressureCurve ?? base.pressureCurve,
+    tip: normalizeTip(s.tip),
+    ink: { ...base.ink, ...(s.ink ?? {}) },
+    dynamics: normalizeDynamics(s.dynamics),
+    jitter: normalizeJitter(s.jitter),
+    scatter: normalizeScatter(s.scatter),
+    color: normalizeColorDynamics(s.color),
+    fade: normalizeFade(s.fade),
+    texture: normalizeTexture(s.texture),
+    blendMode: isBrushBlendMode(s.blendMode) ? s.blendMode : 'normal',
+    airbrush: s.airbrush === true,
+    airbrushRate: normalizeAirbrushRate(s.airbrushRate),
+  };
 }

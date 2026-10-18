@@ -1,5 +1,6 @@
 import { type AnyCanvas } from './canvas-pool.js';
 import type { TipDescriptor } from './types.js';
+import { tipMaskRevision } from './tip-images.js';
 import { tipGenerators, generateFanTip, generateSplatterTip, TIP_VARIANT_COUNTS } from './tip-generators.js';
 
 /**
@@ -16,7 +17,12 @@ export class BrushTipCache {
   private _bytes = 0;
 
   private _buildKey(diameter: number, hardness: number, tip: TipDescriptor, variantIndex?: number): string {
-    let key = `${tip.shape}-${diameter}-${hardness.toFixed(2)}-${tip.aspect.toFixed(1)}`;
+    // A sampled tip is its image: not the hardness or aspect, which it ignores.
+    // A missing mask (revision 0) keys apart from a loaded one, so a round stand-in is
+    // never served once the image has arrived.
+    let key = tip.shape === 'image'
+      ? `image-${tip.imageId}-r${tipMaskRevision(tip.imageId)}-${diameter}`
+      : `${tip.shape}-${diameter}-${hardness.toFixed(2)}-${tip.aspect.toFixed(1)}`;
     if (tip.bristles != null) key += `-b${tip.bristles}`;
     if (tip.spread != null) key += `-s${tip.spread.toFixed(2)}`;
     if (variantIndex != null) key += `-v${variantIndex}`;

@@ -17,7 +17,11 @@ import type {
   ProjectStateRecord,
   ProjectHistoryRecord,
   StampEntry,
+  BrushLibraryStore,
+  BrushTipMeta,
+  UserBrushPreset,
 } from '../types.js';
+import type { TipMask } from '../../engine/tip-mask.js';
 import { createBlobRef } from '../types.js';
 import { StorageNotFoundError } from '../errors.js';
 
@@ -175,12 +179,49 @@ class MemoryStampStore implements StampStore {
   }
 }
 
+class MemoryBrushStore implements BrushLibraryStore {
+  private _tips = new Map<string, { meta: BrushTipMeta; mask: TipMask }>();
+  private _presets = new Map<string, UserBrushPreset>();
+
+  // Copies go in and out, as a database's structured clone does, so a caller
+  // can't change what is stored.
+  async list() {
+    return {
+      tips: [...this._tips.values()].map(t => structuredClone(t.meta)).sort((a, b) => a.createdAt - b.createdAt),
+      presets: [...this._presets.values()].map(p => structuredClone(p)).sort((a, b) => a.createdAt - b.createdAt),
+    };
+  }
+  async getMask(id: string): Promise<TipMask | null> {
+    const t = this._tips.get(id);
+    return t ? { width: t.mask.width, height: t.mask.height, alpha: t.mask.alpha.slice() } : null;
+  }
+  async putBatch(batch: { tips?: { meta: BrushTipMeta; mask: TipMask }[]; presets?: UserBrushPreset[] }): Promise<void> {
+    for (const { meta, mask } of batch.tips ?? []) {
+      this._tips.set(meta.id, {
+        meta: structuredClone(meta),
+        mask: { width: mask.width, height: mask.height, alpha: mask.alpha.slice() },
+      });
+    }
+    for (const preset of batch.presets ?? []) this._presets.set(preset.id, structuredClone(preset));
+  }
+  async deletePreset(id: string): Promise<void> {
+    const tipId = this._presets.get(id)?.tipId;
+    this._presets.delete(id);
+    if (tipId && ![...this._presets.values()].some(p => p.tipId === tipId)) this._tips.delete(tipId);
+  }
+  async deleteTip(id: string): Promise<void> {
+    this._tips.delete(id);
+    for (const [pid, p] of this._presets) if (p.tipId === id) this._presets.delete(pid);
+  }
+}
+
 export class MemoryBackend implements StorageBackend {
   readonly blobs: BlobStore;
   readonly projects: ProjectStore;
   readonly state: ProjectStateStore;
   readonly history: ProjectHistoryStore;
   readonly stamps: StampStore;
+  readonly brushes: BrushLibraryStore = new MemoryBrushStore();
 
   /** `newId` generates project, blob and stamp ids; defaults to random UUIDs. */
   constructor(newId: () => string = generateUUID) {

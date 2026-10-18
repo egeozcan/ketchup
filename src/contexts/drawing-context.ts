@@ -1,8 +1,8 @@
 import { createContext } from '@lit/context';
 import type { DrawingState, ToolType } from '../types.js';
-import type { ProjectMeta } from '../storage/types.js';
+import type { ProjectMeta, BrushTipMeta } from '../storage/types.js';
 import type { ConfirmOptions } from '../components/confirm-dialog.js';
-import type { BlendMode, BrushDescriptor, TipDescriptor, InkDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushFade, BrushTexture } from '../engine/types.js';
+import type { BlendMode, BrushDescriptor, TipDescriptor, InkDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushFade, BrushTexture, BrushPreset } from '../engine/types.js';
 
 export interface DrawingContextValue {
   state: DrawingState;
@@ -48,6 +48,21 @@ export interface DrawingContextValue {
   setBrushFade: (fade: Partial<BrushFade>) => void;
   setBrushTexture: (texture: Partial<BrushTexture>) => void;
   selectPreset: (presetId: string) => void;
+  /** The user's sampled brush tips (shared by every project); empty where the backend keeps none. */
+  userTips: BrushTipMeta[];
+  /** The user's custom presets, listed under "Custom". */
+  userPresets: BrushPreset[];
+  /** Makes a custom brush from the current selection's pixels and selects it. Resolves to a message when it can't, else null. */
+  defineBrushFromSelection: () => Promise<string | null>;
+  /** Makes a custom brush from an image file and selects it. Resolves to a message when it can't, else null. */
+  defineBrushFromFile: (file: Blob, name?: string) => Promise<string | null>;
+  /** Loads the images of the custom presets, so their previews show the tip (only the active brush's is loaded otherwise). */
+  loadUserTips: () => void;
+  /** Paints with a library tip, keeping the rest of the brush. */
+  selectUserTip: (tipId: string) => void;
+  deleteUserPreset: (presetId: string) => Promise<void>;
+  /** Deletes a tip and the presets made on it (after asking). */
+  deleteUserTip: (tipId: string) => Promise<void>;
   setLayerBlendMode: (id: string, mode: BlendMode) => void;
   setLayerAlphaLocked: (id: string, locked: boolean) => void;
   setEyedropperSampleAll: (v: boolean) => void;

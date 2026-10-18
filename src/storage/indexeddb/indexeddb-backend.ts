@@ -1,11 +1,12 @@
 // src/storage/indexeddb/indexeddb-backend.ts
-import type { StorageBackend, BlobStore, ProjectStore, ProjectStateStore, ProjectHistoryStore, StampStore } from '../types.js';
+import type { StorageBackend, BlobStore, ProjectStore, ProjectStateStore, ProjectHistoryStore, StampStore, BrushLibraryStore } from '../types.js';
 import { StorageError, StorageClosedError } from '../errors.js';
 import { IndexedDBBlobStore } from './indexeddb-blobs.js';
 import { IndexedDBProjectStore } from './indexeddb-projects.js';
 import { IndexedDBStateStore } from './indexeddb-state.js';
 import { IndexedDBHistoryStore } from './indexeddb-history.js';
 import { IndexedDBStampStore } from './indexeddb-stamps.js';
+import { IndexedDBBrushStore } from './indexeddb-brushes.js';
 import { migrateV3toV4 } from './migration.js';
 
 export interface IndexedDBBackendOptions {
@@ -39,7 +40,11 @@ const DEFAULT_DB_NAME = 'ketchup-projects';
 // v6 is the same kind of gate, for the `alpha-lock` history entry: a v5 build
 // drops history it can't read (and everything older) and would then save
 // without each layer's lock.
-const DEFAULT_VERSION = 6;
+// v7 adds the user's brush library (`brush-tips`, `brush-tip-masks`,
+// `brush-presets`: a schema change) and is a gate as well: a v6 build doesn't
+// know the 'image' tip shape a brush may now name, and would fail on it in
+// the middle of a stroke.
+const DEFAULT_VERSION = 7;
 
 export class IndexedDBBackend implements StorageBackend {
   private _projects?: ProjectStore;
@@ -47,6 +52,7 @@ export class IndexedDBBackend implements StorageBackend {
   private _history?: ProjectHistoryStore;
   private _stamps?: StampStore;
   private _blobs?: BlobStore;
+  private _brushes?: BrushLibraryStore;
 
   get projects(): ProjectStore {
     if (!this._projects) throw new StorageError('Backend not initialized — call init() first');
@@ -63,6 +69,10 @@ export class IndexedDBBackend implements StorageBackend {
   get stamps(): StampStore {
     if (!this._stamps) throw new StorageError('Backend not initialized — call init() first');
     return this._stamps;
+  }
+  get brushes(): BrushLibraryStore {
+    if (!this._brushes) throw new StorageError('Backend not initialized — call init() first');
+    return this._brushes;
   }
   get blobs(): BlobStore {
     if (!this._blobs) throw new StorageError('Backend not initialized — call init() first');
@@ -200,6 +210,7 @@ export class IndexedDBBackend implements StorageBackend {
       this._state = new IndexedDBStateStore(this._connection);
       this._history = new IndexedDBHistoryStore(this._connection);
       this._stamps = new IndexedDBStampStore(this._connection, blobs);
+      this._brushes = new IndexedDBBrushStore(this._connection);
     }
   }
 
@@ -234,6 +245,19 @@ export class IndexedDBBackend implements StorageBackend {
         if (!db.objectStoreNames.contains('project-stamps')) {
           const store = db.createObjectStore('project-stamps', { keyPath: 'id' });
           store.createIndex('projectId', 'projectId');
+        }
+
+        // v6→v7: the brush library. Created whatever the old version, so a
+        // fresh install and a partial upgrade get it too.
+        if (!db.objectStoreNames.contains('brush-tips')) {
+          db.createObjectStore('brush-tips', { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains('brush-tip-masks')) {
+          db.createObjectStore('brush-tip-masks', { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains('brush-presets')) {
+          const store = db.createObjectStore('brush-presets', { keyPath: 'id' });
+          store.createIndex('tipId', 'tipId');
         }
 
         // v3→v4: create blobs store and migrate inline blobs

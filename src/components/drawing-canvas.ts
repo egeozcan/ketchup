@@ -2359,7 +2359,8 @@ export class DrawingCanvas extends LitElement {
     previewCtx.stroke();
 
     // Inner dashed ring for hardness
-    if (hardness < 1) {
+    // A sampled tip has its own edge, which the hardness doesn't shape.
+    if (hardness < 1 && brush.tip.shape !== 'image') {
       const innerRadius = outerRadius * hardness;
       previewCtx.beginPath();
       previewCtx.arc(cx, cy, innerRadius, 0, Math.PI * 2);
@@ -3840,6 +3841,24 @@ export class DrawingCanvas extends LitElement {
   }
 
   // --- Public selection API (for keyboard shortcuts) ---
+
+  /**
+   * The pixels of the selection (the float) as shown, clipped to the document,
+   * for sampling a brush tip from them. Read only: nothing is committed or
+   * pushed to history. Null when there is no selection or nothing of it is on
+   * the document.
+   */
+  public getFloatImage(): ImageData | null {
+    if (!this._transformManager) return null;
+    const snapshot = this._clippedFloatSnapshot();
+    if (!snapshot) return null;
+    try {
+      return snapshot.canvas.getContext('2d')!.getImageData(0, 0, snapshot.w, snapshot.h);
+    } catch (err) {
+      console.error('Reading the selection failed', err);
+      return null;
+    }
+  }
 
   public copySelection() {
     if (!this._transformManager) return;
