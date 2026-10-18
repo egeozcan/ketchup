@@ -2,8 +2,15 @@ import { LitElement, html, css, type PropertyValues } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import { blendModeToCompositeOp, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics } from '../engine/types.js';
-import { copyDescriptor, getDefaultDescriptor, getPresetById, normalizeDynamics } from '../engine/brush-presets.js';
+import { blendModeToCompositeOp, isBrushBlendMode, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics, type BrushJitter, type BrushScatter, type BrushColorDynamics, type BrushFade, type BrushTexture } from '../engine/types.js';
+import { copyDescriptor, getDefaultDescriptor, getPresetById, normalizeBrushDescriptor } from '../engine/brush-presets.js';
+import { BrushLibrary, toBrushPreset } from '../engine/brush-library.js';
+import { planAbrImport, logUnmapped } from '../engine/abr/to-brushes.js';
+import { AbrParseError } from '../engine/abr/errors.js';
+import type { TipMask } from '../engine/tip-mask.js';
+import { hasTipMask } from '../engine/tip-images.js';
+import { getDefaultTipDescriptor } from '../engine/brush-capabilities.js';
+import { maskFromImageData, maskFromImageFile } from '../utils/tip-from-image.js';
 import type { DrawingState, HistoryEntry, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
 import { IndexedDBBackend, MemoryBackend, ProjectService, StorageQuotaError, StorageNotFoundError, StorageClosedError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
@@ -85,6 +92,9 @@ function historyRecordBlobRefs(record: ProjectHistoryRecord): BlobRef[] {
   }
   return [...refs].filter(ref => typeof ref === 'string' && ref !== '');
 }
+
+/** Largest .abr file read (bigger libraries exist, but not for a browser to hold twice over). */
+const MAX_ABR_FILE_BYTES = 512 * 1024 * 1024;
 
 @customElement('drawing-app')
 export class DrawingApp extends LitElement {
@@ -299,6 +309,7 @@ export class DrawingApp extends LitElement {
       visible: true,
       opacity: 1.0,
       blendMode: 'normal' as BlendMode,
+      alphaLocked: false,
       canvas,
     };
   }
@@ -527,6 +538,7 @@ export class DrawingApp extends LitElement {
       visible: layer.visible,
       opacity: layer.opacity,
       blendMode: layer.blendMode,
+      alphaLocked: layer.alphaLocked === true,
       imageData: ctx.getImageData(0, 0, layer.canvas.width, layer.canvas.height),
     };
   }
@@ -739,6 +751,79 @@ export class DrawingApp extends LitElement {
     if (!this._dirty || !this._autosave || this._projectLoads > 0) return;
     this._cancelSaveRetry();
     if (!this._savePromise) this._scheduleSave();
+  }
+
+  /** The user's brush library, once storage is open (and the backend keeps one). */
+  private _library?: BrushLibrary;
+  private _userPresets() {
+    return (this._library?.presets ?? []).map(toBrushPreset);
+  }
+
+  /** Loads the active brush's sampled tip, if it names one that isn't in memory, so strokes can paint with it. */
+  private _syncTipImage() {
+    const tip = this._state.brush.tip;
+    const id = tip.shape === 'image' ? tip.imageId ?? null : null;
+    // ensureTip shares a read under way and remembers a failed one until the library is loaded again, so asking on every update is cheap.
+    // Also when it is loaded already (by another editor): the library then holds it too.
+    if (id) void this._library?.ensureTip(id);
+  }
+
+  /** Brush changes being stored: a reload for an update, or closing storage, waits for them. */
+  private _brushOps = new Set<Promise<unknown>>();
+
+  private _trackBrushOp<T>(op: Promise<T>): Promise<T> {
+    const tracked = op.finally(() => this._brushOps.delete(tracked));
+    this._brushOps.add(tracked);
+    return tracked;
+  }
+
+  private _brushStorageMessage(err: unknown): string {
+    return err instanceof StorageQuotaError
+      ? 'There is no room to store brushes. Delete some projects or brushes to make room.'
+      : 'Could not store the brush.';
+  }
+
+  /** Stores a sampled tip with a brush made on the current one, and selects it. Resolves to a message on failure. */
+  private async _defineBrush(mask: TipMask, name: string): Promise<string | null> {
+    const library = this._library;
+    if (!library) return 'Custom brushes are not available here.';
+    try {
+      const [preset] = await this._trackBrushOp(library.add([{ name, mask, descriptor: this._state.brush }]));
+      this._buildContextValue().selectPreset(preset.id);
+      return null;
+    } catch (err) {
+      console.error('Could not define the brush:', err);
+      return this._brushStorageMessage(err);
+    }
+  }
+
+  /** Reads a Photoshop brush file and stores its brushes as a group named after the file. */
+  private _importBrushFile(file: File, onProgress?: (fraction: number) => void): Promise<{ ok: boolean; message: string }> {
+    // Tracked from the read on, so a reload or storage upgrade doesn't cut in while the file is parsed.
+    return this._trackBrushOp(this._readAndStoreBrushFile(file, onProgress));
+  }
+
+  private async _readAndStoreBrushFile(file: File, onProgress?: (fraction: number) => void): Promise<{ ok: boolean; message: string }> {
+    const library = this._library;
+    if (!library) return { ok: false, message: 'Custom brushes are not available here.' };
+    if (file.size > MAX_ABR_FILE_BYTES) return { ok: false, message: 'That file is too large to import.' };
+    try {
+      const plan = await planAbrImport(await file.arrayBuffer(), { onProgress: onProgress && (f => onProgress(0.9 * f)) });
+      const group = file.name.replace(/\.[^.]*$/, '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'Imported brushes';
+      await library.importBrushes({ group, tips: plan.tips, brushes: plan.brushes, patterns: plan.patterns });
+      onProgress?.(1);
+      logUnmapped(file.name, plan.unmapped);
+      const n = plan.brushes.length;
+      return {
+        ok: true,
+        message: `Imported ${n} brush${n === 1 ? '' : 'es'}${plan.skipped > 0 ? `, ${plan.skipped} skipped` : ''}`,
+      };
+    } catch (err) {
+      if (err instanceof AbrParseError) return { ok: false, message: err.message };
+      if (err instanceof StorageQuotaError) return { ok: false, message: this._brushStorageMessage(err) };
+      console.error('Could not import the brushes:', err);
+      return { ok: false, message: err instanceof DOMException && err.name === 'NotReadableError' ? 'That file could not be read.' : 'Could not import the brushes.' };
+    }
   }
 
   private _updateBrush(partial: Partial<BrushDescriptor>) {
@@ -1229,6 +1314,8 @@ export class DrawingApp extends LitElement {
       }
       // Another tab created, renamed or deleted a project.
       else if (type === 'projects') void this._refreshProjects();
+      // Another tab added or deleted custom brushes.
+      else if (type === 'brushes') void this._library?.reload();
       // Let go of by a tab whose editor left the page: edit it here again,
       // if this tab is the one in view (a hidden tab tries for a free lock
       // when it comes into view, so a background tab doesn't take the
@@ -1831,6 +1918,14 @@ export class DrawingApp extends LitElement {
             tip: { ...this._state.brush.tip },
             ink: { ...this._state.brush.ink },
             dynamics: { ...this._state.brush.dynamics },
+            jitter: { ...this._state.brush.jitter },
+            scatter: { ...this._state.brush.scatter },
+            color: { ...this._state.brush.color },
+            fade: { ...this._state.brush.fade },
+            texture: { ...this._state.brush.texture },
+            blendMode: this._state.brush.blendMode,
+            airbrush: this._state.brush.airbrush,
+            airbrushRate: this._state.brush.airbrushRate,
             activePreset: this._state.activePreset,
             isPresetModified: this._state.isPresetModified,
             cropAspectRatio: this._state.cropAspectRatio,
@@ -1885,7 +1980,7 @@ export class DrawingApp extends LitElement {
             return preview.imageData;
           };
           const layerSnapshots = this._state.layers.map((l, i) => {
-            const meta = { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode };
+            const meta = { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode, alphaLocked: l.alphaLocked === true };
             if (reuseSaved || layerUnchanged[i]) return { ...meta, imageData: null as ImageData | null };
             if (floatKey && l.id === floatKey.layerId) {
               return { ...meta, imageData: readLayerWithFloat(l.id) as ImageData | null };
@@ -1977,7 +2072,7 @@ export class DrawingApp extends LitElement {
                 if (saved && saved.hash === layerHashes[i] && oldLayerRefs.includes(saved.blobRef)) {
                   return {
                     id: snap.id, name: snap.name, visible: snap.visible, opacity: snap.opacity,
-                    blendMode: snap.blendMode, imageBlobRef: saved.blobRef,
+                    blendMode: snap.blendMode, alphaLocked: snap.alphaLocked, imageBlobRef: saved.blobRef,
                   };
                 }
                 let imageData = snap.imageData;
@@ -2655,20 +2750,27 @@ export class DrawingApp extends LitElement {
         : layers[0].id;
       // Restore brush descriptor from flat saved fields (backward compat)
       const ts = record.toolSettings;
-      const defaultDesc = getDefaultDescriptor();
-      const restoredBrush: BrushDescriptor = {
-        size: ts.brushSize ?? defaultDesc.size,
-        opacity: ts.opacity ?? defaultDesc.opacity,
-        flow: ts.flow ?? defaultDesc.flow,
-        hardness: ts.hardness ?? defaultDesc.hardness,
-        spacing: ts.spacing ?? defaultDesc.spacing,
-        pressureSize: ts.pressureSize ?? defaultDesc.pressureSize,
-        pressureOpacity: ts.pressureOpacity ?? defaultDesc.pressureOpacity,
-        pressureCurve: ts.pressureCurve ?? defaultDesc.pressureCurve,
-        tip: { ...defaultDesc.tip, ...(ts.tip ?? {}) },
-        ink: { ...defaultDesc.ink, ...(ts.ink ?? {}) },
-        dynamics: normalizeDynamics(ts.dynamics),
-      };
+      const restoredBrush: BrushDescriptor = normalizeBrushDescriptor({
+        size: ts.brushSize,
+        opacity: ts.opacity,
+        flow: ts.flow,
+        hardness: ts.hardness,
+        spacing: ts.spacing,
+        pressureSize: ts.pressureSize,
+        pressureOpacity: ts.pressureOpacity,
+        pressureCurve: ts.pressureCurve,
+        tip: ts.tip,
+        ink: ts.ink,
+        dynamics: ts.dynamics as BrushDynamics | undefined,
+        jitter: ts.jitter as BrushJitter | undefined,
+        scatter: ts.scatter as BrushScatter | undefined,
+        color: ts.color as BrushColorDynamics | undefined,
+        fade: ts.fade as BrushFade | undefined,
+        texture: ts.texture as BrushTexture | undefined,
+        blendMode: ts.blendMode as BrushDescriptor['blendMode'] | undefined,
+        airbrush: ts.airbrush,
+        airbrushRate: ts.airbrushRate,
+      });
       this._state = {
         activeTool: ts.activeTool === 'marker' as string ? 'pencil' : ts.activeTool,
         strokeColor: ts.strokeColor,
@@ -2839,7 +2941,7 @@ export class DrawingApp extends LitElement {
         const cctx = cleared.getContext('2d')!;
         cctx.fillStyle = '#ffffff';
         cctx.fillRect(0, 0, w, h);
-        const baseLayer: Layer = { ...base, visible: true, opacity: 1, blendMode: 'normal' as BlendMode, canvas: cleared };
+        const baseLayer: Layer = { ...base, visible: true, opacity: 1, blendMode: 'normal' as BlendMode, alphaLocked: false, canvas: cleared };
         this._state = { ...this._state, layers: [baseLayer], activeLayerId: baseLayer.id };
         const afterLayers = this._snapshotAllLayers();
         this.canvas?.pushLayerOperation({
@@ -2951,6 +3053,17 @@ export class DrawingApp extends LitElement {
         this.canvas?.pushLayerOperation({ type: 'blend-mode', layerId: id, before, after: mode });
         this._markDirty();
       },
+      setLayerAlphaLocked: (id: string, locked: boolean) => {
+        const layer = this._state.layers.find(l => l.id === id);
+        if (!layer || (layer.alphaLocked === true) === locked) return;
+        const before = layer.alphaLocked === true;
+        const newLayers = this._state.layers.map(l =>
+          l.id === id ? { ...l, alphaLocked: locked } : l
+        );
+        this._state = { ...this._state, layers: newLayers };
+        this.canvas?.pushLayerOperation({ type: 'alpha-lock', layerId: id, before, after: locked });
+        this._markDirty();
+      },
       mergeLayerDown: (id: string) => {
         const layers = this._state.layers;
         const idx = layers.findIndex(l => l.id === id);
@@ -3039,6 +3152,7 @@ export class DrawingApp extends LitElement {
           visible: true,
           opacity: 1,
           blendMode: 'normal' as BlendMode,
+          alphaLocked: false,
           canvas: mergedCanvas,
         };
 
@@ -3088,8 +3202,23 @@ export class DrawingApp extends LitElement {
       setBrushDynamics: (dynamics: Partial<BrushDynamics>) => {
         this._updateBrush({ dynamics: { ...this._state.brush.dynamics, ...dynamics } });
       },
+      setBrushJitter: (jitter: Partial<BrushJitter>) => {
+        this._updateBrush({ jitter: { ...this._state.brush.jitter, ...jitter } });
+      },
+      setBrushScatter: (scatter: Partial<BrushScatter>) => {
+        this._updateBrush({ scatter: { ...this._state.brush.scatter, ...scatter } });
+      },
+      setBrushColorDynamics: (color: Partial<BrushColorDynamics>) => {
+        this._updateBrush({ color: { ...this._state.brush.color, ...color } });
+      },
+      setBrushFade: (fade: Partial<BrushFade>) => {
+        this._updateBrush({ fade: { ...this._state.brush.fade, ...fade } });
+      },
+      setBrushTexture: (texture: Partial<BrushTexture>) => {
+        this._updateBrush({ texture: { ...this._state.brush.texture, ...texture } });
+      },
       selectPreset: (presetId: string) => {
-        const preset = getPresetById(presetId);
+        const preset = getPresetById(presetId) ?? this._userPresets().find(p => p.id === presetId);
         if (!preset) return;
         const desc = preset.descriptor;
         this._state = {
@@ -3099,6 +3228,88 @@ export class DrawingApp extends LitElement {
           isPresetModified: false,
         };
         this._markDirty('setting');
+      },
+      userTips: this._library?.tips ?? [],
+      userPresets: this._userPresets(),
+      defineBrushFromSelection: async () => {
+        const image = this.canvas?.getFloatImage();
+        if (!image) return 'Select part of the image first.';
+        const mask = maskFromImageData(image);
+        if (!mask) return 'The selection has nothing to paint with: it is all white or transparent.';
+        return this._defineBrush(mask, `Brush ${this._userPresets().length + 1}`);
+      },
+      defineBrushFromFile: async (file: Blob, name?: string) => {
+        let mask;
+        try {
+          mask = await maskFromImageFile(file);
+        } catch {
+          return 'That file could not be read as an image.';
+        }
+        if (!mask) return 'The image has nothing to paint with: it is all white or transparent.';
+        return this._defineBrush(mask, name?.replace(/\.[^.]*$/, '').trim() || `Brush ${this._userPresets().length + 1}`);
+      },
+      loadUserTips: (groups?: string[]) => {
+        const wanted = groups ? new Set(groups) : null;
+        for (const p of this._library?.presets ?? []) {
+          if (p.tipId && (!wanted || wanted.has(p.group ?? ''))) void this._library!.ensureTip(p.tipId);
+        }
+      },
+      importBrushFile: (file: File, onProgress?: (fraction: number) => void) => this._importBrushFile(file, onProgress),
+      deleteUserGroup: async (group: string) => {
+        const count = this._library?.presets.filter(p => p.group === group).length ?? 0;
+        if (count === 0) return;
+        const ok = await this._confirm({
+          message: `Delete the ${count === 1 ? 'brush' : `${count} brushes`} imported from "${group}"? Projects that use their tips will paint with a round tip.`,
+          confirmLabel: 'Delete',
+          danger: true,
+        });
+        if (!ok) return;
+        try {
+          await this._trackBrushOp(Promise.resolve(this._library?.removeGroup(group)));
+        } catch (err) {
+          this._notice = this._brushStorageMessage(err);
+        }
+      },
+      selectUserTip: (tipId: string) => {
+        const meta = this._library?.tipMeta(tipId);
+        if (!meta) return;
+        this._updateBrush({
+          tip: { ...getDefaultTipDescriptor('image'), imageId: tipId },
+          spacing: meta.spacing,
+        });
+      },
+      deleteUserPreset: async (presetId: string) => {
+        // The tip goes with the last preset that uses it, and other projects' brushes with it.
+        const tipId = this._library?.presets.find(p => p.id === presetId)?.tipId;
+        if (tipId && !this._library!.presets.some(p => p.id !== presetId && p.tipId === tipId)) {
+          const ok = await this._confirm({
+            message: 'Delete this brush and its tip image? Projects that use the tip will paint with a round tip.',
+            confirmLabel: 'Delete',
+            danger: true,
+          });
+          if (!ok) return;
+        }
+        try {
+          await this._trackBrushOp(Promise.resolve(this._library?.removePreset(presetId)));
+        } catch (err) {
+          this._notice = this._brushStorageMessage(err);
+        }
+      },
+      deleteUserTip: async (tipId: string) => {
+        const uses = this._library?.presets.filter(p => p.tipId === tipId).length ?? 0;
+        const ok = await this._confirm({
+          message: uses > 0
+            ? `Delete this tip and the ${uses === 1 ? 'brush' : `${uses} brushes`} made from it? Projects that use it will paint with a round tip.`
+            : 'Delete this tip? Projects that use it will paint with a round tip.',
+          confirmLabel: 'Delete',
+          danger: true,
+        });
+        if (!ok) return;
+        try {
+          await this._trackBrushOp(Promise.resolve(this._library?.removeTip(tipId)));
+        } catch (err) {
+          this._notice = this._brushStorageMessage(err);
+        }
       },
       setEyedropperSampleAll: (v: boolean) => { this._state = { ...this._state, eyedropperSampleAll: v }; this._markDirty('setting'); },
       setStabilizer: (percent: number) => {
@@ -3260,6 +3471,7 @@ export class DrawingApp extends LitElement {
     // Nothing edits again here after storage was upgraded elsewhere (a load
     // or hand-over under way may have made the tab editable since).
     if (this._updateRequired && !this._readOnly) this._readOnly = true;
+    this._syncTipImage();
     this._provider.setValue(this._buildContextValue());
     this.toggleAttribute('mobile', this._isMobile);
     // The overlay's project list belongs to one showing of the overlay.
@@ -3700,6 +3912,7 @@ export class DrawingApp extends LitElement {
           visible: snapshot.visible,
           opacity: snapshot.opacity,
           blendMode: snapshot.blendMode ?? ('normal' as BlendMode),
+          alphaLocked: snapshot.alphaLocked === true,
           canvas,
         };
         const newLayers = [...this._state.layers];
@@ -3735,7 +3948,7 @@ export class DrawingApp extends LitElement {
           canvas.width = snap.imageData.width;
           canvas.height = snap.imageData.height;
           canvas.getContext('2d')!.putImageData(snap.imageData, 0, 0);
-          return { ...layer, canvas, visible: snap.visible, opacity: snap.opacity, blendMode: snap.blendMode ?? ('normal' as BlendMode), name: snap.name };
+          return { ...layer, canvas, visible: snap.visible, opacity: snap.opacity, blendMode: snap.blendMode ?? ('normal' as BlendMode), alphaLocked: snap.alphaLocked === true, name: snap.name };
         });
         this._applyDocumentDimensions(width, height);
         this._state = { ...this._state, layers: newLayers };
@@ -3755,6 +3968,7 @@ export class DrawingApp extends LitElement {
             visible: snap.visible,
             opacity: snap.opacity,
             blendMode: snap.blendMode ?? ('normal' as BlendMode),
+            alphaLocked: snap.alphaLocked === true,
             canvas,
           };
         });
@@ -3796,9 +4010,13 @@ export class DrawingApp extends LitElement {
     // Back after a while away (a cached view, say): reopen what leaving closed.
     // A failing save's retry stopped while out of the document: resume.
     if (this._saveError && this._dirty) this._scheduleSaveRetry();
+    // Back after letting go of the shared brush registries (see disconnectedCallback).
+    if (this._library?.released && !(this._backendClosed && this._backend)) void this._library.reload();
     if (this._backendClosed && this._backend) {
       this._backendClosed = false;
+      // The library may have changed meanwhile (other tabs say so only to open ones).
       const reopen = this._backend.init()
+        .then(() => this._library?.reload())
         .catch(e => {
           // Another window upgraded storage while this editor was away.
           if (e instanceof StorageClosedError && e.versionChange) this._enterStorageClosed();
@@ -3875,6 +4093,15 @@ export class DrawingApp extends LitElement {
       this._ownsBackend = !callerSupplied;
       this._autosave = !(this.embedded && !callerSupplied);
       this._projectService = new ProjectService(backend);
+      // Custom brushes are the user's, not a project's: loaded before any
+      // project, so a brush restored with a sampled tip finds it.
+      let brushStore;
+      try { brushStore = backend.brushes; } catch { /* a backend that isn't open keeps none */ }
+      if (brushStore) {
+        const library = new BrushLibrary(brushStore, () => this.requestUpdate(), () => this._tabs?.postMessage({ type: 'brushes' }));
+        this._library = library;
+        await library.load().catch(err => console.error('Could not load custom brushes:', err));
+      }
       this._storageProvider = new ContextProvider(this, {
         context: storageBackendContext,
         initialValue: this._backend,
@@ -3951,6 +4178,8 @@ export class DrawingApp extends LitElement {
     // settles. dispose() closes the IDBDatabase, so calling it while _save()
     // still has open transactions would cause InvalidStateError and silently
     // drop the user's final edits.
+    // The tips and patterns this editor registered are shared by every editor on the page: let go of them if it stays out.
+    setTimeout(() => { if (!this.isConnected) this._library?.release(); }, 0);
     if (this._dirty || this._savePromise) {
       // Capture the backend ref and ownership flag now — if the element
       // reconnects before the save settles, _initStorage() will assign a
@@ -4035,6 +4264,11 @@ export class DrawingApp extends LitElement {
       void this._backendReopen.then(() => this._closeBackend(backend));
       return;
     }
+    // A brush being stored finishes first.
+    if (backend === this._backend && this._brushOps.size > 0) {
+      void Promise.allSettled([...this._brushOps]).then(() => this._closeBackend(backend));
+      return;
+    }
     if (backend === this._backend) this._backendClosed = true;
     void backend.dispose();
   }
@@ -4056,6 +4290,8 @@ export class DrawingApp extends LitElement {
     try {
       if (this._dirty || this._savePromise) await this._flushPendingSaveAndWait();
       await this._savesDone();
+      // A brush being stored goes in before storage closes.
+      await Promise.allSettled([...this._brushOps]);
       // Work kept from a take-over can't be stored in its project, and the
       // reload this window now needs would lose it: stored as a new project
       // while storage is still open (what "Keep them as a new project" does).
@@ -4115,7 +4351,7 @@ export class DrawingApp extends LitElement {
   private _reloadIfIdle() {
     if (!this._updateReady && !this._storageClosed) return;
     if (this._hasUnsavedWork() || this._savePromise || this._stranded || this._claiming || this._keeping
-      || this._handingOver || this._projectLoads > 0 || (this._dirty && !this._storageClosed)
+      || this._handingOver || this._projectLoads > 0 || (this._dirty && !this._storageClosed) || this._brushOps.size > 0
       // A crop being set up, a selection being dragged, a dropped image's resize dialog.
       || this.canvas?.hasInteractionInProgress?.()) return;
     this._reload();

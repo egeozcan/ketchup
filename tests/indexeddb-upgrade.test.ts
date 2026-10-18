@@ -27,14 +27,14 @@ function appOn(backend: IndexedDBBackend, history: HistoryEntry[], index: number
 
 const versionOf = async (name: string) => (await indexedDB.databases()).find(d => d.name === name)?.version;
 
-describe('IndexedDB v4 to v5', () => {
+describe('IndexedDB upgrade to the current format', () => {
   const backends: IndexedDBBackend[] = [];
   afterEach(async () => {
     vi.restoreAllMocks();
     for (const b of backends.splice(0)) await b.dispose();
   });
 
-  it('opens a v4 database with projects in it at v5 and loads them as they were', async () => {
+  it('opens a v4 database with projects in it at the current version and loads them as they were', async () => {
     const name = `upgrade-v4-${Math.random()}`;
     // What an older build left: a v4 database holding a saved project.
     const old = new IndexedDBBackend({ dbName: name, version: 4 });
@@ -53,7 +53,7 @@ describe('IndexedDB v4 to v5', () => {
     const current = new IndexedDBBackend({ dbName: name });
     backends.push(current);
     await current.init();
-    expect(await versionOf(name)).toBe(5);
+    expect(await versionOf(name)).toBe(8);
     expect((await current.projects.list()).map(p => p.name)).toEqual(['Old']);
 
     const { app, canvas } = appOn(current, [], -1, 'fresh');
@@ -75,12 +75,14 @@ describe('IndexedDB v4 to v5', () => {
     await current.projects.create({ name: 'New', thumbnailRef: null });
     await current.dispose();
 
-    // What a v4 build does when it opens it.
-    const opened = await new Promise<string>(resolve => {
-      const req = indexedDB.open(name, 4);
-      req.onsuccess = () => { req.result.close(); resolve('opened'); };
-      req.onerror = () => resolve(req.error!.name);
-    });
-    expect(opened).toBe('VersionError');
+    // What a v4 or v5 build does when it opens it (v5 can't read `alpha-lock` history entries).
+    for (const version of [4, 5, 6, 7]) {
+      const opened = await new Promise<string>(resolve => {
+        const req = indexedDB.open(name, version);
+        req.onsuccess = () => { req.result.close(); resolve('opened'); };
+        req.onerror = () => resolve(req.error!.name);
+      });
+      expect(opened).toBe('VersionError');
+    }
   });
 });

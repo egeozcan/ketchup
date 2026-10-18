@@ -5,12 +5,13 @@ import { drawingContext, type DrawingContextValue } from '../contexts/drawing-co
 import type { Point, HistoryEntry, Layer, LayerSnapshot } from '../types.js';
 import { drawShapePreview, isShapeTool, shapeBounds } from '../tools/shapes.js';
 import { StampStrokeEngine } from '../engine/stamp-stroke.js';
+import { blendsInMemory, paintStroke } from '../engine/stroke-buffer-pool.js';
 import { stabilizerTimeConstant } from '../engine/stabilizer.js';
 import { blendModeToCompositeOp } from '../engine/types.js';
 import type { BrushDescriptor } from '../engine/types.js';
 import { tintAlphaMask } from '../engine/canvas-pool.js';
 import { createThrottledScheduler } from '../utils/raf-throttle.js';
-import { normalizePointerPressure, pointerTilt } from '../utils/pointer-pressure.js';
+import { normalizePointerPressure, pointerTilt, pointerTwist } from '../utils/pointer-pressure.js';
 import { getDefaultDescriptor } from '../engine/brush-presets.js';
 import { floodFill } from '../tools/fill.js';
 import { drawSelectionRect } from '../tools/select.js';
@@ -548,6 +549,11 @@ export class DrawingCanvas extends LitElement {
     };
   }
 
+  private _activeLayer(): Layer | undefined {
+    const state = this._ctx.value?.state;
+    return state?.layers.find(l => l.id === state.activeLayerId);
+  }
+
   private _getActiveLayerCtx(): CanvasRenderingContext2D | null {
     const state = this._ctx.value?.state;
     if (!state) return null;
@@ -623,8 +629,9 @@ export class DrawingCanvas extends LitElement {
         // destination-out would punch through the checkerboard and workspace
         // behind the document, so it merges onto a temp copy of the layer first.
         // Partial layer opacity and blend modes also have to merge, because the
-        // stroke's own opacity must be applied before the layer's is.
-        const canDrawDirect = !preview.eraser && layer.opacity >= 1 && layer.blendMode === 'normal';
+        // stroke's own opacity must be applied before the layer's is, and so do
+        // the brush's own mode and an alpha-locked layer.
+        const canDrawDirect = !preview.eraser && preview.mode === 'normal' && !preview.alphaLocked && layer.opacity >= 1 && layer.blendMode === 'normal';
 
         if (canDrawDirect) {
           displayCtx.drawImage(layer.canvas, 0, 0);
@@ -647,26 +654,31 @@ export class DrawingCanvas extends LitElement {
           // Start with the layer content. The layer doesn't change until the
           // stroke commits, and the stroke's bounds only grow, so after one full
           // copy per stroke only the stroke's region needs refreshing.
+          // A stroke blended in memory costs per pixel, so there only what the
+          // latest dabs touched is redone: the buffer is as the last frame saw
+          // it everywhere else, and the copy already holds that frame's result.
+          const delta = this._engine.takePreviewDelta();
+          let r: { x: number; y: number; w: number; h: number } | null = b;
           if (this._tintPreviewNeedsCopy) {
             tintCtx.clearRect(0, 0, this._docWidth, this._docHeight);
             tintCtx.drawImage(layer.canvas, 0, 0);
             this._tintPreviewNeedsCopy = false;
           } else {
-            tintCtx.clearRect(b.x, b.y, b.w, b.h);
-            tintCtx.drawImage(layer.canvas, b.x, b.y, b.w, b.h, b.x, b.y, b.w, b.h);
+            if (blendsInMemory(preview)) r = delta;
+            if (r) {
+              tintCtx.clearRect(r.x, r.y, r.w, r.h);
+              tintCtx.drawImage(layer.canvas, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
+            }
           }
 
-          tintCtx.globalAlpha = preview.opacity;
-          if (preview.eraser) {
-            // Apply eraser: destination-out on the layer copy
-            tintCtx.globalCompositeOperation = 'destination-out';
-            tintCtx.drawImage(preview.canvas as HTMLCanvasElement, b.x, b.y, b.w, b.h, b.x, b.y, b.w, b.h);
-          } else if (preview.color === null) {
-            // Color mode / wet brush — preview already has correct colors
-            tintCtx.drawImage(preview.canvas as HTMLCanvasElement, b.x, b.y, b.w, b.h, b.x, b.y, b.w, b.h);
-          } else {
-            const tinted = this._tintStrokeRegion(preview.canvas as HTMLCanvasElement, b, preview.color);
-            tintCtx.drawImage(tinted, b.x, b.y, b.w, b.h, b.x, b.y, b.w, b.h);
+          // The same call commit makes, so the preview shows what commit writes:
+          // erasing, the brush's mode and the layer's alpha lock all apply here.
+          // (An eraser's coverage is used as is, never tinted.)
+          if (r) {
+            const strokeSrc = preview.eraser || preview.color === null
+              ? preview.canvas
+              : this._tintStrokeRegion(preview.canvas as HTMLCanvasElement, r, preview.color);
+            paintStroke(tintCtx, strokeSrc, r, preview);
           }
 
           tintCtx.globalAlpha = 1;
@@ -1008,6 +1020,7 @@ export class DrawingCanvas extends LitElement {
       case 'opacity':
       case 'rename':
       case 'blend-mode':
+      case 'alpha-lock':
       case 'reorder':
         break;
       default:
@@ -1130,6 +1143,7 @@ export class DrawingCanvas extends LitElement {
    * in progress (the change, if any, is then not bounded by a stroke).
    */
   private _commitStroke(layerCtx: CanvasRenderingContext2D): PixelRect | undefined {
+    this._stopAirbrush();
     if (!this._engine.commit(layerCtx)) return undefined;
     const bounds = this._engine.getDirtyBounds();
     if (!bounds) return { x: 0, y: 0, w: 0, h: 0 };
@@ -1137,6 +1151,35 @@ export class DrawingCanvas extends LitElement {
     const pad = 2;
     return { x: bounds.x - pad, y: bounds.y - pad, w: bounds.w + pad * 2, h: bounds.h + pad * 2 };
   }
+
+  /**
+   * The airbrush loop: one requestAnimationFrame at a time, only while a brush
+   * stroke whose brush is an airbrush is under way. Each frame asks the engine
+   * for the dabs time owes (it counts time, not frames) and redoes the preview
+   * as a move does. It ends itself when the stroke is gone, and every end of a
+   * stroke (commit, cancel, blur, leaving the document) stops it outright.
+   */
+  private _airbrushFrame = 0;
+
+  private _startAirbrush() {
+    if (this._airbrushFrame || !this._drawing || !this._engine.airbrushActive) return;
+    this._airbrushFrame = requestAnimationFrame(this._onAirbrushFrame);
+  }
+
+  private _stopAirbrush() {
+    if (!this._airbrushFrame) return;
+    cancelAnimationFrame(this._airbrushFrame);
+    this._airbrushFrame = 0;
+  }
+
+  private _onAirbrushFrame = (now: number) => {
+    this._airbrushFrame = 0;
+    const { activeTool } = this.ctx.state;
+    if (!this._drawing || !this._engine.airbrushActive || (activeTool !== 'pencil' && activeTool !== 'eraser')) return;
+    // In-progress frames change no layer pixels, as with movement.
+    if (this._engine.tick(now) > 0) this.scheduleComposite(false);
+    this._airbrushFrame = requestAnimationFrame(this._onAirbrushFrame);
+  };
 
   /** Called by drawing-app for layer structural operations */
   public pushLayerOperation(entry: HistoryEntry) {
@@ -1276,6 +1319,7 @@ export class DrawingCanvas extends LitElement {
       case 'opacity':
       case 'rename':
       case 'blend-mode':
+      case 'alpha-lock':
       case 'transform':
         return entry.layerId;
       case 'add-layer':
@@ -1518,6 +1562,17 @@ export class DrawingCanvas extends LitElement {
         }
         break;
       }
+      case 'alpha-lock': {
+        const layer = state.layers.find(l => l.id === entry.layerId);
+        if (layer) {
+          layer.alphaLocked = entry.before;
+          this.dispatchEvent(new CustomEvent('layer-undo', {
+            bubbles: true, composed: true,
+            detail: { action: 'refresh' },
+          }));
+        }
+        break;
+      }
       case 'crop': {
         this.dispatchEvent(new CustomEvent('layer-undo', {
           bubbles: true, composed: true,
@@ -1617,6 +1672,17 @@ export class DrawingCanvas extends LitElement {
         const layer = state.layers.find(l => l.id === entry.layerId);
         if (layer) {
           (layer as unknown as Record<string, unknown>).blendMode = entry.after;
+          this.dispatchEvent(new CustomEvent('layer-undo', {
+            bubbles: true, composed: true,
+            detail: { action: 'refresh' },
+          }));
+        }
+        break;
+      }
+      case 'alpha-lock': {
+        const layer = state.layers.find(l => l.id === entry.layerId);
+        if (layer) {
+          layer.alphaLocked = entry.after;
           this.dispatchEvent(new CustomEvent('layer-undo', {
             bubbles: true, composed: true,
             detail: { action: 'refresh' },
@@ -2250,6 +2316,8 @@ export class DrawingCanvas extends LitElement {
   };
 
   private _onWindowBlur = () => {
+    this._stopAirbrush();
+    this._engine.suspendAirbrush();
     this._altSampling = false;
     this._clearEyedropperPreview();
     // Something may be copied elsewhere now; see paste().
@@ -2291,7 +2359,8 @@ export class DrawingCanvas extends LitElement {
     previewCtx.stroke();
 
     // Inner dashed ring for hardness
-    if (hardness < 1) {
+    // A sampled tip has its own edge, which the hardness doesn't shape.
+    if (hardness < 1 && brush.tip.shape !== 'image') {
       const innerRadius = outerRadius * hardness;
       previewCtx.beginPath();
       previewCtx.arc(cx, cy, innerRadius, 0, Math.PI * 2);
@@ -2561,7 +2630,7 @@ export class DrawingCanvas extends LitElement {
           // the fill's putImageData then shows through it (the fill had no
           // undo step): read it now.
           this._beforeDrawCanvas?.getContext('2d')!.getImageData(0, 0, 1, 1);
-          const filled = floodFill(layerCtx, fx, fy, this.ctx.state.strokeColor);
+          const filled = floodFill(layerCtx, fx, fy, this.ctx.state.strokeColor, undefined, this._activeLayer()?.alphaLocked === true);
           if (filled) {
             this._pushDrawHistory(false, filled);
             this.composite();
@@ -2646,6 +2715,8 @@ export class DrawingCanvas extends LitElement {
       const eraser = this.ctx.state.activeTool === 'eraser';
       this._engine.begin(desc, color, eraser, this._docWidth, this._docHeight, {
         stabilizerMs: stabilizerTimeConstant(this.ctx.state.stabilizer),
+        secondaryColor: this.ctx.state.fillColor,
+        alphaLocked: this._activeLayer()?.alphaLocked === true,
         // Client (screen) pixels per document pixel, through a host's CSS zoom too.
         viewScale: this._zoom / this._clientScale(this._getCanvasRect()).x,
       });
@@ -2654,7 +2725,8 @@ export class DrawingCanvas extends LitElement {
       this._strokeTintNeedsClear = true;
       this._tintPreviewNeedsCopy = true;
       const layerCtx = desc.ink.wetness > 0 ? this._getActiveLayerCtx() ?? undefined : undefined;
-      this._engine.stroke(p.x, p.y, normalizePointerPressure(e), layerCtx, e.timeStamp, pointerTilt(e));
+      this._engine.stroke(p.x, p.y, normalizePointerPressure(e), layerCtx, e.timeStamp, { ...pointerTilt(e), twist: pointerTwist(e) });
+      this._startAirbrush();
       this.composite();
     }
   }
@@ -2818,9 +2890,11 @@ export class DrawingCanvas extends LitElement {
       // catch up, and their pressure may be a lift.
       for (const sample of coalescedSamples(e)) {
         const sp = sample === e ? p : this._getDocPoint(sample);
-        this._engine.stroke(sp.x, sp.y, normalizePointerPressure(sample), layerCtx, sample.timeStamp, pointerTilt(sample));
+        this._engine.stroke(sp.x, sp.y, normalizePointerPressure(sample), layerCtx, sample.timeStamp, { ...pointerTilt(sample), twist: pointerTwist(sample) });
       }
       this._lastPoint = p;
+      // A blur stopped the loop; a pen still moving brings it back.
+      this._startAirbrush();
       // The stroke stays in the engine's buffer until pointerup; the layer is unchanged.
       this.scheduleComposite(false);
     } else if (isShapeTool(activeTool)) {
@@ -3005,6 +3079,8 @@ export class DrawingCanvas extends LitElement {
     if (activeTool === 'pencil' || activeTool === 'eraser') {
       const layerCtx = this._getActiveLayerCtx();
       if (layerCtx) {
+        // Time owed since the last frame is still owed: density follows the clock, not the frames.
+        if (this._engine.airbrushActive) this._engine.tick(e.timeStamp);
         region = this._commitStroke(layerCtx);
       }
     }
@@ -3069,6 +3145,7 @@ export class DrawingCanvas extends LitElement {
     try { this.mainCanvas.releasePointerCapture(pointerId); } catch { /* not captured */ }
 
     // Cancel brush/shape strokes
+    this._stopAirbrush();
     this._engine.cancel();
     if (this._drawing) {
       this._drawing = false;
@@ -3543,7 +3620,7 @@ export class DrawingCanvas extends LitElement {
     const beforeLayers: LayerSnapshot[] = state.layers.map(l => {
       const ctx = l.canvas.getContext('2d')!;
       return {
-        id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode,
+        id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode, alphaLocked: l.alphaLocked === true,
         imageData: ctx.getImageData(0, 0, l.canvas.width, l.canvas.height),
       };
     });
@@ -3563,7 +3640,7 @@ export class DrawingCanvas extends LitElement {
     const afterLayers: LayerSnapshot[] = state.layers.map(l => {
       const ctx = l.canvas.getContext('2d')!;
       return {
-        id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode,
+        id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode, alphaLocked: l.alphaLocked === true,
         imageData: ctx.getImageData(0, 0, l.canvas.width, l.canvas.height),
       };
     });
@@ -3764,6 +3841,24 @@ export class DrawingCanvas extends LitElement {
   }
 
   // --- Public selection API (for keyboard shortcuts) ---
+
+  /**
+   * The pixels of the selection (the float) as shown, clipped to the document,
+   * for sampling a brush tip from them. Read only: nothing is committed or
+   * pushed to history. Null when there is no selection or nothing of it is on
+   * the document.
+   */
+  public getFloatImage(): ImageData | null {
+    if (!this._transformManager) return null;
+    const snapshot = this._clippedFloatSnapshot();
+    if (!snapshot) return null;
+    try {
+      return snapshot.canvas.getContext('2d')!.getImageData(0, 0, snapshot.w, snapshot.h);
+    } catch (err) {
+      console.error('Reading the selection failed', err);
+      return null;
+    }
+  }
 
   public copySelection() {
     if (!this._transformManager) return;
@@ -4282,6 +4377,7 @@ export class DrawingCanvas extends LitElement {
     this._resizeObserver?.disconnect();
     this._resizeObserver = null;
     this._unwatchDevicePixelRatio();
+    this._stopAirbrush();
     this._compositeScheduler.cancel();
     // drawing-app flushes a pending viewport change from its own disconnect,
     // before deciding whether to save; by now it would only re-arm a save.

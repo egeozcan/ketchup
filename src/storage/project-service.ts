@@ -135,7 +135,7 @@ export function collectBlobRefsFromEntry(
       if (Array.isArray(e.beforeLayers)) e.beforeLayers.forEach(addLayer);
       if (Array.isArray(e.afterLayers)) e.afterLayers.forEach(addLayer);
       break;
-    // reorder, visibility, opacity, rename, blend-mode — no blobs
+    // reorder, visibility, opacity, rename, blend-mode, alpha-lock — no blobs
   }
 }
 

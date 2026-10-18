@@ -392,7 +392,7 @@ describe('DrawingApp', () => {
     // Once it does load, it is saved again.
     const serMod = await import('../src/utils/storage-serialization.js');
     const deserSpy = vi.spyOn(serMod, 'deserializeLayer').mockResolvedValue({
-      id: 'l1', name: 'Layer 1', visible: true, opacity: 1, blendMode: 'normal',
+      id: 'l1', name: 'Layer 1', visible: true, opacity: 1, blendMode: 'normal', alphaLocked: false,
       canvas: document.createElement('canvas'),
     });
     (app as any)._backend.state.get = vi.fn(async () => ({
@@ -457,7 +457,7 @@ describe('DrawingApp', () => {
       name: 'Layer 1',
       visible: true,
       opacity: 1,
-      blendMode: 'normal',
+      blendMode: 'normal', alphaLocked: false,
       canvas: document.createElement('canvas'),
     });
 
@@ -554,6 +554,116 @@ describe('DrawingApp', () => {
     expect((app as any)._desktopLayersPanelOpen).toBeNull();
   });
 
+  it.each([[undefined], ['bogus'], ['toString']])('loads a stored brush mode of %s as Normal', async (stored) => {
+    const app = createAppWithCanvasSpies();
+    Object.defineProperty(app, 'updateComplete', { configurable: true, get: () => Promise.resolve(true) });
+    (app as any)._backend = {
+      state: { get: vi.fn(async () => ({
+        toolSettings: { activeTool: 'pencil', strokeColor: '#000000', fillColor: '#ff0000', useFill: false, brushSize: 4, blendMode: stored },
+        canvasWidth: 100,
+        canvasHeight: 100,
+        layers: [{ id: 'real-layer', name: 'Layer 1', visible: true, opacity: 1, imageBlobRef: 'ref1' }],
+        activeLayerId: 'real-layer',
+        layersPanelOpen: true,
+        historyIndex: -1,
+      })) },
+      history: { getEntries: vi.fn(async () => []) },
+      blobs: { get: vi.fn(async () => new Blob([new Uint8Array(4)], { type: 'image/png' })) },
+    };
+    const serMod = await import('../src/utils/storage-serialization.js');
+    vi.spyOn(serMod, 'deserializeLayer').mockResolvedValue(makeLayer(100, 100, { id: 'real-layer', name: 'Layer 1' }));
+
+    await (app as any)._loadProject('test-project');
+
+    expect((app as any)._state.brush.blendMode).toBe('normal');
+  });
+
+  it.each([
+    [{}, false, 20],
+    [{ airbrush: true, airbrushRate: 45 }, true, 45],
+    [{ airbrush: 'yes', airbrushRate: 1e9 }, false, 60],
+    [{ airbrush: true, airbrushRate: 'fast' }, true, 20],
+  ])('loads stored airbrush settings %j as %s at %s a second', async (stored, airbrush, rate) => {
+    const app = createAppWithCanvasSpies();
+    Object.defineProperty(app, 'updateComplete', { configurable: true, get: () => Promise.resolve(true) });
+    (app as any)._backend = {
+      state: { get: vi.fn(async () => ({
+        toolSettings: { activeTool: 'pencil', strokeColor: '#000000', fillColor: '#ff0000', useFill: false, brushSize: 4, ...stored },
+        canvasWidth: 100,
+        canvasHeight: 100,
+        layers: [{ id: 'real-layer', name: 'Layer 1', visible: true, opacity: 1, imageBlobRef: 'ref1' }],
+        activeLayerId: 'real-layer',
+        layersPanelOpen: true,
+        historyIndex: -1,
+      })) },
+      history: { getEntries: vi.fn(async () => []) },
+      blobs: { get: vi.fn(async () => new Blob([new Uint8Array(4)], { type: 'image/png' })) },
+    };
+    const serMod = await import('../src/utils/storage-serialization.js');
+    vi.spyOn(serMod, 'deserializeLayer').mockResolvedValue(makeLayer(100, 100, { id: 'real-layer', name: 'Layer 1' }));
+
+    await (app as any)._loadProject('test-project');
+
+    expect((app as any)._state.brush.airbrush).toBe(airbrush);
+    expect((app as any)._state.brush.airbrushRate).toBe(rate);
+  });
+
+  it.each([
+    [{}, { sizeLength: 0, sizeUnit: 'distance', taperStart: 0 }],
+    [{ fade: { sizeLength: 300, taperStart: 25 } }, { sizeLength: 300, sizeUnit: 'distance', taperStart: 25 }],
+    [{ fade: { sizeLength: -4, taperStart: 'x' } }, { sizeLength: 0, sizeUnit: 'distance', taperStart: 0 }],
+  ])('loads stored fade settings %j as %j', async (stored, fade) => {
+    const app = createAppWithCanvasSpies();
+    Object.defineProperty(app, 'updateComplete', { configurable: true, get: () => Promise.resolve(true) });
+    (app as any)._backend = {
+      state: { get: vi.fn(async () => ({
+        toolSettings: { activeTool: 'pencil', strokeColor: '#000000', fillColor: '#ff0000', useFill: false, brushSize: 4, ...stored },
+        canvasWidth: 100,
+        canvasHeight: 100,
+        layers: [{ id: 'real-layer', name: 'Layer 1', visible: true, opacity: 1, imageBlobRef: 'ref1' }],
+        activeLayerId: 'real-layer',
+        layersPanelOpen: true,
+        historyIndex: -1,
+      })) },
+      history: { getEntries: vi.fn(async () => []) },
+      blobs: { get: vi.fn(async () => new Blob([new Uint8Array(4)], { type: 'image/png' })) },
+    };
+    const serMod = await import('../src/utils/storage-serialization.js');
+    vi.spyOn(serMod, 'deserializeLayer').mockResolvedValue(makeLayer(100, 100, { id: 'real-layer', name: 'Layer 1' }));
+
+    await (app as any)._loadProject('test-project');
+
+    expect((app as any)._state.brush.fade).toEqual(fade);
+  });
+
+  it.each([
+    [{}, { pattern: 'none', scale: 1, depth: 0.8, mode: 'multiply', invert: false, depthPressure: false, perTip: false }],
+    [{ texture: { pattern: 'canvas', scale: 2, depth: 0.5, mode: 'subtract', invert: true, depthPressure: true, perTip: true } }, { pattern: 'canvas', scale: 2, depth: 0.5, mode: 'subtract', invert: true, depthPressure: true, perTip: true }],
+    [{ texture: { pattern: 4, scale: 50, depth: 'x', mode: 'bogus' } }, { pattern: 'none', scale: 4, depth: 0.8, mode: 'multiply', invert: false, depthPressure: false, perTip: false }],
+  ])('loads stored texture settings %j as %j', async (stored, texture) => {
+    const app = createAppWithCanvasSpies();
+    Object.defineProperty(app, 'updateComplete', { configurable: true, get: () => Promise.resolve(true) });
+    (app as any)._backend = {
+      state: { get: vi.fn(async () => ({
+        toolSettings: { activeTool: 'pencil', strokeColor: '#000000', fillColor: '#ff0000', useFill: false, brushSize: 4, ...stored },
+        canvasWidth: 100,
+        canvasHeight: 100,
+        layers: [{ id: 'real-layer', name: 'Layer 1', visible: true, opacity: 1, imageBlobRef: 'ref1' }],
+        activeLayerId: 'real-layer',
+        layersPanelOpen: true,
+        historyIndex: -1,
+      })) },
+      history: { getEntries: vi.fn(async () => []) },
+      blobs: { get: vi.fn(async () => new Blob([new Uint8Array(4)], { type: 'image/png' })) },
+    };
+    const serMod = await import('../src/utils/storage-serialization.js');
+    vi.spyOn(serMod, 'deserializeLayer').mockResolvedValue(makeLayer(100, 100, { id: 'real-layer', name: 'Layer 1' }));
+
+    await (app as any)._loadProject('test-project');
+
+    expect((app as any)._state.brush.texture).toEqual(texture);
+  });
+
   it('restores advanced brush, crop, and text settings from saved project state', async () => {
     const app = createAppWithCanvasSpies();
 
@@ -580,6 +690,10 @@ describe('DrawingApp', () => {
         tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' as const },
         ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
         dynamics: { sizeVelocity: -0.5, flowVelocity: 7, minSize: 0.2, tilt: 0.7 },
+        jitter: { size: 0.4, angle: 3, roundness: 0.1 },
+        scatter: { amount: 9, bothAxes: true, count: 4.4, countJitter: 0.3 },
+        color: { hue: 3, saturation: 0.2, purity: -5, fgBgPressure: true, perTip: false },
+        blendMode: 'color-burn',
         activePreset: 'flat',
         isPresetModified: true,
         cropAspectRatio: '16:9',
@@ -627,6 +741,12 @@ describe('DrawingApp', () => {
       ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
       // Out of range, so clamped.
       dynamics: { sizeVelocity: -0.5, flowVelocity: 1, minSize: 0.2, tilt: 0.7 },
+      jitter: { size: 0.4, angle: 1, roundness: 0.1, flow: 0 },
+      // Out of range, so clamped.
+      scatter: { amount: 5, bothAxes: true, count: 4, countJitter: 0.3 },
+      // Out of range or missing, so clamped or defaulted.
+      color: { hue: 1, saturation: 0.2, brightness: 0, purity: -1, fgBg: 0, fgBgPressure: true, perTip: false },
+      blendMode: 'color-burn',
     });
     expect((app as any)._state.stampSize).toBe(320);
     expect((app as any)._state.activePreset).toBe('flat');
@@ -731,6 +851,8 @@ describe('DrawingApp', () => {
         tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' },
         ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
         dynamics: { sizeVelocity: 0.3, flowVelocity: -0.2, minSize: 0.15, tilt: 0.4 },
+        jitter: { size: 0.2, angle: 0.3, roundness: 0.6 },
+        blendMode: 'color-burn',
       },
       activePreset: 'flat',
       isPresetModified: true,
@@ -794,6 +916,8 @@ describe('DrawingApp', () => {
       tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' },
       ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
       dynamics: { sizeVelocity: 0.3, flowVelocity: -0.2, minSize: 0.15, tilt: 0.4 },
+      jitter: { size: 0.2, angle: 0.3, roundness: 0.6 },
+      blendMode: 'color-burn',
       activePreset: 'flat',
       isPresetModified: true,
       cropAspectRatio: '16:9',

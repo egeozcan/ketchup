@@ -7,31 +7,37 @@ describe('brush tip capabilities', () => {
       aspect: false,
       rotation: false,
       bristles: false,
+      hardness: true,
     });
     expect(getTipCapabilities('flat')).toEqual({
       aspect: true,
       rotation: true,
       bristles: false,
+      hardness: true,
     });
     expect(getTipCapabilities('chisel')).toEqual({
       aspect: true,
       rotation: true,
       bristles: false,
+      hardness: true,
     });
     expect(getTipCapabilities('calligraphy')).toEqual({
       aspect: true,
       rotation: true,
       bristles: false,
+      hardness: true,
     });
     expect(getTipCapabilities('fan')).toEqual({
       aspect: false,
       rotation: true,
       bristles: true,
+      hardness: true,
     });
     expect(getTipCapabilities('splatter')).toEqual({
       aspect: false,
       rotation: true,
       bristles: true,
+      hardness: true,
     });
   });
 

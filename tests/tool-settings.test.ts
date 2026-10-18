@@ -10,6 +10,7 @@ function renderBrushSettings(
   brushOverrides: { flow?: number; pressureOpacity?: boolean; pressureSize?: boolean; dynamics?: { flowVelocity?: number; minSize?: number; tilt?: number } } = {},
   setBrushTip = vi.fn(),
   setBrushDynamics = vi.fn(),
+  setBrushJitter = vi.fn(),
 ): HTMLElement {
   const settings = new ToolSettings();
   (settings as any)._advancedOpen = true;
@@ -23,6 +24,7 @@ function renderBrushSettings(
       setBrushTip,
       setBrushInk: vi.fn(),
       setBrushDynamics,
+      setBrushJitter,
       selectPreset: vi.fn(),
     },
   };
@@ -66,6 +68,72 @@ describe('ToolSettings keyboard handling', () => {
 });
 
 describe('ToolSettings brush controls', () => {
+  it('sets scatter from its controls once the group is opened', () => {
+    const setBrushScatter = vi.fn();
+    const settings = new ToolSettings();
+    (settings as any)._scatterOpen = true;
+    (settings as any)._ctx = { value: { state: makeState({ activeTool: 'pencil' }), isMobile: true, setBrushScatter } };
+    const container = document.createElement('div');
+    render(settings.render(), container);
+    for (const [label, key, raw, value] of [['Scatter', 'amount', '250', 2.5], ['Count', 'count', '7', 7], ['Count jitter', 'countJitter', '40', 0.4]] as const) {
+      const input = container.querySelector(`input[aria-label="${label} scatter"]`) as HTMLInputElement;
+      input.value = raw;
+      input.dispatchEvent(new Event('input'));
+      expect(setBrushScatter).toHaveBeenLastCalledWith({ [key]: value });
+    }
+    const both = container.querySelector('input[aria-label="Both axes"]') as HTMLInputElement;
+    both.checked = true;
+    both.dispatchEvent(new Event('change'));
+    expect(setBrushScatter).toHaveBeenLastCalledWith({ bothAxes: true });
+  });
+
+  it('sets colour dynamics from its controls once the group is opened, and hides the group from the eraser', () => {
+    const setBrushColorDynamics = vi.fn();
+    const settings = new ToolSettings();
+    (settings as any)._colorOpen = true;
+    (settings as any)._ctx = { value: { state: makeState({ activeTool: 'pencil' }), isMobile: true, setBrushColorDynamics } };
+    const container = document.createElement('div');
+    render(settings.render(), container);
+    for (const [label, key, raw, value] of [['Hue', 'hue', '60', 0.6], ['Purity', 'purity', '-40', -0.4], ['FG/BG', 'fgBg', '25', 0.25]] as const) {
+      const input = container.querySelector(`input[aria-label="${label} color"]`) as HTMLInputElement;
+      input.value = raw;
+      input.dispatchEvent(new Event('input'));
+      expect(setBrushColorDynamics).toHaveBeenLastCalledWith({ [key]: value });
+    }
+    const setFillColor = vi.fn();
+    (settings as any)._ctx = { value: { state: makeState({ activeTool: 'pencil' }), isMobile: true, setBrushColorDynamics, setFillColor } };
+    render(settings.render(), container);
+    const fill = container.querySelector('input[aria-label="Fill colour"]') as HTMLInputElement;
+    fill.value = '#00ff00';
+    fill.dispatchEvent(new Event('input'));
+    expect(setFillColor).toHaveBeenCalledWith('#00ff00');
+    const perTip = container.querySelector('input[aria-label="Per tip color"]') as HTMLInputElement;
+    perTip.checked = false;
+    perTip.dispatchEvent(new Event('change'));
+    expect(setBrushColorDynamics).toHaveBeenLastCalledWith({ perTip: false });
+
+    (settings as any)._ctx = { value: { state: makeState({ activeTool: 'eraser' }), isMobile: true, setBrushColorDynamics } };
+    const erased = document.createElement('div');
+    render(settings.render(), erased);
+    expect(erased.querySelector('input[aria-label="Hue color"]')).toBeNull();
+  });
+
+  it('sets jitter from its sliders once the group is opened', () => {
+    const setBrushJitter = vi.fn();
+    const settings = new ToolSettings();
+    (settings as any)._jitterOpen = true;
+    (settings as any)._ctx = { value: { state: makeState({ activeTool: 'pencil' }), isMobile: true, setBrushJitter } };
+    const container = document.createElement('div');
+    render(settings.render(), container);
+    for (const [label, key] of [['Size', 'size'], ['Angle', 'angle'], ['Roundness', 'roundness'], ['Flow', 'flow']]) {
+      const input = container.querySelector(`input[aria-label="${label} jitter"]`) as HTMLInputElement;
+      input.value = '40';
+      input.dispatchEvent(new Event('input'));
+      expect(setBrushJitter).toHaveBeenLastCalledWith({ [key]: 0.4 });
+    }
+  });
+
+
   it('renders only controls supported by the selected tip shape', () => {
     const round = renderBrushSettings('round').textContent ?? '';
     expect(round).not.toContain('Aspect');
@@ -293,5 +361,127 @@ describe('ToolSettings stamp controls', () => {
     expect(getBlob).not.toHaveBeenCalled();
     expect(deleteStamp).not.toHaveBeenCalled();
     expect(setStampImage).not.toHaveBeenCalled();
+  });
+});
+
+describe('ToolSettings airbrush', () => {
+  function render_(airbrush: boolean, airbrushRate = 20, activeTool: 'pencil' | 'eraser' = 'pencil') {
+    const setBrush = vi.fn();
+    const settings = new ToolSettings();
+    (settings as any)._ctx = {
+      value: {
+        state: makeState({ activeTool, brush: { airbrush, airbrushRate } }),
+        isMobile: true,
+        setBrush, setBrushTip: vi.fn(), setBrushInk: vi.fn(), setBrushDynamics: vi.fn(), setBrushJitter: vi.fn(), selectPreset: vi.fn(),
+      },
+    };
+    const container = document.createElement('div');
+    render(settings.render(), container);
+    return { container, setBrush };
+  }
+
+  it('toggles the airbrush and shows its rate only while on', () => {
+    const off = render_(false);
+    const toggle = off.container.querySelector<HTMLInputElement>('input[aria-label="Airbrush"]')!;
+    expect(toggle.checked).toBe(false);
+    expect(off.container.querySelector('input[aria-label="Airbrush rate"]')).toBeNull();
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change'));
+    expect(off.setBrush).toHaveBeenCalledWith({ airbrush: true });
+
+    const on = render_(true, 35);
+    const rate = on.container.querySelector<HTMLInputElement>('input[aria-label="Airbrush rate"]')!;
+    expect(rate.value).toBe('35');
+    rate.value = '50';
+    rate.dispatchEvent(new Event('input'));
+    expect(on.setBrush).toHaveBeenCalledWith({ airbrushRate: 50 });
+  });
+
+  it('is offered to the eraser too', () => {
+    expect(render_(false, 20, 'eraser').container.querySelector('input[aria-label="Airbrush"]')).not.toBeNull();
+  });
+});
+
+describe('ToolSettings fades', () => {
+  function render_(fade = {}) {
+    const setBrushFade = vi.fn();
+    const settings = new ToolSettings();
+    (settings as any)._ctx = {
+      value: {
+        state: makeState({ activeTool: 'pencil', brush: { fade, pressureSize: false } }),
+        isMobile: true,
+        setBrush: vi.fn(), setBrushTip: vi.fn(), setBrushInk: vi.fn(), setBrushDynamics: vi.fn(), setBrushJitter: vi.fn(), setBrushFade, selectPreset: vi.fn(),
+      },
+    };
+    const container = document.createElement('div');
+    render(settings.render(), container);
+    return { container, setBrushFade };
+  }
+
+  it('sets the taper and size fade lengths, in pixels', () => {
+    const { container, setBrushFade } = render_({ taperStart: 30, sizeLength: 0 });
+    const taper = container.querySelector<HTMLInputElement>('input[aria-label="Taper start"]')!;
+    const fade = container.querySelector<HTMLInputElement>('input[aria-label="Size fade"]')!;
+    expect(taper.value).toBe('30');
+    expect(fade.value).toBe('0');
+    fade.value = '400';
+    fade.dispatchEvent(new Event('input'));
+    expect(setBrushFade).toHaveBeenLastCalledWith({ sizeLength: 400 });
+    taper.value = '0';
+    taper.dispatchEvent(new Event('input'));
+    expect(setBrushFade).toHaveBeenLastCalledWith({ taperStart: 0 });
+  });
+
+  it('shows the minimum size they shrink toward even without stylus size', () => {
+    expect(render_().container.querySelector('input[aria-label="Minimum size"]')).toBeNull();
+    expect(render_({ taperStart: 20 }).container.querySelector('input[aria-label="Minimum size"]')).not.toBeNull();
+  });
+});
+
+describe('ToolSettings texture', () => {
+  function render_(texture = {}, activeTool: 'pencil' | 'eraser' = 'pencil') {
+    const setBrushTexture = vi.fn();
+    const settings = new ToolSettings();
+    (settings as any)._textureOpen = true;
+    (settings as any)._ctx = {
+      value: {
+        state: makeState({ activeTool, brush: { texture } }),
+        isMobile: true,
+        setBrush: vi.fn(), setBrushTip: vi.fn(), setBrushInk: vi.fn(), setBrushDynamics: vi.fn(), setBrushJitter: vi.fn(), setBrushTexture, selectPreset: vi.fn(),
+      },
+    };
+    const container = document.createElement('div');
+    render(settings.render(), container);
+    return { container, setBrushTexture };
+  }
+
+  it('sets the pattern, mode, scale, depth and the switches', () => {
+    const { container, setBrushTexture } = render_({ pattern: 'paper', scale: 1.5, depth: 0.4, perTip: true });
+    const pattern = container.querySelector<HTMLSelectElement>('select[aria-label="Texture pattern"]')!;
+    expect(Array.from(pattern.options).map(o => o.value)).toEqual(['none', 'paper', 'canvas', 'noise', 'charcoal']);
+    pattern.value = 'canvas';
+    pattern.dispatchEvent(new Event('change'));
+    expect(setBrushTexture).toHaveBeenLastCalledWith({ pattern: 'canvas' });
+    const mode = container.querySelector<HTMLSelectElement>('select[aria-label="Texture mode"]')!;
+    mode.value = 'height';
+    mode.dispatchEvent(new Event('change'));
+    expect(setBrushTexture).toHaveBeenLastCalledWith({ mode: 'height' });
+    const scale = container.querySelector<HTMLInputElement>('input[aria-label="Scale texture"]')!;
+    const depth = container.querySelector<HTMLInputElement>('input[aria-label="Depth texture"]')!;
+    expect(scale.value).toBe('150');
+    expect(depth.value).toBe('40');
+    depth.value = '90';
+    depth.dispatchEvent(new Event('input'));
+    expect(setBrushTexture).toHaveBeenLastCalledWith({ depth: 0.9 });
+    const invert = container.querySelector<HTMLInputElement>('input[aria-label="Invert texture"]')!;
+    invert.checked = true;
+    invert.dispatchEvent(new Event('change'));
+    expect(setBrushTexture).toHaveBeenLastCalledWith({ invert: true });
+  });
+
+  it('offers depth by pressure only for texture on each tip, and for the eraser too', () => {
+    expect(render_({ perTip: false }).container.querySelector('input[aria-label="Depth by pressure texture"]')).toBeNull();
+    expect(render_({ perTip: true }).container.querySelector('input[aria-label="Depth by pressure texture"]')).not.toBeNull();
+    expect(render_({}, 'eraser').container.querySelector('select[aria-label="Texture pattern"]')).not.toBeNull();
   });
 });

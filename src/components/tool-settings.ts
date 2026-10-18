@@ -5,9 +5,13 @@ import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import { storageBackendContext, projectServiceContext } from '../storage/storage-context.js';
 import type { StampEntry } from '../storage/types.js';
-import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushDynamics, BrushPreset } from '../engine/types.js';
-import { BRUSH_PRESETS, copyDescriptor } from '../engine/brush-presets.js';
+import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushDynamics, BrushJitter, BrushPreset, BrushBlendMode, BrushTexture, TextureMode } from '../engine/types.js';
+import { BRUSH_BLEND_MODE_LABELS, TEXTURE_MODE_LABELS } from '../engine/types.js';
+import { BRUSH_PRESETS, MAX_SCATTER, MAX_SCATTER_COUNT, colorDynamicsActive, copyDescriptor, MIN_AIRBRUSH_RATE, MAX_AIRBRUSH_RATE, normalizeAirbrushRate } from '../engine/brush-presets.js';
+import { texturePatternList } from '../engine/brush-texture.js';
 import { getDefaultTipDescriptor, getTipCapabilities } from '../engine/brush-capabilities.js';
+import { tipMaskRevision } from '../engine/tip-images.js';
+import type { BrushTipMeta } from '../storage/types.js';
 import { StampStrokeEngine, tiltStretch } from '../engine/stamp-stroke.js';
 import { getStampThumbnailUrl, removeStampThumbnail } from '../utils/stamp-thumbnail-cache.js';
 import { MAX_STAMP_SIZE, MIN_STAMP_SIZE } from '../tools/stamp-size.js';
@@ -704,6 +708,109 @@ export class ToolSettings extends LitElement {
       text-align: left;
     }
 
+    .brush-dropdown-row {
+      display: flex;
+      align-items: center;
+    }
+    .brush-dropdown-row .brush-dropdown-item {
+      flex: 1;
+      min-width: 0;
+    }
+    .brush-dropdown-delete {
+      background: none;
+      border: none;
+      color: #999;
+      cursor: pointer;
+      padding: 0.25rem 0.5rem;
+      font-size: 1rem;
+      line-height: 1;
+    }
+    .brush-dropdown-delete:hover {
+      color: #f88;
+    }
+    .brush-dropdown-heading {
+      padding: 0.25rem 0.5rem;
+      font-size: 0.6875rem;
+      color: #999;
+      text-transform: uppercase;
+      border-top: 1px solid #444;
+    }
+    .brush-dropdown-heading.group-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0;
+    }
+    .group-toggle {
+      flex: 1;
+      min-width: 0;
+      background: none;
+      border: none;
+      color: inherit;
+      font: inherit;
+      text-transform: inherit;
+      text-align: left;
+      padding: 0.25rem 0.5rem;
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .import-progress {
+      width: 100%;
+      height: 0.5rem;
+    }
+    .tip-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+      max-height: 7.5rem;
+      overflow-y: auto;
+    }
+    .tip-cell {
+      position: relative;
+    }
+    .tip-cell > button.tip-pick {
+      display: block;
+      width: 2.5rem;
+      height: 2.5rem;
+      padding: 0;
+      background: #fff;
+      border: 2px solid #555;
+      border-radius: 0.25rem;
+      cursor: pointer;
+    }
+    .tip-cell > button.tip-pick.active {
+      border-color: #7ab8ff;
+    }
+    .tip-cell > button.tip-pick img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+    .tip-cell > button.tip-delete {
+      position: absolute;
+      top: -0.25rem;
+      right: -0.25rem;
+      width: 1rem;
+      height: 1rem;
+      padding: 0;
+      border-radius: 50%;
+      background: #222;
+      color: #ddd;
+      border: 1px solid #666;
+      font-size: 0.75rem;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .tip-message {
+      font-size: 0.75rem;
+      color: #bbb;
+    }
+    .tip-message.error {
+      color: #f99;
+    }
     .brush-dropdown-item:hover {
       background: #444;
     }
@@ -1112,7 +1219,18 @@ export class ToolSettings extends LitElement {
   @state() private _stampMessageError = false;
   @state() private _projectDropdownOpen = false;
   @state() private _advancedOpen = false;
+  @state() private _jitterOpen = false;
+  @state() private _scatterOpen = false;
+  @state() private _colorOpen = false;
+  @state() private _textureOpen = false;
   @state() private _brushDropdownOpen = false;
+  @state() private _tipMessage = '';
+  @state() private _tipMessageError = false;
+  /** Imported groups open in the preset picker; they start closed, since one file can hold thousands of brushes. */
+  @state() private _openGroups = new Set<string>();
+  /** 0..1 while a brush file is being imported, else null. */
+  @state() private _importProgress: number | null = null;
+  private _tipThumbUrls = new Map<string, string>();
   /** Which desktop settings panel (color or brush) is open, if any. */
   @state() private _openPanel: 'color' | 'brush' | null = null;
   private _refocusAfterClose = false;
@@ -1520,7 +1638,8 @@ export class ToolSettings extends LitElement {
   }
 
   private _generatePreview(preset: BrushPreset, eraser = false): string {
-    const cacheKey = `${eraser ? 'eraser' : 'paint'}:${preset.id}`;
+    // A sampled tip's image may arrive after the first preview, which showed it round.
+    const cacheKey = `${eraser ? 'eraser' : 'paint'}:${preset.id}:${tipMaskRevision(preset.descriptor.tip.imageId)}`;
     const cached = this._previewCache.get(cacheKey);
     if (cached) return cached;
 
@@ -1530,7 +1649,7 @@ export class ToolSettings extends LitElement {
   }
 
   private _generateCustomPreview(descriptor: BrushDescriptor, eraser = false): string {
-    const key = `${eraser ? 'eraser' : 'paint'}:${JSON.stringify(descriptor)}`;
+    const key = `${eraser ? 'eraser' : 'paint'}:${tipMaskRevision(descriptor.tip.imageId)}:${JSON.stringify(descriptor)}`;
     if (key === this._customPreviewKey) return this._customPreviewUrl;
 
     this._customPreviewKey = key;
@@ -1552,15 +1671,20 @@ export class ToolSettings extends LitElement {
     ctx.fillStyle = '#2a2a2a';
     ctx.fillRect(0, 0, W, H);
 
-    const previewSize = Math.max(2, Math.min(18, 2 + Math.log2(Math.max(1, descriptor.size)) * 2.5));
-    const d: BrushDescriptor = { ...copyDescriptor(descriptor), size: previewSize };
+    // With scatter the dab shrinks to leave room for the spread, keeping the ratio the slider sets.
+    const scatterRoom = 12;
+    const fitted = Math.max(2, Math.min(18, 2 + Math.log2(Math.max(1, descriptor.size)) * 2.5));
+    const previewSize = descriptor.scatter.amount > 0 ? Math.max(2, Math.min(fitted, scatterRoom / descriptor.scatter.amount)) : fitted;
+    // The preview strokes an empty canvas, where a mode such as Behind would show nothing.
+    const d: BrushDescriptor = { ...copyDescriptor(descriptor), size: previewSize, blendMode: 'normal' };
 
     // Generate S-curve points — keep amplitude small enough that
     // the largest stamp (previewSize) stays fully within the canvas
     const padX = 8;
     // Half the largest stamp, as long as the preview's lean stretches it, + margin.
     const maxTipR = previewSize / 2 * tiltStretch(PREVIEW_TILT.tiltX, PREVIEW_TILT.tiltY, d.dynamics.tilt).stretch + 2;
-    const amplitude = Math.max(2, (H / 2 - maxTipR) * 0.8);
+    const room = Math.max(0, H / 2 - maxTipR);
+    const amplitude = Math.max(2, (room - d.scatter.amount * previewSize) * 0.8);
     const cy = H / 2;
     const totalLen = W - padX * 2;
 
@@ -1589,7 +1713,10 @@ export class ToolSettings extends LitElement {
       strokeCtx.fillStyle = '#cccccc';
       strokeCtx.fillRect(0, 0, W, H);
     }
-    this._previewEngine.begin(d, '#cccccc', eraser, W, H);
+    // A fixed seed, so the preview changes only with the settings, not with a fresh roll of the jitter.
+    // Grey shows no change of hue, so a brush that varies colour is previewed in two vivid ones.
+    const varies = !eraser && colorDynamicsActive(d.color);
+    this._previewEngine.begin(d, varies ? '#e8a23a' : '#cccccc', eraser, W, H, { seed: 1, secondaryColor: varies ? '#3a8ce8' : undefined });
 
     let timestamp = 0;
 
@@ -1730,6 +1857,7 @@ export class ToolSettings extends LitElement {
   private _toggleBrushDropdown() {
     this._brushDropdownOpen = !this._brushDropdownOpen;
     if (this._brushDropdownOpen) {
+      this.ctx.loadUserTips?.(['', ...this._openGroups]);
       // Close on outside click
       requestAnimationFrame(() => {
         document.addEventListener('click', this._onBrushDropdownOutsideClick);
@@ -1879,6 +2007,175 @@ export class ToolSettings extends LitElement {
           </button>
         </div>
       </div>
+      <div class="separator"></div>
+      <div class="transform-section">
+        <label>Brush</label>
+        <div class="transform-row">
+          <button
+            class="pill-btn"
+            title="Make a brush tip from the selection: dark parts paint, light and transparent parts don't."
+            @click=${this._defineFromSelection}
+          >Define brush</button>
+        </div>
+        ${this._renderTipMessage()}
+      </div>
+    `;
+  }
+
+  private _renderTipMessage() {
+    return this._tipMessage
+      ? html`<div class="tip-message ${this._tipMessageError ? 'error' : ''}" role="status">${this._tipMessage}</div>`
+      : nothing;
+  }
+
+  private _showTipMessage(message: string | null, ok = '') {
+    this._tipMessage = message ?? ok;
+    this._tipMessageError = message !== null;
+  }
+
+  private _defineFromSelection = async () => {
+    this._showTipMessage(null);
+    this._showTipMessage(await this.ctx.defineBrushFromSelection(), 'Brush added to Custom.');
+  };
+
+  private _defineFromFile = async (e: Event) => {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    // Cleared so choosing the same file again fires change.
+    input.value = '';
+    if (!file) return;
+    this._showTipMessage(null);
+    this._showTipMessage(await this.ctx.defineBrushFromFile(file, file.name), 'Brush added to Custom.');
+  };
+
+  private _importBrushes = async (e: Event) => {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file || this._importProgress !== null) return;
+    this._showTipMessage(null);
+    this._importProgress = 0;
+    try {
+      const { ok, message } = await this.ctx.importBrushFile(file, f => { this._importProgress = f; });
+      this._showTipMessage(ok ? null : message, ok ? message : '');
+    } finally {
+      this._importProgress = null;
+    }
+  };
+
+  private _toggleGroup(group: string) {
+    const open = new Set(this._openGroups);
+    if (open.has(group)) open.delete(group);
+    else {
+      open.add(group);
+      this.ctx.loadUserTips?.([group]);
+    }
+    this._openGroups = open;
+  }
+
+  /** The custom presets of the picker: the user's own under "Custom", then each import under its file's name, closed until opened. */
+  private _renderCustomPresets(userPresets: BrushPreset[]) {
+    const own = userPresets.filter(p => !p.group);
+    const groups = [...new Set(userPresets.flatMap(p => (p.group ? [p.group] : [])))];
+    return html`
+      ${own.length > 0 ? html`
+        <div class="brush-dropdown-heading">Custom</div>
+        ${own.map(preset => this._renderPresetRow(preset, true))}
+      ` : nothing}
+      ${groups.map(group => {
+        const open = this._openGroups.has(group);
+        const members = userPresets.filter(p => p.group === group);
+        return html`
+          <div class="brush-dropdown-heading group-heading">
+            <button class="group-toggle" aria-expanded=${open ? 'true' : 'false'} title=${group}
+              @click=${() => this._toggleGroup(group)}>
+              <span aria-hidden="true">${open ? '▾' : '▸'}</span> ${group} (${members.length})
+            </button>
+            <button class="brush-dropdown-delete" title="Delete these brushes" aria-label=${`Delete brushes imported from ${group}`}
+              @click=${() => { void this.ctx.deleteUserGroup(group); }}>&times;</button>
+          </div>
+          ${open ? members.map(preset => this._renderPresetRow(preset, true)) : nothing}
+        `;
+      })}
+    `;
+  }
+
+  /** A small picture of a library tip: its mask in black on white, as sampled brushes are drawn. */
+  private _tipThumbUrl(tip: BrushTipMeta): string {
+    const cached = this._tipThumbUrls.get(tip.id);
+    if (cached) return cached;
+    const { width, height, alpha } = tip.thumb;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d')!;
+    const img = ctx.createImageData(width, height);
+    for (let i = 0, p = 0; i < alpha.length; i++, p += 4) {
+      img.data[p] = img.data[p + 1] = img.data[p + 2] = 255 - alpha[i];
+      img.data[p + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    const url = canvas.toDataURL();
+    this._tipThumbUrls.set(tip.id, url);
+    return url;
+  }
+
+  private _renderTipLibrary() {
+    // Imported tips are browsed through their group in the preset picker.
+    const tips = (this.ctx.userTips ?? []).filter(t => !t.group);
+    const imageId = this.ctx.state.brush.tip.shape === 'image' ? this.ctx.state.brush.tip.imageId : undefined;
+    return html`
+      <div class="section">
+        <label>Custom tips</label>
+        <button class="pill-btn" title="Make a brush tip from an image: dark parts paint, light and transparent parts don't."
+          @click=${(e: Event) => ((e.currentTarget as HTMLElement).nextElementSibling as HTMLInputElement | null)?.click()}
+        >From image…</button>
+        <input type="file" accept="image/*" hidden aria-label="Image to make a brush tip from" @change=${this._defineFromFile} />
+        <button class="pill-btn" ?disabled=${this._importProgress !== null}
+          title="Import the brushes of a Photoshop brush file (.abr): tips, spacing, dynamics, scattering, texture and colour settings."
+          @click=${(e: Event) => ((e.currentTarget as HTMLElement).nextElementSibling as HTMLInputElement | null)?.click()}
+        >Import brushes (.abr)…</button>
+        <input type="file" accept=".abr" hidden aria-label="Photoshop brush file to import" @change=${this._importBrushes} />
+      </div>
+      ${this._importProgress !== null ? html`
+        <progress class="import-progress" max="1" .value=${this._importProgress} aria-label="Importing brushes"></progress>
+      ` : nothing}
+      ${this._renderTipMessage()}
+      ${tips.length > 0 ? html`
+        <div class="tip-grid" role="list">
+          ${tips.map(tip => html`
+            <div class="tip-cell" role="listitem">
+              <button class="tip-pick ${imageId === tip.id ? 'active' : ''}" title=${tip.name} aria-label=${`Use tip ${tip.name}`}
+                aria-pressed=${imageId === tip.id ? 'true' : 'false'}
+                @click=${() => this.ctx.selectUserTip(tip.id)}>
+                <img src=${this._tipThumbUrl(tip)} alt="" />
+              </button>
+              <button class="tip-delete" title="Delete tip" aria-label=${`Delete tip ${tip.name}`}
+                @click=${() => { void this.ctx.deleteUserTip(tip.id); }}>&times;</button>
+            </div>
+          `)}
+        </div>
+      ` : nothing}
+    `;
+  }
+
+  private _renderPresetRow(preset: BrushPreset, deletable: boolean) {
+    const { state } = this.ctx;
+    const eraser = state.activeTool === 'eraser';
+    return html`
+      <div class="brush-dropdown-row">
+        <button
+          class="brush-dropdown-item ${state.activePreset === preset.id && !state.isPresetModified ? 'active' : ''}"
+          @click=${() => this._selectPreset(preset.id)}
+        >
+          <img src=${this._generatePreview(preset, eraser)} alt="" />
+          <span>${preset.name}</span>
+        </button>
+        ${deletable ? html`
+          <button class="brush-dropdown-delete" title="Delete brush" aria-label=${`Delete brush ${preset.name}`}
+            @click=${() => { void this.ctx.deleteUserPreset(preset.id); }}>&times;</button>
+        ` : nothing}
+      </div>
     `;
   }
 
@@ -1910,8 +2207,109 @@ export class ToolSettings extends LitElement {
         </div>
       `;
     };
+    const fadeControl = (label: string, key: 'taperStart' | 'sizeLength', max: number, hint: string) => {
+      const value = Math.round(brush.fade[key]);
+      return html`
+        <div class="section">
+          <label title=${hint}>${label}</label>
+          <input type="range" min="0" max=${max} step="5" aria-label=${label} .value=${String(Math.min(max, value))}
+            @input=${(e: Event) => this.ctx.setBrushFade({ [key]: Number((e.target as HTMLInputElement).value) })} />
+          <span class="size-value">${value > 0 ? `${value}${key === 'sizeLength' && brush.fade.sizeUnit === 'dabs' ? ' dabs' : 'px'}` : 'Off'}</span>
+        </div>
+      `;
+    };
+    const jitterToggle = html`
+      <button
+        class="advanced-toggle"
+        aria-expanded=${this._jitterOpen ? 'true' : 'false'}
+        @click=${() => { this._jitterOpen = !this._jitterOpen; }}
+      >Jitter ${this._jitterOpen ? html`&#9650;` : html`&#9660;`}</button>
+    `;
+    const jitterControl = (label: string, key: keyof BrushJitter, hint: string) => {
+      const value = Math.round(brush.jitter[key] * 100);
+      return html`
+        <div class="section">
+          <label title=${hint}>${label}</label>
+          <input type="range" min="0" max="100" aria-label=${`${label} jitter`} .value=${String(value)}
+            @input=${(e: Event) => this.ctx.setBrushJitter({ [key]: Number((e.target as HTMLInputElement).value) / 100 })} />
+          <span class="size-value">${value}%</span>
+        </div>
+      `;
+    };
+    const scatterToggle = html`
+      <button
+        class="advanced-toggle"
+        aria-expanded=${this._scatterOpen ? 'true' : 'false'}
+        @click=${() => { this._scatterOpen = !this._scatterOpen; }}
+      >Scatter ${this._scatterOpen ? html`&#9650;` : html`&#9660;`}</button>
+    `;
+    const scatterSlider = (label: string, key: 'amount' | 'count' | 'countJitter', hint: string, min: number, max: number, show: number, toValue: (v: number) => number) => html`
+      <div class="section">
+        <label title=${hint}>${label}</label>
+        <input type="range" min=${min} max=${max} aria-label=${`${label} scatter`} .value=${String(show)}
+          @input=${(e: Event) => this.ctx.setBrushScatter({ [key]: toValue(Number((e.target as HTMLInputElement).value)) })} />
+        <span class="size-value">${key === 'count' ? show : `${show}%`}</span>
+      </div>
+    `;
+    const colorToggle = html`
+      <button
+        class="advanced-toggle"
+        aria-expanded=${this._colorOpen ? 'true' : 'false'}
+        @click=${() => { this._colorOpen = !this._colorOpen; }}
+      >Color ${this._colorOpen ? html`&#9650;` : html`&#9660;`}</button>
+    `;
+    const colorSlider = (label: string, key: 'hue' | 'saturation' | 'brightness' | 'purity' | 'fgBg', hint: string, min = 0) => html`
+      <div class="section">
+        <label title=${hint}>${label}</label>
+        <input type="range" min=${min} max="100" aria-label=${`${label} color`} .value=${String(Math.round(brush.color[key] * 100))}
+          @input=${(e: Event) => this.ctx.setBrushColorDynamics({ [key]: Number((e.target as HTMLInputElement).value) / 100 })} />
+        <span class="size-value">${Math.round(brush.color[key] * 100)}%</span>
+      </div>
+    `;
+    const colorSwitch = (label: string, key: 'fgBgPressure' | 'perTip', hint: string) => html`
+      <div class="section">
+        <label class="checkbox-label" title=${hint}>
+          <input type="checkbox" aria-label=${`${label} color`} .checked=${brush.color[key]}
+            @change=${(e: Event) => this.ctx.setBrushColorDynamics({ [key]: (e.target as HTMLInputElement).checked })} />
+          ${label}
+        </label>
+      </div>
+    `;
+    const textureToggle = html`
+      <button
+        class="advanced-toggle"
+        aria-expanded=${this._textureOpen ? 'true' : 'false'}
+        @click=${() => { this._textureOpen = !this._textureOpen; }}
+      >Texture ${this._textureOpen ? html`&#9650;` : html`&#9660;`}</button>
+    `;
+    const textureSlider = (label: string, key: 'scale' | 'depth', hint: string, min: number, max: number) => html`
+      <div class="section">
+        <label title=${hint}>${label}</label>
+        <input type="range" min=${min} max=${max} aria-label=${`${label} texture`} .value=${String(Math.round(brush.texture[key] * 100))}
+          @input=${(e: Event) => this.ctx.setBrushTexture({ [key]: Number((e.target as HTMLInputElement).value) / 100 })} />
+        <span class="size-value">${Math.round(brush.texture[key] * 100)}%</span>
+      </div>
+    `;
+    const textureSwitch = (label: string, key: 'invert' | 'depthPressure' | 'perTip', hint: string) => html`
+      <div class="section">
+        <label class="checkbox-label" title=${hint}>
+          <input type="checkbox" aria-label=${`${label} texture`} .checked=${brush.texture[key]}
+            @change=${(e: Event) => this.ctx.setBrushTexture({ [key]: (e.target as HTMLInputElement).checked } as Partial<BrushTexture>)} />
+          ${label}
+        </label>
+      </div>
+    `;
     return html`
         ${heading('Stroke')}
+        ${activeTool !== 'eraser' ? html`
+        <div class="section">
+          <label title="How the stroke combines with the layer. Behind paints only under what is already there; Clear erases. On a layer with its transparency locked, Behind and Clear do nothing.">Mode</label>
+          <select class="font-select" aria-label="Brush mode" .value=${brush.blendMode}
+            @change=${(e: Event) => this.ctx.setBrush({ blendMode: (e.target as HTMLSelectElement).value as BrushBlendMode })}>
+            ${(Object.keys(BRUSH_BLEND_MODE_LABELS) as BrushBlendMode[]).map(m => html`<option value=${m} ?selected=${brush.blendMode === m}>${BRUSH_BLEND_MODE_LABELS[m]}</option>`)}
+          </select>
+        </div>
+        ` : nothing}
         <div class="section">
           <label>Flow</label>
           <input type="range" aria-label="Brush flow" min="1" max="100" .value=${String(Math.round(brush.flow * 100))}
@@ -1919,11 +2317,26 @@ export class ToolSettings extends LitElement {
           <span class="size-value">${Math.round(brush.flow * 100)}%</span>
         </div>
         <div class="section">
+          <label class="checkbox-label" title="Keep laying dabs while the pen is held still or moves slowly, so paint builds up toward the opacity. Needs a flow under 100%.">
+            <input type="checkbox" aria-label="Airbrush" .checked=${brush.airbrush}
+              @change=${(e: Event) => this.ctx.setBrush({ airbrush: (e.target as HTMLInputElement).checked })} />
+            Airbrush
+          </label>
+        </div>
+        ${brush.airbrush ? html`
+        <div class="section">
+          <label title="How many dabs a held airbrush lays per second.">Rate</label>
+          <input type="range" aria-label="Airbrush rate" min=${MIN_AIRBRUSH_RATE} max=${MAX_AIRBRUSH_RATE} .value=${String(Math.round(brush.airbrushRate))}
+            @input=${(e: Event) => this.ctx.setBrush({ airbrushRate: normalizeAirbrushRate(Number((e.target as HTMLInputElement).value)) })} />
+          <span class="size-value">${Math.round(brush.airbrushRate)}/s</span>
+        </div>
+        ` : nothing}
+        ${tipCapabilities.hardness ? html`<div class="section">
           <label>Hardness</label>
           <input type="range" aria-label="Brush hardness" min="0" max="100" .value=${String(Math.round(brush.hardness * 100))}
             @input=${(e: Event) => this.ctx.setBrush({ hardness: Number((e.target as HTMLInputElement).value) / 100 })} />
           <span class="size-value">${Math.round(brush.hardness * 100)}%</span>
-        </div>
+        </div>` : nothing}
         <div class="section">
           <label>Spacing</label>
           <input type="range" min="5" max="100" aria-label="Spacing" .value=${String(Math.round(brush.spacing * 100))}
@@ -1944,9 +2357,9 @@ export class ToolSettings extends LitElement {
             Stylus Size
           </label>
         </div>
-        ${brush.pressureSize ? html`
+        ${brush.pressureSize || brush.fade.sizeLength > 0 || brush.fade.taperStart > 0 ? html`
         <div class="section">
-          <label title="How thick the lightest touch draws, as a share of the size.">Minimum Size</label>
+          <label title="How thick the lightest touch draws, as a share of the size; also the smallest size the taper and size fade reach.">Minimum Size</label>
           <input type="range" min="0" max="100" aria-label="Minimum size" .value=${String(Math.round(brush.dynamics.minSize * 100))}
             @input=${(e: Event) => this.ctx.setBrushDynamics({ minSize: Number((e.target as HTMLInputElement).value) / 100 })} />
           <span class="size-value">${Math.round(brush.dynamics.minSize * 100)}%</span>
@@ -1979,6 +2392,73 @@ export class ToolSettings extends LitElement {
         ${heading('Dynamics')}
         ${speedControl('Size by speed', 'sizeVelocity', 'Positive: dabs grow the faster you draw. Negative: they shrink.')}
         ${speedControl('Flow by speed', 'flowVelocity', 'Positive: ink flows more the faster you draw. Negative: less.')}
+        ${fadeControl('Taper start', 'taperStart', 500, 'The dab grows from its smallest size to full over this distance at the start of each stroke, to a point. The smallest size is set by Minimum Size.')}
+        ${fadeControl('Size fade', 'sizeLength', 2000, 'The dab shrinks along the stroke, reaching its smallest size at this distance. Flow fades with Depletion under Ink.')}
+        <div class="section">${jitterToggle}</div>
+        ${this._jitterOpen ? html`
+          <div class="section advanced-group">
+            ${jitterControl('Size', 'size', 'How much smaller than the brush size each dab can randomly be.')}
+            ${jitterControl('Angle', 'angle', 'How far each dab can randomly turn, as a share of a full turn.')}
+            ${jitterControl('Roundness', 'roundness', 'How much each dab can randomly be squashed across its axis.')}
+            ${jitterControl('Flow', 'flow', 'How much fainter than the brush flow each dab can randomly be. The stroke opacity still caps the result.')}
+          </div>
+        ` : nothing}
+        <div class="section">${scatterToggle}</div>
+        ${this._scatterOpen ? html`
+          <div class="section advanced-group">
+            ${scatterSlider('Scatter', 'amount', 'How far dabs can land from the stroke, to either side, as a share of the brush size.', 0, MAX_SCATTER * 100, Math.round(brush.scatter.amount * 100), v => v / 100)}
+            <div class="section">
+              <label class="checkbox-label" title="Scatter along the stroke as well as across it.">
+                <input type="checkbox" aria-label="Both axes" .checked=${brush.scatter.bothAxes}
+                  @change=${(e: Event) => this.ctx.setBrushScatter({ bothAxes: (e.target as HTMLInputElement).checked })} />
+                Both axes
+              </label>
+            </div>
+            ${scatterSlider('Count', 'count', 'How many dabs are laid at each step of the stroke.', 1, MAX_SCATTER_COUNT, brush.scatter.count, v => v)}
+            ${scatterSlider('Count jitter', 'countJitter', 'How many dabs a step can randomly lose, as a share of the count.', 0, 100, Math.round(brush.scatter.countJitter * 100), v => v / 100)}
+          </div>
+        ` : nothing}
+        ${activeTool !== 'eraser' ? html`<div class="section">${colorToggle}</div>` : nothing}
+        ${activeTool !== 'eraser' && this._colorOpen ? html`
+          <div class="section advanced-group">
+            ${colorSlider('Hue', 'hue', 'How far each dab\'s hue can randomly turn, up to half a turn either way. Needs a colour that is not grey.')}
+            ${colorSlider('Saturation', 'saturation', 'How much more or less colourful each dab can randomly be.')}
+            ${colorSlider('Brightness', 'brightness', 'How much lighter or darker each dab can randomly be.')}
+            ${colorSlider('Purity', 'purity', 'Makes the whole stroke less colourful (toward grey at -100%) or more.', -100)}
+            ${colorSlider('FG/BG', 'fgBg', 'How far each dab can randomly move from the stroke colour toward the fill colour.')}
+            <div class="section">
+              <label title="The colour FG/BG moves each dab toward; it is also the fill colour of shapes.">Fill colour</label>
+              <input type="color" aria-label="Fill colour" .value=${this.ctx.state.fillColor} @input=${(e: Event) => this._onFillColor(e)} />
+            </div>
+            ${colorSwitch('Pressure', 'fgBgPressure', 'Let pen pressure set the mix instead of chance: light pressure goes toward the fill colour. A mouse always presses fully.')}
+            ${colorSwitch('Per tip', 'perTip', 'Vary the colour at every dab. Off picks one variation for the whole stroke.')}
+          </div>
+        ` : nothing}
+        <div class="section">${textureToggle}</div>
+        ${this._textureOpen ? html`
+          <div class="section advanced-group">
+            <div class="section">
+              <label title="The paper grain that holes the paint. It stays fixed on the canvas, so a second pass over a spot shows the same grain.">Pattern</label>
+              <select class="font-select" aria-label="Texture pattern" .value=${brush.texture.pattern}
+                @change=${(e: Event) => this.ctx.setBrushTexture({ pattern: (e.target as HTMLSelectElement).value })}>
+                <option value="none" ?selected=${brush.texture.pattern === 'none'}>None</option>
+                ${texturePatternList().map(p => html`<option value=${p.id} ?selected=${brush.texture.pattern === p.id}>${p.label}</option>`)}
+              </select>
+            </div>
+            ${textureSlider('Scale', 'scale', 'How large the grain is.', 10, 400)}
+            ${textureSlider('Depth', 'depth', 'How strongly the grain holes the paint.', 0, 100)}
+            <div class="section">
+              <label title="Multiply thins the paint by the grain. Subtract takes the grain off the paint, so thin strokes break up first. Height only lets paint into the pits once the stroke is heavy.">Mode</label>
+              <select class="font-select" aria-label="Texture mode" .value=${brush.texture.mode}
+                @change=${(e: Event) => this.ctx.setBrushTexture({ mode: (e.target as HTMLSelectElement).value as TextureMode })}>
+                ${(Object.keys(TEXTURE_MODE_LABELS) as TextureMode[]).map(m => html`<option value=${m} ?selected=${brush.texture.mode === m}>${TEXTURE_MODE_LABELS[m]}</option>`)}
+              </select>
+            </div>
+            ${textureSwitch('Invert', 'invert', 'Swap the grain\'s peaks and pits.')}
+            ${textureSwitch('Per tip', 'perTip', 'Grain every dab on its own. Off grains the stroke as a whole, so overlapping dabs do not fill the pits in.')}
+            ${brush.texture.perTip ? textureSwitch('Depth by pressure', 'depthPressure', 'Let pen pressure scale the depth of each dab: light pressure shows less grain. A mouse always presses fully.') : nothing}
+          </div>
+        ` : nothing}
         <div class="section">${advancedToggle}</div>
         ${this._advancedOpen ? html`
           <div class="section advanced-group">
@@ -1997,6 +2477,7 @@ export class ToolSettings extends LitElement {
                 `)}
               </div>
             </div>
+            ${this._renderTipLibrary()}
             ${tipCapabilities.aspect ? html`
             <div class="section">
               <label>Aspect</label>
@@ -2007,7 +2488,7 @@ export class ToolSettings extends LitElement {
             ` : nothing}
             ${tipCapabilities.rotation ? html`
             <div class="section">
-              <label>${brush.tip.orientation === 'direction' ? 'Offset' : 'Angle'}</label>
+              <label>${brush.tip.orientation === 'fixed' ? 'Angle' : 'Offset'}</label>
               <input type="range" min="0" max="360" .value=${String(brush.tip.angle)}
                 @input=${(e: Event) => this.ctx.setBrushTip({ angle: Number((e.target as HTMLInputElement).value) })} />
               <span class="size-value">${brush.tip.angle}&deg;</span>
@@ -2018,6 +2499,8 @@ export class ToolSettings extends LitElement {
                 @change=${(e: Event) => this.ctx.setBrushTip({ orientation: (e.target as HTMLSelectElement).value as OrientationMode })}>
                 <option value="fixed">Fixed</option>
                 <option value="direction">Direction</option>
+                <option value="tilt">Pen tilt</option>
+                <option value="twist">Pen rotation</option>
               </select>
             </div>
             ` : nothing}
@@ -2041,7 +2524,7 @@ export class ToolSettings extends LitElement {
               </div>
             ` : nothing}
             <div class="section">
-              <label>Depletion</label>
+              <label title="Fades the flow along the stroke (Photoshop's flow fade); at 100% it reaches nothing at the length below.">Depletion</label>
               <input type="range" min="0" max="100" .value=${String(Math.round(brush.ink.depletion * 100))}
                 @input=${(e: Event) => this.ctx.setBrushInk({ depletion: Number((e.target as HTMLInputElement).value) / 100 })} />
               <span class="size-value">${Math.round(brush.ink.depletion * 100)}%</span>
@@ -2080,6 +2563,13 @@ export class ToolSettings extends LitElement {
 
     const state = this.ctx.state;
     const { strokeColor, fillColor, useFill, activeTool, stampImage, stampSize, brush } = state;
+    const userPresets = this.ctx.userPresets ?? [];
+    const knownPreset = BRUSH_PRESETS.find(p => p.id === state.activePreset)
+      ?? userPresets.find(p => p.id === state.activePreset);
+    const activePreset = knownPreset ?? BRUSH_PRESETS[0];
+    // A custom preset deleted (here or in another tab) leaves its settings in use, as a brush of no preset.
+    const presetModified = state.isPresetModified || (!knownPreset && state.activePreset !== 'round');
+    if (this._brushDropdownOpen) this.ctx.loadUserTips?.(['', ...this._openGroups]);
 
     // Select tool: show transform controls or a hint
     if (activeTool === 'select') {
@@ -2235,26 +2725,16 @@ export class ToolSettings extends LitElement {
         <div class="section">
           <div class="brush-dropdown-wrap">
             <button class="brush-dropdown-btn" @click=${() => this._toggleBrushDropdown()}>
-              <img src=${state.isPresetModified
+              <img src=${presetModified
                 ? this._generateCustomPreview(brush, activeTool === 'eraser')
-                : this._generatePreview(
-                    BRUSH_PRESETS.find(p => p.id === state.activePreset) ?? BRUSH_PRESETS[0],
-                    activeTool === 'eraser',
-                  )} alt="" />
-              <span>${(BRUSH_PRESETS.find(p => p.id === state.activePreset) ?? BRUSH_PRESETS[0]).name}${state.isPresetModified ? ' *' : ''}</span>
+                : this._generatePreview(activePreset, activeTool === 'eraser')} alt="" />
+              <span>${knownPreset || !presetModified ? activePreset.name : 'Custom'}${presetModified ? ' *' : ''}</span>
               <span class="chevron">&#9660;</span>
             </button>
             ${this._brushDropdownOpen ? html`
               <div class="brush-dropdown-panel">
-                ${BRUSH_PRESETS.map(preset => html`
-                  <button
-                    class="brush-dropdown-item ${state.activePreset === preset.id && !state.isPresetModified ? 'active' : ''}"
-                    @click=${() => this._selectPreset(preset.id)}
-                  >
-                    <img src=${this._generatePreview(preset, activeTool === 'eraser')} alt="" />
-                    <span>${preset.name}</span>
-                  </button>
-                `)}
+                ${BRUSH_PRESETS.map(preset => this._renderPresetRow(preset, false))}
+                ${this._renderCustomPresets(userPresets)}
               </div>
             ` : nothing}
           </div>

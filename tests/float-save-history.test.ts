@@ -321,7 +321,7 @@ describe('saving a live float', () => {
     state.activeLayerId = 'l2';
     canvas.pushLayerOperation({
       type: 'add-layer', index: 1,
-      layer: { id: 'l2', name: 'Pasted', visible: true, opacity: 1, blendMode: 'normal', imageData: new ImageData(W, H) },
+      layer: { id: 'l2', name: 'Pasted', visible: true, opacity: 1, blendMode: 'normal', alphaLocked: false, imageData: new ImageData(W, H) },
     });
     (canvas as any)._captureBeforeDraw();
     (canvas as any)._floatIsExternalImage = true;

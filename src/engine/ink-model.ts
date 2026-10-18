@@ -1,4 +1,4 @@
-import type { InkDescriptor, InkState } from './types.js';
+import type { BrushColorDynamics, InkDescriptor, InkState } from './types.js';
 
 // ── OKLab color space conversion ─────────────────────────────
 
@@ -45,6 +45,31 @@ export function oklabToSrgb(L: number, a: number, b: number): RGBColor {
   };
 }
 
+/** Whether the OKLab colour fits sRGB without clipping a channel. */
+function oklabInGamut(L: number, a: number, b: number): boolean {
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+  const s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+  const l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;
+  const eps = 1e-4;
+  const r = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+  const g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+  const bl = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+  return r >= -eps && r <= 1 + eps && g >= -eps && g <= 1 + eps && bl >= -eps && bl <= 1 + eps;
+}
+
+/** The most of `chroma` that fits sRGB at this lightness and hue (turns): the colour keeps its hue and lightness rather than clipping. */
+function fitChroma(L: number, chroma: number, h: number): number {
+  const cos = Math.cos(h * 2 * Math.PI), sin = Math.sin(h * 2 * Math.PI);
+  if (oklabInGamut(L, cos * chroma, sin * chroma)) return chroma;
+  let lo = 0, hi = chroma;
+  for (let i = 0; i < 10; i++) {
+    const mid = (lo + hi) / 2;
+    if (oklabInGamut(L, cos * mid, sin * mid)) lo = mid; else hi = mid;
+  }
+  return lo;
+}
+
 /** Parse "#RRGGBB" to [0-1, 0-1, 0-1] */
 function hexToRgb(hex: string): RGBColor {
   const n = parseInt(hex.slice(1, 7), 16);
@@ -86,6 +111,8 @@ export function initInkState(color: string, snapshot: ImageData | null): InkStat
     stampCount: 0,
     layerSnapshot: snapshot,
     prevRotation: 0,
+    pickedColor: color,
+    pickedWeight: 0,
   };
 }
 
@@ -171,11 +198,89 @@ export function applyPickup(ink: InkDescriptor, state: InkState, x: number, y: n
   const sampled = sampleSnapshot(state.layerSnapshot, x, y, Math.max(4, brushRadius));
   // Transparent pixels have nothing to pick up — paint with original color
   if (sampled.alpha < 10) {
+    state.pickedWeight = 0;
     state.currentColor = state.originalColor;
     return;
   }
   // Blend from original brush color (not drifted currentColor) so wetness=0.4
   // always means "60% brush + 40% canvas", not exponential decay toward canvas
   const alphaWeight = sampled.alpha / 255;
-  state.currentColor = lerpOklab(state.originalColor, sampled.color, ink.wetness * alphaWeight);
+  state.pickedColor = sampled.color;
+  state.pickedWeight = ink.wetness * alphaWeight;
+  state.currentColor = lerpOklab(state.originalColor, sampled.color, state.pickedWeight);
+}
+
+// ── Colour dynamics ──────────────────────────────────────────
+
+const OKLCH_HUE_STEPS = 64;
+const OKLCH_L_STEPS = 32;
+const OKLCH_C_STEPS = 32;
+const OKLCH_MIX_STEPS = 32;
+
+/** The colour as [L, C, h in turns], or null when `hex` isn't "#RRGGBB". */
+function hexToOklch(hex: string): [number, number, number] | null {
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return null;
+  const rgb = hexToRgb(hex);
+  const lab = srgbToOklab(rgb.r, rgb.g, rgb.b);
+  const h = Math.atan2(lab.b, lab.a) / (2 * Math.PI);
+  return [lab.L, Math.hypot(lab.a, lab.b), h - Math.floor(h)];
+}
+
+/** The values for one dab's colour variation, each 0..1 and drawn at random (or all 0.5 for none). */
+export interface ColorRolls { hue: number; saturation: number; brightness: number; fgBg: number }
+
+/**
+ * A dab's colour under colour dynamics. `rolls` are the dab's random values;
+ * `pressure` (0..1) only matters with fgBgPressure. The fill colour is mixed
+ * in first, then hue, chroma and lightness are moved from there. Every move
+ * is snapped to a step so that a stroke only paints in a limited set of
+ * colours and the engine's tinted-tip cache can be hit again: the mix in
+ * 1/32s, the hue in 1/64 of a turn, lightness in 1/32 and chroma by 1/32 of
+ * itself. The snapping is of the move, not of the colour, so what isn't
+ * moved stays exact: no mix is the stroke colour, a full one the fill, and a
+ * chroma factor of 0 is grey. A colour outside sRGB loses chroma until it
+ * fits, keeping its hue and lightness (so full lightness is white, not a
+ * clipped tint); one that isn't "#RRGGBB" comes back unchanged.
+ */
+export function varyColor(
+  base: string, fill: string, dyn: BrushColorDynamics, rolls: ColorRolls, pressure: number,
+): string {
+  const from = hexToOklch(base);
+  if (!from) return base;
+  let [L, C, h] = from;
+  // The colour no move leaves in place: the stroke colour, or the fill at a full mix.
+  let exact: string | null = base;
+  if (dyn.fgBg > 0) {
+    const to = hexToOklch(fill);
+    if (to) {
+      const raw = dyn.fgBg * (dyn.fgBgPressure ? 1 - Math.max(0, Math.min(1, pressure)) : rolls.fgBg);
+      const t = Math.round(Math.max(0, Math.min(1, raw)) * OKLCH_MIX_STEPS) / OKLCH_MIX_STEPS;
+      if (t >= 1) {
+        exact = fill;
+        [L, C, h] = to;
+      } else if (t > 0) {
+        // Mixed in OKLab proper, unclipped, so the fit below is the only thing that touches the gamut.
+        exact = null;
+        const a = Math.cos(h * 2 * Math.PI) * C, b = Math.sin(h * 2 * Math.PI) * C;
+        const a2 = Math.cos(to[2] * 2 * Math.PI) * to[1], b2 = Math.sin(to[2] * 2 * Math.PI) * to[1];
+        const ma = a + (a2 - a) * t, mb = b + (b2 - b) * t;
+        L += (to[0] - L) * t;
+        C = Math.hypot(ma, mb);
+        h = Math.atan2(mb, ma) / (2 * Math.PI);
+        h -= Math.floor(h);
+      }
+    }
+  }
+
+  let dh = (rolls.hue * 2 - 1) * dyn.hue * 0.5;
+  dh = Math.round(dh * OKLCH_HUE_STEPS) / OKLCH_HUE_STEPS;
+  const factor = Math.max(0, (1 + dyn.purity) * (1 + (rolls.saturation * 2 - 1) * dyn.saturation));
+  const scale = Math.round(factor * OKLCH_C_STEPS) / OKLCH_C_STEPS;
+  const wanted = L + (rolls.brightness * 2 - 1) * dyn.brightness * 0.5;
+  const lightness = wanted <= 0 ? 0 : wanted >= 1 ? 1 : L + Math.round((wanted - L) * OKLCH_L_STEPS) / OKLCH_L_STEPS;
+  if (exact !== null && dh === 0 && scale === 1 && lightness === L) return exact;
+  const hue = h + dh;
+  const L2 = Math.max(0, Math.min(1, lightness));
+  const chroma = L2 <= 0 || L2 >= 1 ? 0 : fitChroma(L2, Math.min(0.5, C * scale), hue);
+  return rgbToHex(oklabToSrgb(L2, Math.cos(hue * 2 * Math.PI) * chroma, Math.sin(hue * 2 * Math.PI) * chroma));
 }

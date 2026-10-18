@@ -1,12 +1,17 @@
 import { vi } from 'vitest';
 import { getDefaultDescriptor } from '../src/engine/brush-presets.ts';
-import type { BrushDescriptor, BrushDynamics, InkDescriptor, TipDescriptor } from '../src/engine/types.ts';
+import type { BrushDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushFade, BrushTexture, InkDescriptor, TipDescriptor } from '../src/engine/types.ts';
 import type { DrawingState, Layer } from '../src/types.ts';
 
-type BrushOverrides = Omit<Partial<BrushDescriptor>, 'tip' | 'ink' | 'dynamics'> & {
+type BrushOverrides = Omit<Partial<BrushDescriptor>, 'tip' | 'ink' | 'dynamics' | 'jitter' | 'scatter' | 'color' | 'fade' | 'texture'> & {
   tip?: Partial<TipDescriptor>;
   ink?: Partial<InkDescriptor>;
   dynamics?: Partial<BrushDynamics>;
+  jitter?: Partial<BrushJitter>;
+  scatter?: Partial<BrushScatter>;
+  color?: Partial<BrushColorDynamics>;
+  fade?: Partial<BrushFade>;
+  texture?: Partial<BrushTexture>;
 };
 
 export function makeBrush(overrides: BrushOverrides = {}): BrushDescriptor {
@@ -25,6 +30,26 @@ export function makeBrush(overrides: BrushOverrides = {}): BrushDescriptor {
     dynamics: {
       ...base.dynamics,
       ...(overrides.dynamics ?? {}),
+    },
+    jitter: {
+      ...base.jitter,
+      ...(overrides.jitter ?? {}),
+    },
+    scatter: {
+      ...base.scatter,
+      ...(overrides.scatter ?? {}),
+    },
+    color: {
+      ...base.color,
+      ...(overrides.color ?? {}),
+    },
+    fade: {
+      ...base.fade,
+      ...(overrides.fade ?? {}),
+    },
+    texture: {
+      ...base.texture,
+      ...(overrides.texture ?? {}),
     },
   };
 }
@@ -50,6 +75,7 @@ export function makeLayer(
     visible: overrides.visible ?? true,
     opacity: overrides.opacity ?? 1,
     blendMode: overrides.blendMode ?? 'normal',
+    alphaLocked: overrides.alphaLocked ?? false,
     canvas,
   };
 }

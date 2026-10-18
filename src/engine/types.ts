@@ -1,7 +1,19 @@
 export type PressureCurveName = 'linear' | 'light' | 'heavy';
 
-export type TipShape = 'round' | 'flat' | 'chisel' | 'calligraphy' | 'fan' | 'splatter';
-export type OrientationMode = 'fixed' | 'direction';
+export type TipShape = 'round' | 'flat' | 'chisel' | 'calligraphy' | 'fan' | 'splatter' | 'image';
+
+/** Every tip shape, for validating stored values. */
+export const TIP_SHAPES: readonly TipShape[] = ['round', 'flat', 'chisel', 'calligraphy', 'fan', 'splatter', 'image'];
+
+export function isTipShape(v: unknown): v is TipShape {
+  return typeof v === 'string' && (TIP_SHAPES as readonly string[]).includes(v);
+}
+/**
+ * What turns the tip: nothing, the stroke's direction, the way the pen leans
+ * (its azimuth) or the pen barrel's rotation (twist). `TipDescriptor.angle`
+ * is added to the last three.
+ */
+export type OrientationMode = 'fixed' | 'direction' | 'tilt' | 'twist';
 
 export interface TipDescriptor {
   shape: TipShape;
@@ -10,6 +22,12 @@ export interface TipDescriptor {
   orientation: OrientationMode;
   bristles?: number;
   spread?: number;
+  /**
+   * With shape 'image': the id of a sampled tip in the user's brush library
+   * (see tip-images.ts). The tip is the image's mask, `size` along its longer
+   side, at the image's own proportions; `aspect` and the hardness are unused.
+   */
+  imageId?: string;
 }
 
 export interface InkDescriptor {
@@ -34,6 +52,164 @@ export interface BrushDynamics {
   tilt: number;
 }
 
+/** Random variation per dab, each 0 (none) to 1 (the most); drawn from the stroke's seeded RNG. */
+export interface BrushJitter {
+  /** The share (0..1) of the dab's size that can randomly be taken off. */
+  size: number;
+  /** The range, in turns (0..1), the dab's angle varies over, centred on its own. */
+  angle: number;
+  /** How far (0..1) a dab can be squashed across its axis: down to 1 - this of its height. */
+  roundness: number;
+  /** The share (0..1) of each dab's flow that can randomly be taken off; the stroke's opacity cap is unchanged. */
+  flow: number;
+}
+
+/**
+ * Scatter lays several dabs around each spot of the path. It is its own block
+ * rather than part of BrushJitter: jitter varies a dab's own look from 0 to 1,
+ * while scatter changes where and how many dabs go down, with units (dab
+ * diameters, a count, a switch) of its own.
+ */
+export interface BrushScatter {
+  /** How far (0..5, in dab diameters) a dab can land from the path, to either side; 0 is off. */
+  amount: number;
+  /** Scatter along the stroke as well as across it. */
+  bothAxes: boolean;
+  /** Dabs laid per spot (1..16). */
+  count: number;
+  /** The share (0..1) of the count that can randomly be taken off a spot. */
+  countJitter: number;
+}
+
+/**
+ * Size over distance along the path, in document pixels; 0 is off. It is its
+ * own block rather than part of BrushDynamics: those are -1..1 shares driven
+ * by pressure and speed, these are lengths. The flow fade Photoshop has beside
+ * them is `ink.depletion` (over `ink.depletionLength`), which already scales
+ * each dab's flow down by distance, so there is no second one here. Both fades
+ * shrink toward `dynamics.minSize` of the brush size (at least 1px).
+ */
+export interface BrushFade {
+  /** The dab shrinks linearly with the stroke's distance, reaching its smallest size at this length. */
+  sizeLength: number;
+  /**
+   * What `sizeLength` counts: 'distance' (px along the path, the default and
+   * what stored brushes without the field mean) or 'dabs' (Photoshop's fade
+   * steps: the dabs laid so far, held or moving, so a held airbrush still fades).
+   */
+  sizeUnit: 'distance' | 'dabs';
+  /**
+   * The dab grows from its smallest size to full over this distance at the
+   * start of each segment of the stroke (a segment starts at each contact
+   * after a pressure lift), eased so the tip is pointed. There is no end
+   * taper: it would need to know where the stroke ends before laying the dabs.
+   */
+  taperStart: number;
+}
+
+/**
+ * Photoshop's Color Dynamics: the colour each dab is painted in varies around
+ * the stroke colour, in OKLCh so a hue step looks as large in every hue. A
+ * stroke where all of it is off paints as it always did.
+ */
+export interface BrushColorDynamics {
+  /** How far (0..1) a dab's hue can turn either way; 1 is half a turn. */
+  hue: number;
+  /** How far (0..1) a dab's chroma can change either way: down to nothing and up to double at 1. */
+  saturation: number;
+  /** How far (0..1) a dab's lightness can change either way: by half the scale at 1. */
+  brightness: number;
+  /** Shifts the chroma of the whole stroke (-1 grey .. 1 doubled), by a fixed amount rather than at random. */
+  purity: number;
+  /** How far (0..1) a dab's colour can move from the stroke colour toward the fill colour. */
+  fgBg: number;
+  /** Pen pressure sets that mix instead of chance: light pressure goes toward the fill colour, full pressure stays on the stroke's. */
+  fgBgPressure: boolean;
+  /** Vary per dab; off picks one variation for the whole stroke (Photoshop's "Apply Per Tip"). */
+  perTip: boolean;
+}
+
+/** How the grain takes paint away: scaling the coverage, subtracting from it, or as a height the coverage must rise above. */
+export type TextureMode = 'multiply' | 'subtract' | 'height';
+
+export const TEXTURE_MODE_LABELS: Record<TextureMode, string> = {
+  multiply: 'Multiply',
+  subtract: 'Subtract',
+  height: 'Height',
+};
+
+export function isTextureMode(v: unknown): v is TextureMode {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(TEXTURE_MODE_LABELS, v);
+}
+
+/**
+ * Photoshop's Texture: a paper grain the stroke's coverage is masked by,
+ * fixed in the document (so it stays put as the view moves and a second pass
+ * over a spot shows the same grain). Pattern 'none' is off, and a brush with
+ * it paints exactly as it did.
+ */
+export interface BrushTexture {
+  /** A pattern id from brush-texture.ts, or 'none'. An id nothing is registered under paints without grain. */
+  pattern: string;
+  /** Size of the grain as a multiple of the pattern's own (0.1..4). */
+  scale: number;
+  /** How strongly the grain holes the paint (0..1). */
+  depth: number;
+  mode: TextureMode;
+  /** Swap the pattern's peaks and pits. */
+  invert: boolean;
+  /** With `perTip`, pressure scales the depth of each dab (light touches show less grain). */
+  depthPressure: boolean;
+  /**
+   * Grain each dab on its own (Photoshop's "Texture Each Tip"); off grains the
+   * stroke's coverage once, where overlapping dabs build up to a solid.
+   */
+  perTip: boolean;
+}
+
+/**
+ * Photoshop's tool "Mode": how a stroke combines with the layer it is painted
+ * on. The first twelve are canvas blend modes; `behind` paints only under
+ * what is already there and `clear` erases, as the eraser does.
+ */
+export type BrushBlendMode =
+  | 'normal'
+  | 'multiply'
+  | 'screen'
+  | 'overlay'
+  | 'darken'
+  | 'lighten'
+  | 'color-burn'
+  | 'color-dodge'
+  | 'hue'
+  | 'saturation'
+  | 'color'
+  | 'luminosity'
+  | 'behind'
+  | 'clear';
+
+export const BRUSH_BLEND_MODE_LABELS: Record<BrushBlendMode, string> = {
+  'normal': 'Normal',
+  'multiply': 'Multiply',
+  'screen': 'Screen',
+  'overlay': 'Overlay',
+  'darken': 'Darken',
+  'lighten': 'Lighten',
+  'color-burn': 'Color Burn',
+  'color-dodge': 'Color Dodge',
+  'hue': 'Hue',
+  'saturation': 'Saturation',
+  'color': 'Color',
+  'luminosity': 'Luminosity',
+  'behind': 'Behind',
+  'clear': 'Clear',
+};
+
+/** Whether a stored value names a brush blend mode (older stored brushes have none). */
+export function isBrushBlendMode(v: unknown): v is BrushBlendMode {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(BRUSH_BLEND_MODE_LABELS, v);
+}
+
 export interface BrushDescriptor {
   size: number;
   opacity: number;
@@ -46,13 +222,36 @@ export interface BrushDescriptor {
   tip: TipDescriptor;
   ink: InkDescriptor;
   dynamics: BrushDynamics;
+  jitter: BrushJitter;
+  scatter: BrushScatter;
+  color: BrushColorDynamics;
+  fade: BrushFade;
+  texture: BrushTexture;
+  /**
+   * How the stroke combines with the layer, defaulting to 'normal'. It lives
+   * on the descriptor, not beside it in the tool state, so presets can carry
+   * it and it is saved, copied and reset with the rest of the brush. The
+   * eraser tool ignores it: it always erases.
+   */
+  blendMode: BrushBlendMode;
+  /**
+   * Build-up: while the pen is down and still (or moving slower than the
+   * spacing lays dabs), dabs keep landing at the stroke's position at
+   * `airbrushRate`. Paint then accumulates in the stroke buffer, up to the
+   * stroke opacity, as fast as flow allows (flow under 100% is what builds).
+   */
+  airbrush: boolean;
+  /** Dabs per second a held airbrush lays (5..60). */
+  airbrushRate: number;
 }
 
 export interface BrushPreset {
   id: string;
   name: string;
-  category: 'basic' | 'artistic' | 'effects';
+  category: 'basic' | 'artistic' | 'effects' | 'custom';
   descriptor: BrushDescriptor;
+  /** A custom preset's import (a file's name): the picker lists it under that heading instead of "Custom". */
+  group?: string;
 }
 
 export interface InkState {
@@ -63,6 +262,9 @@ export interface InkState {
   stampCount: number;
   layerSnapshot: ImageData | null;
   prevRotation: number;
+  /** The canvas colour last picked up and how much of it the stamp takes (0 when there was none to pick up). */
+  pickedColor: string;
+  pickedWeight: number;
 }
 
 /** Values a stroke carries along its path besides pressure, interpolated between samples. */
@@ -72,6 +274,8 @@ export interface PathChannels {
   /** Pen tilt in degrees (-90..90), as Pointer Events report it; 0, 0 is upright. */
   tiltX: number;
   tiltY: number;
+  /** Pen barrel rotation in degrees (0..360), as Pointer Events report it; 0 for a pen that reports none. */
+  twist: number;
 }
 
 export interface StampPoint extends PathChannels {
@@ -79,6 +283,10 @@ export interface StampPoint extends PathChannels {
   y: number;
   pressure: number;
   speedPxPerMs: number;
+  /** Path length from the start of the current segment of the stroke (the first contact, or the first after a pressure lift) to this point. */
+  pathDist: number;
+  /** The dab's index among those the path has laid since the smoother was reset (0 for the first); for a fade counted in dabs. */
+  dab: number;
 }
 
 export type BlendMode =

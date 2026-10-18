@@ -1,3 +1,5 @@
+import { lerpDegrees } from './angle.js';
+
 /** Lag of the strongest stabilizer setting (100 %), in milliseconds. */
 export const MAX_STABILIZER_MS = 120;
 
@@ -23,6 +25,7 @@ export interface StabilizedPoint {
   pressure: number;
   tiltX: number;
   tiltY: number;
+  twist: number;
   timestamp: number;
 }
 
@@ -32,6 +35,7 @@ interface PenSample {
   pressure: number;
   tiltX: number;
   tiltY: number;
+  twist: number;
 }
 
 /**
@@ -40,7 +44,7 @@ interface PenSample {
  * 60 Hz or (coalesced) at 240 Hz. It needs increasing timestamps: while they
  * stand still, so does the point.
  *
- * Pressure and tilt aren't averaged with it: a change would then start as
+ * Pressure, tilt and twist aren't averaged with it: a change would then start as
  * soon as the pen made it, a whole lag before the drawn point gets there.
  * They are read where the pen was when it had gone as far along its path as
  * the average of that distance, which (the average being linear) is exactly
@@ -68,6 +72,11 @@ export class Stabilizer {
   private _prevT = 0;
   private _rawX = 0;
   private _rawY = 0;
+  // What the pen last reported besides position, for hold().
+  private _rawPressure = 0;
+  private _rawTiltX = 0;
+  private _rawTiltY = 0;
+  private _rawTwist = 0;
   /**
    * How far the pen has gone (never less than before), and that distance
    * averaged as the position is. Measured as `_anchorS`, the way a point
@@ -92,7 +101,11 @@ export class Stabilizer {
   }
 
   /** The smoothed sample for a raw one at `timestamp` (ms). */
-  add(x: number, y: number, pressure: number, timestamp: number, tiltX = 0, tiltY = 0): Omit<StabilizedPoint, 'timestamp'> {
+  add(x: number, y: number, pressure: number, timestamp: number, tiltX = 0, tiltY = 0, twist = 0): Omit<StabilizedPoint, 'timestamp'> {
+    this._rawPressure = pressure;
+    this._rawTiltX = tiltX;
+    this._rawTiltY = tiltY;
+    this._rawTwist = twist;
     if (!this._started || this._tau <= 0) {
       this._rawX = x;
       this._rawY = y;
@@ -107,9 +120,9 @@ export class Stabilizer {
       this._anchorS = 0;
       this._rawS = 0;
       this._penS = 0;
-      this._history = [{ s: 0, pressure, tiltX, tiltY }];
+      this._history = [{ s: 0, pressure, tiltX, tiltY, twist }];
       this._started = true;
-      return { x, y, pressure, tiltX, tiltY };
+      return { x, y, pressure, tiltX, tiltY, twist };
     }
     let off = Math.hypot(x - this._anchorX, y - this._anchorY);
     if (off > this._slack) {
@@ -122,7 +135,7 @@ export class Stabilizer {
     this._rawS = Math.max(this._rawS, this._anchorS + off);
     this._rawX = x;
     this._rawY = y;
-    this._remember({ s: this._rawS, pressure, tiltX, tiltY });
+    this._remember({ s: this._rawS, pressure, tiltX, tiltY, twist });
     const dt = timestamp - this._t;
     if (dt > 0) {
       this._prevX = this._x;
@@ -136,7 +149,74 @@ export class Stabilizer {
     }
     this._trim();
     const pen = this._penAt(this._penS);
-    return { x: this._x, y: this._y, pressure: pen.pressure, tiltX: pen.tiltX, tiltY: pen.tiltY };
+    return { x: this._x, y: this._y, pressure: pen.pressure, tiltX: pen.tiltX, tiltY: pen.tiltY, twist: pen.twist };
+  }
+
+  /** How far the drawn point still is from where the pointer last was, in px; 0 when off or before the first sample. */
+  lag(): number {
+    if (!this._started || this._tau <= 0) return 0;
+    return Math.hypot(this._rawX - this._x, this._rawY - this._y);
+  }
+
+  /**
+   * The drawn point at the pen, as of `timestamp` and no later: a stop's last
+   * sliver of lag closed at once, where catchUp() lays the way to the pen at the
+   * last move's pace (and leaves the clock ahead of the pen's, for a release).
+   */
+  snap(timestamp: number): Omit<StabilizedPoint, 'timestamp'> {
+    this._prevX = this._x;
+    this._prevY = this._y;
+    this._prevT = this._t;
+    this._x = this._rawX;
+    this._y = this._rawY;
+    this._t = Math.max(this._t, timestamp);
+    this._penS = this._rawS;
+    this._trim();
+    return { x: this._x, y: this._y, ...this.rawPen() };
+  }
+
+  /**
+   * Call before hold() or snap(): afterwards, the pen's pressure, tilt and
+   * twist at a fraction (0..1) of the way the drawn point's progress along the
+   * pen's path went, read from the history as it was before that trimmed it,
+   * so a move made in steps replays what the pen did along the way.
+   */
+  penTrail(): (f: number) => Pick<StabilizedPoint, 'pressure' | 'tiltX' | 'tiltY' | 'twist'> {
+    const before = this._history.slice();
+    const from = this._penS;
+    return (f) => {
+      const kept = this._history;
+      this._history = before;
+      const pen = this._penAt(from + (this._penS - from) * f);
+      this._history = kept;
+      return { pressure: pen.pressure, tiltX: pen.tiltX, tiltY: pen.tiltY, twist: pen.twist };
+    };
+  }
+
+  /** Say the drawn point's move to here came from `x, y` at `t` (a move fed in steps), which paces a later catchUp(). */
+  setPrevious(x: number, y: number, t: number) {
+    this._prevX = x;
+    this._prevY = y;
+    this._prevT = t;
+  }
+
+  /** The drawn point. */
+  position(): { x: number; y: number } {
+    return { x: this._x, y: this._y };
+  }
+
+  /** What the pen last reported besides its position: where it is now, whatever the drawn point still has to catch up with. */
+  rawPen(): Pick<StabilizedPoint, 'pressure' | 'tiltX' | 'tiltY' | 'twist'> {
+    return { pressure: this._rawPressure, tiltX: this._rawTiltX, tiltY: this._rawTiltY, twist: this._rawTwist };
+  }
+
+  /**
+   * The smoothed sample as it is at `timestamp` with the pen standing where it
+   * last was: time passing with no new event, which is how a held pen's drawn
+   * point keeps closing in on it (an airbrush's clock, not the pointer's).
+   */
+  hold(timestamp: number): Omit<StabilizedPoint, 'timestamp'> {
+    return this.add(this._rawX, this._rawY, this._rawPressure, timestamp, this._rawTiltX, this._rawTiltY, this._rawTwist);
   }
 
   /**
@@ -171,6 +251,7 @@ export class Stabilizer {
         pressure: pen.pressure,
         tiltX: pen.tiltX,
         tiltY: pen.tiltY,
+        twist: pen.twist,
         timestamp: from.t + dt * i,
       });
     }
@@ -225,6 +306,7 @@ export class Stabilizer {
       pressure: a.pressure + (b.pressure - a.pressure) * f,
       tiltX: a.tiltX + (b.tiltX - a.tiltX) * f,
       tiltY: a.tiltY + (b.tiltY - a.tiltY) * f,
+      twist: lerpDegrees(a.twist, b.twist, f),
     };
   }
 }

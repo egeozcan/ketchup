@@ -909,13 +909,13 @@ describe('DrawingCanvas', () => {
     expect(stroke.mock.calls.map(c => c[2])).toEqual([0.5, 0.005, 0]);
   });
 
-  it('passes the pen tilt of each sample to the brush', () => {
+  it('passes the pen tilt and twist of each sample to the brush', () => {
     const { canvas } = setupCanvas({ stateOverrides: { activeTool: 'pencil' } });
     const stroke = vi.spyOn((canvas as any)._engine, 'stroke');
     const pen = (clientX: number, tiltX: number, timeStamp: number, coalesced?: PointerEvent[]) =>
       ({
         button: 0, buttons: 1, pointerId: 1, clientX, clientY: 10, pointerType: 'pen', isPrimary: true,
-        pressure: 0.5, tiltX, tiltY: -5, timeStamp, preventDefault() {},
+        pressure: 0.5, tiltX, tiltY: -5, twist: tiltX * 2, timeStamp, preventDefault() {},
         ...(coalesced ? { getCoalescedEvents: () => coalesced } : {}),
       }) as unknown as PointerEvent;
 
@@ -923,7 +923,7 @@ describe('DrawingCanvas', () => {
     (canvas as any)._onPointerMove(pen(30, 40, 8, [pen(20, 30, 4), pen(30, 40, 8)]));
 
     expect(stroke.mock.calls.map(c => c[5])).toEqual([
-      { tiltX: 20, tiltY: -5 }, { tiltX: 30, tiltY: -5 }, { tiltX: 40, tiltY: -5 },
+      { tiltX: 20, tiltY: -5, twist: 40 }, { tiltX: 30, tiltY: -5, twist: 60 }, { tiltX: 40, tiltY: -5, twist: 80 },
     ]);
   });
 

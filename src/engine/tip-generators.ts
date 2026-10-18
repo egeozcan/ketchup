@@ -1,6 +1,7 @@
 import { createOffscreenCanvas, get2dContext, type AnyCanvas } from './canvas-pool.js';
 import type { TipDescriptor, TipShape } from './types.js';
 import { getDefaultTipDescriptor } from './brush-capabilities.js';
+import { generateImageTip, imageTipFootprint } from './tip-images.js';
 
 const FAN_DEFAULT_TIP = getDefaultTipDescriptor('fan');
 const SPLATTER_DEFAULT_TIP = getDefaultTipDescriptor('splatter');
@@ -238,6 +239,7 @@ export const tipGenerators: Record<TipShape, TipGeneratorFn> = {
   calligraphy: generateCalligraphyTip,
   fan: generateFanTip,
   splatter: generateSplatterTip,
+  image: generateImageTip,
 };
 
 /**
@@ -255,6 +257,8 @@ export function tipFootprint(size: number, tip: TipDescriptor): { w: number; h: 
     case 'calligraphy':
       // Its ellipse keeps a radius of at least 1px across.
       return { w, h: Math.max(2, size / aspect) };
+    case 'image':
+      return imageTipFootprint(size, tip);
     default:
       return { w, h: w };
   }

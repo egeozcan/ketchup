@@ -46,6 +46,23 @@ describe('ToolSettings brush previews', () => {
       true,
       160,
       48,
+      // Seeded, so jitter doesn't reroll the thumbnail on every change.
+      { seed: 1 },
     );
+  });
+
+  it('keeps the scatter ratio in the active preview, shrinking the dab to fit', () => {
+    const sizes: number[] = [];
+    for (const amount of [1, 5]) {
+      engineCalls.begin.mockClear();
+      const settings = new ToolSettings();
+      (settings as any)._ctx = { value: { state: makeState({ activeTool: 'pencil', isPresetModified: true, brush: { size: 12, scatter: { amount } } }), isMobile: true } };
+      render(settings.render(), document.createElement('div'));
+      // The preset thumbnails render too; the only ones scattering this much belong to the active brush.
+      const call = engineCalls.begin.mock.calls.find(c => c[0].scatter.amount === amount && c[0].scatter.count === 1);
+      expect(call).toBeDefined();
+      sizes.push(call![0].size);
+    }
+    expect(sizes[1]).toBeLessThan(sizes[0]);
   });
 });

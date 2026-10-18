@@ -1,6 +1,7 @@
 // src/storage/types.ts
 import type { ToolType } from '../types.js';
-import type { PressureCurveName, TipDescriptor, InkDescriptor, BrushDynamics } from '../engine/types.js';
+import type { TipMask } from '../engine/tip-mask.js';
+import type { PressureCurveName, BrushDescriptor, TipDescriptor, InkDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushFade, BrushTexture } from '../engine/types.js';
 
 // ---------------------------------------------------------------------------
 // BlobRef — branded string, opaque to consumers
@@ -33,6 +34,18 @@ export interface ToolSettings {
   tip?: TipDescriptor;
   ink?: InkDescriptor;
   dynamics?: Partial<BrushDynamics>;
+  jitter?: Partial<BrushJitter>;
+  scatter?: Partial<BrushScatter>;
+  color?: Partial<BrushColorDynamics>;
+  /** Absent in settings stored before fades existed: off. */
+  fade?: Partial<BrushFade>;
+  /** Absent in settings stored before textures existed: none. */
+  texture?: Partial<BrushTexture>;
+  /** The brush's blend mode; absent in settings stored before it existed: 'normal'. */
+  blendMode?: string;
+  /** Absent in settings stored before the airbrush existed: off. */
+  airbrush?: boolean;
+  airbrushRate?: number;
   activePreset?: string;
   isPresetModified?: boolean;
   cropAspectRatio?: string;
@@ -61,6 +74,8 @@ export interface SerializedLayerSnapshot {
   visible: boolean;
   opacity: number;
   blendMode?: string;
+  /** Absent in layers stored before alpha lock existed: unlocked. */
+  alphaLocked?: boolean;
   imageData: SerializedImageData;
 }
 
@@ -90,6 +105,7 @@ export type SerializedHistoryEntry =
       afterActiveLayerId: string;
     }
   | { type: 'blend-mode'; layerId: string; before: string; after: string }
+  | { type: 'alpha-lock'; layerId: string; before: boolean; after: boolean }
   | { type: 'transform'; layerId: string; before: SerializedImageData; after: SerializedImageData };
 
 export interface SerializedLayer {
@@ -98,6 +114,7 @@ export interface SerializedLayer {
   visible: boolean;
   opacity: number;
   blendMode?: string;
+  alphaLocked?: boolean;
   imageBlobRef: BlobRef;
 }
 
@@ -187,6 +204,77 @@ export interface StampStore {
   deleteForProject(projectId: string): Promise<void>;
 }
 
+/**
+ * A sampled brush tip in the user's library, without its mask (see
+ * `BrushLibraryStore.getMask`): enough to list it. The library is the user's
+ * own, shared by every project.
+ */
+export interface BrushTipMeta {
+  id: string;
+  name: string;
+  /** The mask's size in pixels. */
+  width: number;
+  height: number;
+  /** The spacing (share of the dab size) the tip is laid with by default. */
+  spacing: number;
+  createdAt: number;
+  /** A small copy of the mask, for lists. */
+  thumb: TipMask;
+  /** The import it came from (a file's name); absent for a tip the user made. */
+  group?: string;
+}
+
+/** A brush the user defined or imported: a full descriptor under a name, listed under "Custom". */
+export interface UserBrushPreset {
+  id: string;
+  name: string;
+  /** Stored as the descriptor was; read it through `normalizeBrushDescriptor`. */
+  descriptor: BrushDescriptor;
+  /** The sampled tip the descriptor uses, if any: deleting that tip deletes this preset. */
+  tipId?: string;
+  createdAt: number;
+  /** The import it came from (a file's name), listed under that heading; absent for a brush the user made ("Custom"). */
+  group?: string;
+}
+
+/** A texture pattern tile kept for brushes that use it (an imported one): 8-bit heights, row by row. */
+export interface StoredPattern {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  createdAt: number;
+  data: Uint8Array;
+}
+
+/**
+ * The user's custom brushes: sampled tips with their masks, and presets built
+ * on them. Not tied to a project. Optional on a backend; without it the editor
+ * has no custom brushes.
+ */
+export interface BrushLibraryStore {
+  list(): Promise<{ tips: BrushTipMeta[]; presets: UserBrushPreset[] }>;
+  /** A tip's mask, or null when there is none (or it is unreadable). */
+  getMask(id: string): Promise<TipMask | null>;
+  /**
+   * Adds or replaces tips (with their masks) and presets in one step: all or
+   * none are stored. Importing many brushes at once is a single call.
+   */
+  putBatch(batch: { tips?: { meta: BrushTipMeta; mask: TipMask }[]; presets?: UserBrushPreset[]; patterns?: StoredPattern[] }): Promise<void>;
+  /** Every stored pattern, with its pixels (they are few and small enough to register at startup). */
+  listPatterns(): Promise<StoredPattern[]>;
+  /**
+   * Deletes presets and tips (with their masks) by id, and then the `unusedPatterns` that no
+   * stored preset names, all in one step (so a brush another tab stored meanwhile keeps its
+   * pattern). Ids that aren't stored are ignored. Resolves to the patterns deleted.
+   */
+  deleteMany(batch: { presets?: string[]; tips?: string[]; unusedPatterns?: string[] }): Promise<{ patterns: string[] }>;
+  /** Deletes a preset, and its tip when no other preset uses it. */
+  deletePreset(id: string): Promise<void>;
+  /** Deletes a tip, its mask, and every preset that uses it. */
+  deleteTip(id: string): Promise<void>;
+}
+
 // ---------------------------------------------------------------------------
 // Root interface
 // ---------------------------------------------------------------------------
@@ -197,6 +285,8 @@ export interface StorageBackend {
   readonly history: ProjectHistoryStore;
   readonly stamps: StampStore;
   readonly blobs: BlobStore;
+  /** The user's custom brushes (sampled tips and presets); absent on a backend that keeps none. */
+  readonly brushes?: BrushLibraryStore;
   init(): Promise<void>;
   dispose(): Promise<void>;
   /**

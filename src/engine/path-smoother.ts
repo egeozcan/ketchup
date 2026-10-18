@@ -1,4 +1,5 @@
 import type { PathChannels, StampPoint } from './types.js';
+import { lerpDegrees } from './angle.js';
 
 interface RawPoint extends PathChannels {
   x: number;
@@ -12,6 +13,8 @@ function lerpChannels(a: PathChannels, b: PathChannels, t: number): PathChannels
     velocity: a.velocity + (b.velocity - a.velocity) * t,
     tiltX: a.tiltX + (b.tiltX - a.tiltX) * t,
     tiltY: a.tiltY + (b.tiltY - a.tiltY) * t,
+    // An angle goes the short way round; tilt is a vector, which does so by itself.
+    twist: lerpDegrees(a.twist, b.twist, t),
   };
 }
 
@@ -27,6 +30,7 @@ export type PathTarget = PathChannels & { pressure: number };
  * must not change anything.
  */
 export type Spacing = number | ((at: StampPoint, heading: number | null) => number);
+// A stamp's `pathDist` is the path length from the path's start (the smoother's reset) to it.
 
 /** Shortest spacing honoured, so a careless one can't stall a walk. */
 const MIN_SPACING = 1e-3;
@@ -62,14 +66,33 @@ export class PathSmoother {
   private _heading: number | null = null;
   /** How far the path has gone since the last stamp, up to the end of the segments walked. */
   private _since = 0;
+  /** The last stamp's path length from the start of the path, which `_since` adds to. */
+  private _lastDist = 0;
+  /** The unwalked last segment was laid by settle(); the next point's walk would lay it again. */
+  private _tailLaid = false;
+  /** Stamps laid since the reset: the next one's `dab`. */
+  private _laid = 0;
 
   reset() {
+    this._laid = 0;
     this._window = [];
     this._count = 0;
     this._last = null;
     this._lastSpacing = 0;
     this._heading = null;
     this._since = 0;
+    this._lastDist = 0;
+    this._tailLaid = false;
+  }
+
+  /** How many stamps the path has laid since the reset. */
+  laidCount(): number {
+    return this._laid;
+  }
+
+  /** The path's length so far, up to the end of the segments walked. */
+  pathLength(): number {
+    return this._lastDist + this._since;
   }
 
   /**
@@ -87,6 +110,7 @@ export class PathSmoother {
       velocity: channels.velocity ?? 0,
       tiltX: channels.tiltX ?? 0,
       tiltY: channels.tiltY ?? 0,
+      twist: channels.twist ?? 0,
     };
     this._count++;
 
@@ -97,10 +121,12 @@ export class PathSmoother {
     }
 
     const n = this._count;
+    const tailLaid = this._tailLaid;
+    this._tailLaid = false;
 
     // Single point (stroke start dot)
     if (n === 1) {
-      const stamp: StampPoint = { x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, velocity: pt.velocity, tiltX: pt.tiltX, tiltY: pt.tiltY };
+      const stamp: StampPoint = { x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, pathDist: 0, dab: 0, velocity: pt.velocity, tiltX: pt.tiltX, tiltY: pt.tiltY, twist: pt.twist };
       this._lay(stamp, spacing);
       return [stamp];
     }
@@ -120,12 +146,30 @@ export class PathSmoother {
     // 4+ points: Catmull-Rom between window[1] and window[2]
     // window has exactly 4 entries: [P0, P1, P2, P3]
     // CR curve goes from P1 to P2, using P0 and P3 as control points.
+    // That segment is the one settle() laid: not again.
+    if (tailLaid) return [];
     const [p0, p1, p2, p3] = this._window;
     return this._walkCatmullRom(p0, p1, p2, p3, spacing);
   }
 
+  /**
+   * Lay the unwalked last segment now, as flush() would, but keep the path
+   * going: the next point does not lay it again, and a flush right after
+   * lays nothing. For a pen that has stopped mid-stroke (an airbrush holds
+   * there) where the path should end at the pen without ending the stroke.
+   */
+  settle(spacing: Spacing): StampPoint[] {
+    if (this._tailLaid) return [];
+    const stamps = this.flush(spacing);
+    // Two points: addPoint laid the segment already and the third point is
+    // buffered either way, so there is nothing to skip.
+    if (this._count >= 3) this._tailLaid = true;
+    return stamps;
+  }
+
   /** Flush: emit stamps for any remaining un-emitted segment at stroke end. */
   flush(spacing: Spacing): StampPoint[] {
+    if (this._tailLaid) return [];
     const n = this._count;
     const w = this._window;
     if (n < 2) return [];
@@ -155,6 +199,7 @@ export class PathSmoother {
       velocity: p2.velocity,
       tiltX: p2.tiltX,
       tiltY: p2.tiltY,
+      twist: p2.twist,
     };
     return this._walkCatmullRom(p0, p1, p2, p3, spacing);
   }
@@ -174,6 +219,7 @@ export class PathSmoother {
         y: from.y + dy * t,
         pressure: from.pressure + (to.pressure - from.pressure) * t,
         speedPxPerMs,
+        pathDist: 0, dab: 0,
         ...lerpChannels(from, to, t),
       };
     });
@@ -219,6 +265,7 @@ export class PathSmoother {
         y: catmullRom(p0.y, p1.y, p2.y, p3.y, t),
         pressure: p1.pressure + (p2.pressure - p1.pressure) * t,
         speedPxPerMs,
+        pathDist: 0, dab: 0,
         ...lerpChannels(p1, p2, t),
       };
     });
@@ -243,6 +290,8 @@ export class PathSmoother {
       } else {
         const due = (d: number) => {
           const p = pointAt(d);
+          p.pathDist = this._lastDist + since + (d - start);
+          p.dab = this._laid;
           return since + (d - start) >= Math.min(this._lastSpacing, spacingOf(spacing, p, this._headingTo(p)));
         };
         const end = Math.min(length, latest);
@@ -275,6 +324,8 @@ export class PathSmoother {
         return stamps;
       }
       const stamp = pointAt(at);
+      stamp.pathDist = this._lastDist + since + (at - start);
+      stamp.dab = this._laid;
       this._lay(stamp, spacing);
       stamps.push(stamp);
       start = at;
@@ -292,6 +343,8 @@ export class PathSmoother {
   private _lay(stamp: StampPoint, spacing: Spacing) {
     this._heading = this._headingTo(stamp);
     this._last = stamp;
+    this._lastDist = stamp.pathDist;
+    this._laid++;
     this._lastSpacing = spacingOf(spacing, stamp, this._heading);
     this._since = 0;
   }
