@@ -609,9 +609,9 @@ describe('DrawingApp', () => {
   });
 
   it.each([
-    [{}, { sizeLength: 0, taperStart: 0 }],
-    [{ fade: { sizeLength: 300, taperStart: 25 } }, { sizeLength: 300, taperStart: 25 }],
-    [{ fade: { sizeLength: -4, taperStart: 'x' } }, { sizeLength: 0, taperStart: 0 }],
+    [{}, { sizeLength: 0, sizeUnit: 'distance', taperStart: 0 }],
+    [{ fade: { sizeLength: 300, taperStart: 25 } }, { sizeLength: 300, sizeUnit: 'distance', taperStart: 25 }],
+    [{ fade: { sizeLength: -4, taperStart: 'x' } }, { sizeLength: 0, sizeUnit: 'distance', taperStart: 0 }],
   ])('loads stored fade settings %j as %j', async (stored, fade) => {
     const app = createAppWithCanvasSpies();
     Object.defineProperty(app, 'updateComplete', { configurable: true, get: () => Promise.resolve(true) });

@@ -17,7 +17,37 @@ interface Entry {
 }
 
 const registry = new Map<string, Entry>();
+/**
+ * Who holds each tip (a brush library, say). The registry is shared by every
+ * editor on the page, so a tip is dropped only when the last holder lets go;
+ * a tip registered with no holder is nobody's and goes with any release.
+ */
+const holders = new Map<string, Set<object>>();
+/**
+ * Tips a stroke under way is painting with. Deleting one (another tab did, or
+ * the editor left the page) takes it from the registry for later strokes, but
+ * this one keeps its mask until it ends, so its shape doesn't change partway.
+ */
+const pinned = new Map<string, { entry: Entry; count: number }>();
 let revisions = 0;
+
+const lookup = (id: string | undefined): Entry | undefined => (id ? registry.get(id) ?? pinned.get(id)?.entry : undefined);
+
+/** Keeps a loaded tip's mask for the caller until the returned function is called (once). No-op for a tip that isn't loaded. */
+export function pinTipMask(id: string | undefined): () => void {
+  const entry = id ? registry.get(id) : undefined;
+  if (!id || !entry) return () => {};
+  const p = pinned.get(id);
+  if (p && p.entry === entry) p.count++;
+  else pinned.set(id, { entry, count: 1 });
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const q = pinned.get(id);
+    if (q && --q.count <= 0) pinned.delete(id);
+  };
+}
 
 /**
  * The mip canvases are four bytes a pixel and rebuilt on demand, so they are
@@ -29,15 +59,42 @@ const MAX_LEVEL_BYTES = 64 * 1024 * 1024;
 let levelBytes = 0;
 const levelBytesOf = (levels: AnyCanvas[]) => levels.reduce((sum, c) => sum + c.width * c.height * 4, 0);
 
-export function registerTipMask(id: string, mask: TipMask) {
-  unregisterTipMask(id);
+export function registerTipMask(id: string, mask: TipMask, holder?: object) {
+  // Another holder's copy of the same id is the same tip: kept, so brushes and caches see no change.
+  if (holder && registry.has(id)) {
+    retainTipMask(id, holder);
+    return;
+  }
+  dropTipMask(id);
   registry.set(id, { mask, revision: ++revisions, levels: null });
+  if (holder) holders.set(id, new Set([holder]));
 }
 
-export function unregisterTipMask(id: string) {
+/** Makes `holder` one of the holders of a tip already registered. */
+export function retainTipMask(id: string, holder: object) {
+  if (!registry.has(id)) return;
+  const set = holders.get(id);
+  if (set) set.add(holder);
+  else holders.set(id, new Set([holder]));
+}
+
+/** Lets go of a tip; with a `holder`, it stays registered while another holder keeps it. */
+export function unregisterTipMask(id: string, holder?: object) {
+  if (holder) {
+    const set = holders.get(id);
+    if (set) {
+      set.delete(holder);
+      if (set.size > 0) return;
+    }
+  }
+  dropTipMask(id);
+}
+
+function dropTipMask(id: string) {
   const entry = registry.get(id);
   if (entry?.levels) levelBytes -= levelBytesOf(entry.levels);
   registry.delete(id);
+  holders.delete(id);
 }
 
 export function hasTipMask(id: string | undefined): boolean {
@@ -46,16 +103,18 @@ export function hasTipMask(id: string | undefined): boolean {
 
 /** 0 when the tip isn't loaded; otherwise a number that changes if it is loaded again. */
 export function tipMaskRevision(id: string | undefined): number {
-  return (id && registry.get(id)?.revision) || 0;
+  return lookup(id)?.revision || 0;
 }
 
 export function getTipMask(id: string | undefined): TipMask | null {
-  return (id && registry.get(id)?.mask) || null;
+  return lookup(id)?.mask ?? null;
 }
 
 /** For tests: forget every registered tip. */
 export function clearTipMasks() {
   registry.clear();
+  holders.clear();
+  pinned.clear();
   levelBytes = 0;
 }
 
@@ -90,8 +149,10 @@ export function imageTipFootprint(size: number, tip: TipDescriptor): { w: number
 function levelsFor(id: string, entry: Entry): AnyCanvas[] {
   if (entry.levels) {
     // Most recently drawn last, which is where eviction does not look.
-    registry.delete(id);
-    registry.set(id, entry);
+    if (registry.get(id) === entry) {
+      registry.delete(id);
+      registry.set(id, entry);
+    }
     return entry.levels;
   }
   const { mask } = entry;
@@ -119,6 +180,8 @@ function levelsFor(id: string, entry: Entry): AnyCanvas[] {
     last = next;
   }
   entry.levels = levels;
+  // A tip only a stroke still holds is no longer the registry's to count or evict.
+  if (registry.get(id) !== entry) return levels;
   levelBytes += levelBytesOf(levels);
   for (const other of registry.values()) {
     if (levelBytes <= MAX_LEVEL_BYTES) break;
@@ -136,7 +199,7 @@ function levelsFor(id: string, entry: Entry): AnyCanvas[] {
  * out of the cache (BrushTipCache keys it as missing).
  */
 export function generateImageTip(diameter: number, _hardness: number, tip: TipDescriptor): AnyCanvas {
-  const entry = tip.imageId ? registry.get(tip.imageId) : undefined;
+  const entry = lookup(tip.imageId);
   const { w, h } = imageTipFootprint(Math.max(1, diameter), tip);
   const cw = Math.max(1, Math.round(w)), ch = Math.max(1, Math.round(h));
   const canvas = createOffscreenCanvas(cw, ch);

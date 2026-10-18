@@ -755,9 +755,6 @@ export class DrawingApp extends LitElement {
 
   /** The user's brush library, once storage is open (and the backend keeps one). */
   private _library?: BrushLibrary;
-  /** The sampled tip last asked for, so one that can't be loaded isn't asked for again on every render. */
-  private _tipRequested: string | null = null;
-
   private _userPresets() {
     return (this._library?.presets ?? []).map(toBrushPreset);
   }
@@ -766,13 +763,9 @@ export class DrawingApp extends LitElement {
   private _syncTipImage() {
     const tip = this._state.brush.tip;
     const id = tip.shape === 'image' ? tip.imageId ?? null : null;
-    if (!id || hasTipMask(id)) {
-      this._tipRequested = id;
-      return;
-    }
-    if (!this._library || this._tipRequested === id) return;
-    this._tipRequested = id;
-    void this._library.ensureTip(id);
+    // ensureTip shares a read under way and remembers a failed one until the library is loaded again, so asking on every update is cheap.
+    // Also when it is loaded already (by another editor): the library then holds it too.
+    if (id) void this._library?.ensureTip(id);
   }
 
   /** Brush changes being stored: a reload for an update, or closing storage, waits for them. */
@@ -4017,6 +4010,8 @@ export class DrawingApp extends LitElement {
     // Back after a while away (a cached view, say): reopen what leaving closed.
     // A failing save's retry stopped while out of the document: resume.
     if (this._saveError && this._dirty) this._scheduleSaveRetry();
+    // Back after letting go of the shared brush registries (see disconnectedCallback).
+    if (this._library?.released && !(this._backendClosed && this._backend)) void this._library.reload();
     if (this._backendClosed && this._backend) {
       this._backendClosed = false;
       // The library may have changed meanwhile (other tabs say so only to open ones).
@@ -4183,6 +4178,8 @@ export class DrawingApp extends LitElement {
     // settles. dispose() closes the IDBDatabase, so calling it while _save()
     // still has open transactions would cause InvalidStateError and silently
     // drop the user's final edits.
+    // The tips and patterns this editor registered are shared by every editor on the page: let go of them if it stays out.
+    setTimeout(() => { if (!this.isConnected) this._library?.release(); }, 0);
     if (this._dirty || this._savePromise) {
       // Capture the backend ref and ownership flag now — if the element
       // reconnects before the save settles, _initStorage() will assign a

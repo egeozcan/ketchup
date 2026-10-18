@@ -43,6 +43,33 @@ function expectNoGaps(dabs: Dab[]) {
   }
 }
 
+describe('size fade in dabs', () => {
+  it('shrinks with the number of dabs laid, whatever the spacing between them', () => {
+    const near = widths(run({ spacing: 0.1, fade: { sizeLength: 10, sizeUnit: 'dabs', taperStart: 0 } }));
+    const far = widths(run({ spacing: 0.5, fade: { sizeLength: 10, sizeUnit: 'dabs', taperStart: 0 } }));
+    for (const w of [near, far]) {
+      expect(w[0]).toBe(20);
+      expect(w[10]).toBe(1);
+      for (let i = 1; i < 11; i++) expect(w[i]).toBeLessThan(w[i - 1]);
+    }
+  });
+
+  it('leaves no gaps when one pointer move lays many dabs, as the fade shrinks them', () => {
+    const fade = { sizeLength: 4, sizeUnit: 'dabs' as const, taperStart: 0 };
+    const dabs = run({ spacing: 0.25, dynamics: { sizeVelocity: 0, flowVelocity: 0, minSize: 0, tilt: 0 }, fade }, straight(4, 100));
+    expect(dabs.length).toBeGreaterThan(8);
+    expect(dabs[4].w).toBeLessThan(dabs[0].w);
+    expectNoGaps(dabs);
+  });
+
+  it('is read from stored brushes only when asked for, and defaults to distance', () => {
+    expect(normalizeFade({ sizeLength: 5 }).sizeUnit).toBe('distance');
+    expect(normalizeFade({ sizeLength: 5, sizeUnit: 'dabs' }).sizeUnit).toBe('dabs');
+    expect(normalizeFade({ sizeUnit: 'bogus' as never }).sizeUnit).toBe('distance');
+    expect(copyDescriptor(getDefaultDescriptor()).fade.sizeUnit).toBe('distance');
+  });
+});
+
 describe('start taper', () => {
   const taper = { fade: { sizeLength: 0, taperStart: 100 } };
 
@@ -200,8 +227,8 @@ describe('fade settings', () => {
   it('normalize stored values', () => {
     expect(normalizeFade(undefined)).toEqual(NO_FADE);
     expect(normalizeFade({})).toEqual(NO_FADE);
-    expect(normalizeFade({ sizeLength: 300, taperStart: 20 })).toEqual({ sizeLength: 300, taperStart: 20 });
-    expect(normalizeFade({ sizeLength: -5, taperStart: 1e9 })).toEqual({ sizeLength: 0, taperStart: MAX_FADE_LENGTH });
+    expect(normalizeFade({ sizeLength: 300, taperStart: 20 })).toEqual({ sizeLength: 300, sizeUnit: 'distance', taperStart: 20 });
+    expect(normalizeFade({ sizeLength: -5, taperStart: 1e9 })).toEqual({ sizeLength: 0, sizeUnit: 'distance', taperStart: MAX_FADE_LENGTH });
     expect(normalizeFade({ sizeLength: NaN, taperStart: 'x' as unknown as number })).toEqual(NO_FADE);
   });
 

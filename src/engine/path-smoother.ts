@@ -70,8 +70,11 @@ export class PathSmoother {
   private _lastDist = 0;
   /** The unwalked last segment was laid by settle(); the next point's walk would lay it again. */
   private _tailLaid = false;
+  /** Stamps laid since the reset: the next one's `dab`. */
+  private _laid = 0;
 
   reset() {
+    this._laid = 0;
     this._window = [];
     this._count = 0;
     this._last = null;
@@ -80,6 +83,11 @@ export class PathSmoother {
     this._since = 0;
     this._lastDist = 0;
     this._tailLaid = false;
+  }
+
+  /** How many stamps the path has laid since the reset. */
+  laidCount(): number {
+    return this._laid;
   }
 
   /** The path's length so far, up to the end of the segments walked. */
@@ -118,7 +126,7 @@ export class PathSmoother {
 
     // Single point (stroke start dot)
     if (n === 1) {
-      const stamp: StampPoint = { x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, pathDist: 0, velocity: pt.velocity, tiltX: pt.tiltX, tiltY: pt.tiltY, twist: pt.twist };
+      const stamp: StampPoint = { x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, pathDist: 0, dab: 0, velocity: pt.velocity, tiltX: pt.tiltX, tiltY: pt.tiltY, twist: pt.twist };
       this._lay(stamp, spacing);
       return [stamp];
     }
@@ -211,7 +219,7 @@ export class PathSmoother {
         y: from.y + dy * t,
         pressure: from.pressure + (to.pressure - from.pressure) * t,
         speedPxPerMs,
-        pathDist: 0,
+        pathDist: 0, dab: 0,
         ...lerpChannels(from, to, t),
       };
     });
@@ -257,7 +265,7 @@ export class PathSmoother {
         y: catmullRom(p0.y, p1.y, p2.y, p3.y, t),
         pressure: p1.pressure + (p2.pressure - p1.pressure) * t,
         speedPxPerMs,
-        pathDist: 0,
+        pathDist: 0, dab: 0,
         ...lerpChannels(p1, p2, t),
       };
     });
@@ -283,6 +291,7 @@ export class PathSmoother {
         const due = (d: number) => {
           const p = pointAt(d);
           p.pathDist = this._lastDist + since + (d - start);
+          p.dab = this._laid;
           return since + (d - start) >= Math.min(this._lastSpacing, spacingOf(spacing, p, this._headingTo(p)));
         };
         const end = Math.min(length, latest);
@@ -316,6 +325,7 @@ export class PathSmoother {
       }
       const stamp = pointAt(at);
       stamp.pathDist = this._lastDist + since + (at - start);
+      stamp.dab = this._laid;
       this._lay(stamp, spacing);
       stamps.push(stamp);
       start = at;
@@ -334,6 +344,7 @@ export class PathSmoother {
     this._heading = this._headingTo(stamp);
     this._last = stamp;
     this._lastDist = stamp.pathDist;
+    this._laid++;
     this._lastSpacing = spacingOf(spacing, stamp, this._heading);
     this._since = 0;
   }

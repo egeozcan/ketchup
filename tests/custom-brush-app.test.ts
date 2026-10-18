@@ -70,13 +70,11 @@ describe('custom brushes in the app', () => {
     const tipId = (await backend.brushes.list()).tips[0].id;
     clearTipMasks();
     expect(hasTipMask(tipId)).toBe(false);
-    (app as any)._tipRequested = null;
     (app as any)._syncTipImage();
     await vi.waitFor(() => expect(hasTipMask(tipId)).toBe(true));
 
     await backend.brushes.deleteTip(tipId);
     clearTipMasks();
-    (app as any)._tipRequested = null;
     (app as any)._syncTipImage();
     await new Promise(r => setTimeout(r, 0));
     expect(hasTipMask(tipId)).toBe(false);
@@ -222,5 +220,24 @@ describe('custom brushes in the app', () => {
       ctx().loadUserTips(['G']);
       await vi.waitFor(() => expect(hasTipMask(tipId)).toBe(true));
     });
+  });
+
+  it('holds the active brush\'s tip even when another editor loaded it, so that editor deleting it leaves this one painting', async () => {
+    const { app, ctx, backend } = makeApp(() => image(6, 6, () => true));
+    await ctx().defineBrushFromSelection();
+    const original: BrushLibrary = (app as any)._library;
+    const tipId = (await backend.brushes.list()).tips[0].id;
+    // This editor restores the brush with a library of its own that never loaded the tip itself.
+    const mine = new BrushLibrary(backend.brushes, () => {});
+    await mine.load();
+    (app as any)._library = mine;
+    (app as any)._syncTipImage();
+    await new Promise(r => setTimeout(r, 0));
+    // The other editor (the original library) deletes it.
+    await original.removeTip(tipId);
+    expect(hasTipMask(tipId)).toBe(true);
+    // Without the app asking for it the delete would have emptied the registry.
+    mine.release();
+    expect(hasTipMask(tipId)).toBe(false);
   });
 });

@@ -5,7 +5,7 @@ import type { BrushLibraryStore, BrushTipMeta, UserBrushPreset, StoredPattern } 
 import type { BrushDescriptor, BrushPreset } from './types.js';
 import { generateUUID } from '../utils/uuid.js';
 import { thumbnailMask, isTipMask, type TipMask } from './tip-mask.js';
-import { registerTipMask, hasTipMask, unregisterTipMask } from './tip-images.js';
+import { registerTipMask, retainTipMask, hasTipMask, unregisterTipMask } from './tip-images.js';
 import { copyDescriptor, normalizeBrushDescriptor } from './brush-presets.js';
 import { getDefaultTipDescriptor } from './brush-capabilities.js';
 import { registerTexturePattern, unregisterTexturePattern } from './brush-texture.js';
@@ -52,6 +52,9 @@ export class BrushLibrary {
   private _knownPatterns = new Set<string>();
   /** Counts the changes this library has stored, for `load` to tell its read went stale. */
   private _changes = 0;
+  /** Set by `release()`, until the lists are loaded again. */
+  private _released = false;
+  private _releases = 0;
 
   constructor(
     private _store: BrushLibraryStore,
@@ -65,6 +68,7 @@ export class BrushLibrary {
     // Reads are taken again if this library stored a change while they were under way, so an older snapshot never replaces the lists.
     for (let attempt = 0; attempt < 3; attempt++) {
       const changes = this._changes;
+      const releases = this._releases;
       const { tips, presets } = await this._store.list();
       let patterns: StoredPattern[] | null = null;
       try {
@@ -73,6 +77,8 @@ export class BrushLibrary {
         // A failed read changes nothing: patterns already registered stay, rather than every brush losing its grain.
         console.error('Could not load brush patterns:', e);
       }
+      // Released meanwhile (the editor left): this read's registrations would outlive it; the next load does them.
+      if (releases !== this._releases) return;
       if (changes !== this._changes) continue;
       // What another tab deleted since is forgotten here too, masks included.
       const listed = new Set(tips.map(t => t.id));
@@ -81,16 +87,34 @@ export class BrushLibrary {
       // Patterns are registered at once (a brush's grain can't wait for a read), in step with the store.
       if (patterns) {
         const stored = new Set(patterns.map(p => p.id));
-        for (const id of this._knownPatterns) if (!stored.has(id)) unregisterTexturePattern(id);
-        for (const p of patterns) registerTexturePattern(p.id, p.name, p.width, p.height, p.data);
+        for (const id of this._knownPatterns) if (!stored.has(id)) unregisterTexturePattern(id, this);
+        for (const p of patterns) registerTexturePattern(p.id, p.name, p.width, p.height, p.data, this);
         this._knownPatterns = stored;
       }
+      this._released = false;
       this._failed.clear();
       this.tips = tips;
       this.presets = presets;
       this._onChange();
       return;
     }
+  }
+
+  /** Whether `release()` let go of the registry entries and `load()` hasn't taken them again. */
+  get released(): boolean {
+    return this._released;
+  }
+
+  /**
+   * Lets go of this library's tips and patterns in the shared registries, for
+   * an editor taken out of the page (they go if no other editor holds them).
+   * `load()` takes the patterns again; tips are read when a brush needs them.
+   */
+  release(): void {
+    this._released = true;
+    this._releases++;
+    for (const id of this._known) unregisterTipMask(id, this);
+    for (const id of this._knownPatterns) unregisterTexturePattern(id, this);
   }
 
   /** Looks the lists up again after another tab changed them. */
@@ -109,7 +133,13 @@ export class BrushLibrary {
    * brush then paints round). Concurrent calls for one id share one read.
    */
   ensureTip(id: string): Promise<boolean> {
-    if (hasTipMask(id)) return Promise.resolve(true);
+    // Released (the editor is out of the page): nothing is taken, so late asks don't hold a tip again.
+    if (this._released) return Promise.resolve(false);
+    if (hasTipMask(id)) {
+      // Loaded by another editor: this library holds it too, so that one's delete doesn't take it from here.
+      if (this.tipMeta(id)) retainTipMask(id, this);
+      return Promise.resolve(true);
+    }
     if (this._failed.has(id)) return Promise.resolve(false);
     const pending = this._loading.get(id);
     if (pending) return pending;
@@ -121,9 +151,9 @@ export class BrushLibrary {
           this._failed.add(id);
           return false;
         }
-        // Deleted while it was being read: it stays deleted.
-        if ((this._deleted.get(id) ?? 0) !== generation) return false;
-        registerTipMask(id, mask);
+        // Deleted while it was being read: it stays deleted. Released meanwhile: not registered again.
+        if ((this._deleted.get(id) ?? 0) !== generation || this._released) return false;
+        registerTipMask(id, mask, this);
         this._onChange();
         return true;
       } catch (e) {
@@ -166,7 +196,7 @@ export class BrushLibrary {
     });
     await this._store.putBatch({ tips, presets });
     for (const t of tips) {
-      registerTipMask(t.meta.id, t.mask);
+      if (!this._released) registerTipMask(t.meta.id, t.mask, this);
       this._known.add(t.meta.id);
     }
     this.tips = [...this.tips, ...tips.map(t => t.meta)];
@@ -203,11 +233,11 @@ export class BrushLibrary {
     const patterns: StoredPattern[] = batch.patterns.map((p, i) => ({ ...p, createdAt: now + i }));
     await this._store.putBatch({ tips, presets, patterns });
     for (const t of tips) {
-      registerTipMask(t.meta.id, t.mask);
+      if (!this._released) registerTipMask(t.meta.id, t.mask, this);
       this._known.add(t.meta.id);
     }
     for (const p of patterns) {
-      registerTexturePattern(p.id, p.name, p.width, p.height, p.data);
+      if (!this._released) registerTexturePattern(p.id, p.name, p.width, p.height, p.data, this);
       this._knownPatterns.add(p.id);
     }
     this.tips = [...this.tips, ...tips.map(t => t.meta)];
@@ -250,7 +280,7 @@ export class BrushLibrary {
 
   private _forgetPatterns(ids: string[]) {
     for (const id of ids) {
-      unregisterTexturePattern(id);
+      unregisterTexturePattern(id, this);
       this._knownPatterns.delete(id);
     }
   }
@@ -271,6 +301,8 @@ export class BrushLibrary {
     await this._store.deletePreset(id);
     this.presets = this.presets.filter(p => p.id !== id);
     if (tipId && !this.presets.some(p => p.tipId === tipId)) this._forgetTip(tipId);
+    // At once: a reload that read the lists before the delete must not put them back while patterns are pruned.
+    this._changes++;
     await this._prunePatterns();
     this._changes++;
     this._onChange();
@@ -281,6 +313,7 @@ export class BrushLibrary {
     await this._store.deleteTip(id);
     this.presets = this.presets.filter(p => p.tipId !== id);
     this._forgetTip(id);
+    this._changes++;
     await this._prunePatterns();
     this._changes++;
     this._onChange();
@@ -292,6 +325,6 @@ export class BrushLibrary {
     this._known.delete(id);
     this._deleted.set(id, (this._deleted.get(id) ?? 0) + 1);
     // Brushes in use that still name it paint round from now on.
-    unregisterTipMask(id);
+    unregisterTipMask(id, this);
   }
 }

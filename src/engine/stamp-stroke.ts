@@ -5,7 +5,7 @@ import { Stabilizer, type StabilizedPoint } from './stabilizer.js';
 import { get2dContext, drawImageSafe, tintAlphaMask, createOffscreenCanvas, type AnyCanvas } from './canvas-pool.js';
 import { PRESSURE_CURVES, quantizeDiameter, type BrushDescriptor, type BrushBlendMode, type TipDescriptor, type StampPoint, type InkState } from './types.js';
 import { TIP_VARIANT_COUNTS, tipFootprint } from './tip-generators.js';
-import { resolveTipForStroke } from './tip-images.js';
+import { resolveTipForStroke, pinTipMask } from './tip-images.js';
 import { copyDescriptor, colorDynamicsActive } from './brush-presets.js';
 import { Rng, freshSeed } from './rng.js';
 import { resolveGrain, applyGrain, type Grain } from './brush-texture.js';
@@ -252,7 +252,11 @@ export class StampStrokeEngine {
   private _inkState: InkState | null = null;
   private _prevStamp: StampPoint | null = null;
   /** Path length of the segments of this stroke before the current one (a pressure lift starts a new segment), so size fade runs on over the stroke while the taper restarts. */
+  /** Lets go of the stroke's hold on its image tip (see pinTipMask). */
+  private _unpinTip: () => void = () => {};
   private _distBase = 0;
+  /** Dabs laid before the smoother's current run (earlier segments, held airbrush dabs): added to a stamp's `dab`, for a fade counted in dabs. */
+  private _dabBase = 0;
   private _variantCounter = 0;
   private _rng = new Rng(0);
   private _flowRng = new Rng(0);
@@ -318,6 +322,8 @@ export class StampStrokeEngine {
     // A sampled tip whose image isn't loaded paints round for the whole stroke,
     // so one that arrives meanwhile can't change the shape and spacing partway.
     this._descriptor.tip = resolveTipForStroke(this._descriptor.tip);
+    this._unpinTip();
+    if (this._descriptor.tip.shape === 'image') this._unpinTip = pinTipMask(this._descriptor.tip.imageId);
     this._viewScale = options.viewScale && options.viewScale > 0 ? options.viewScale : 1;
     this._resetMotion();
     this._color = eraser ? '' : (color.length === 9 ? color.slice(0, 7) : color);
@@ -338,6 +344,7 @@ export class StampStrokeEngine {
     this._stabilizer.reset(options.stabilizerMs ?? 0, STABILIZER_SLACK_PX / this._viewScale);
     this._prevStamp = null;
     this._distBase = 0;
+    this._dabBase = 0;
     this._heading = null;
     this._airClock = null;
     this._lastFeedStep = 0;
@@ -372,6 +379,7 @@ export class StampStrokeEngine {
         // next contact starts afresh.
         this._finishSegment();
         this._distBase += this._smoother.pathLength();
+        this._dabBase += this._smoother.laidCount();
         this._smoother.reset();
         this._stabilizer.reset();
         this._resetMotion();
@@ -535,10 +543,12 @@ export class StampStrokeEngine {
       const last = this._velocityLast;
       // Standing at the last point the velocity tracker saw, so only time passes.
       const velocity = last ? this._trackVelocity(last.x, last.y, t) : 0;
-      held.push({ ...this._prevStamp, ...pen, speedPxPerMs: 0, velocity });
+      held.push({ ...this._prevStamp, ...pen, speedPxPerMs: 0, velocity, dab: this._smoother.laidCount() + i - 1 });
     }
     this._airClock += due * interval;
     this._stampPoints(held);
+    // The held dabs count before the path's next ones.
+    this._dabBase += due;
 
     return due;
   }
@@ -943,6 +953,7 @@ export class StampStrokeEngine {
     );
     this._descriptor = null;
     this._inkState = null;
+    this._unpinTip();
     this._clearTintCache();
     return true;
   }
@@ -950,6 +961,7 @@ export class StampStrokeEngine {
   cancel() {
     this._descriptor = null;
     this._inkState = null;
+    this._unpinTip();
     this._clearTintCache();
     this._smoother.reset();
     this._stabilizer.reset();
@@ -991,11 +1003,14 @@ export class StampStrokeEngine {
    * which isn't known while the dabs are laid.
    */
   private _fadeFactor(at: StampPoint): number {
-    const { sizeLength, taperStart } = this._descriptor!.fade;
+    const { sizeLength, sizeUnit, taperStart } = this._descriptor!.fade;
     let factor = 1;
     if (sizeLength > 0 || taperStart > 0) {
       const min = this._descriptor!.dynamics.minSize;
-      if (sizeLength > 0) factor *= 1 - Math.min(1, (this._distBase + at.pathDist) / sizeLength) * (1 - min);
+      if (sizeLength > 0) {
+        const progress = sizeUnit === 'dabs' ? at.dab + this._dabBase : this._distBase + at.pathDist;
+        factor *= 1 - Math.min(1, progress / sizeLength) * (1 - min);
+      }
       if (taperStart > 0) {
         const t = Math.min(1, at.pathDist / taperStart);
         factor *= min + (1 - min) * t * t * (3 - 2 * t);

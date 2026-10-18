@@ -32,6 +32,8 @@ export interface Grain {
 const TILE = 256;
 
 const registry = new Map<string, TexturePattern>();
+/** Who registered each custom pattern (see `unregisterTexturePattern`). */
+const holders = new Map<string, Set<object>>();
 const builtinLabels: [string, string][] = [
   ['paper', 'Paper'],
   ['canvas', 'Canvas'],
@@ -45,14 +47,31 @@ const builtinCache = new Map<string, TexturePattern>();
 export const MAX_PATTERN_ID_LENGTH = 100;
 
 /** Add (or replace) a pattern, for a tile that isn't built in. Returns false for a tile that can't be used. */
-export function registerTexturePattern(id: string, label: string, width: number, height: number, data: Uint8Array): boolean {
+export function registerTexturePattern(id: string, label: string, width: number, height: number, data: Uint8Array, holder?: object): boolean {
   if (!id || id.length > MAX_PATTERN_ID_LENGTH || id === 'none' || BUILTIN_IDS.has(id)) return false;
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || data.length !== width * height) return false;
   registry.set(id, { id, label, width, height, data });
+  if (holder) {
+    const set = holders.get(id);
+    if (set) set.add(holder);
+    else holders.set(id, new Set([holder]));
+  }
   return true;
 }
 
-export function unregisterTexturePattern(id: string) {
+/**
+ * Drops a pattern. The registry is shared by every editor on the page, so with
+ * a `holder` (a brush library) the pattern stays while another holder keeps it.
+ */
+export function unregisterTexturePattern(id: string, holder?: object) {
+  if (holder) {
+    const set = holders.get(id);
+    if (set) {
+      set.delete(holder);
+      if (set.size > 0) return;
+    }
+  }
+  holders.delete(id);
   registry.delete(id);
 }
 
@@ -252,4 +271,10 @@ export function applyGrain(rgba: Uint8ClampedArray, w: number, h: number, ox: nu
       rgba[p + 3] = Math.round(kept);
     }
   }
+}
+
+/** For tests: forget every custom pattern. */
+export function clearCustomTexturePatterns() {
+  registry.clear();
+  holders.clear();
 }

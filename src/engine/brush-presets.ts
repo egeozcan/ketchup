@@ -24,15 +24,16 @@ export function normalizeAirbrushRate(v: unknown): number {
 
 /** Longest fade or taper length (px) a stored value may have. */
 export const MAX_FADE_LENGTH = 5000;
-export const NO_FADE: BrushFade = { sizeLength: 0, taperStart: 0 };
+export const NO_FADE: BrushFade = { sizeLength: 0, sizeUnit: 'distance', taperStart: 0 };
 
 /** Stored fade lengths over the defaults, each clamped to 0..MAX_FADE_LENGTH; a value that isn't a number keeps its default (off). */
 export function normalizeFade(stored: Partial<BrushFade> | undefined): BrushFade {
   const out = { ...NO_FADE };
-  for (const key of Object.keys(out) as (keyof BrushFade)[]) {
+  for (const key of ['sizeLength', 'taperStart'] as const) {
     const v = stored?.[key];
     if (typeof v === 'number' && Number.isFinite(v)) out[key] = Math.max(0, Math.min(MAX_FADE_LENGTH, v));
   }
+  if (stored?.sizeUnit === 'dabs') out.sizeUnit = 'dabs';
   return out;
 }
 
@@ -97,7 +98,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
-      fade: { sizeLength: 0, taperStart: 40 },
+      fade: { ...NO_FADE, taperStart: 40 },
       texture: { ...NO_TEXTURE },
       blendMode: 'normal',
       airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,

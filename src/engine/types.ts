@@ -93,6 +93,12 @@ export interface BrushFade {
   /** The dab shrinks linearly with the stroke's distance, reaching its smallest size at this length. */
   sizeLength: number;
   /**
+   * What `sizeLength` counts: 'distance' (px along the path, the default and
+   * what stored brushes without the field mean) or 'dabs' (Photoshop's fade
+   * steps: the dabs laid so far, held or moving, so a held airbrush still fades).
+   */
+  sizeUnit: 'distance' | 'dabs';
+  /**
    * The dab grows from its smallest size to full over this distance at the
    * start of each segment of the stroke (a segment starts at each contact
    * after a pressure lift), eased so the tip is pointed. There is no end
@@ -279,6 +285,8 @@ export interface StampPoint extends PathChannels {
   speedPxPerMs: number;
   /** Path length from the start of the current segment of the stroke (the first contact, or the first after a pressure lift) to this point. */
   pathDist: number;
+  /** The dab's index among those the path has laid since the smoother was reset (0 for the first); for a fade counted in dabs. */
+  dab: number;
 }
 
 export type BlendMode =

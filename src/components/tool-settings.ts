@@ -2214,7 +2214,7 @@ export class ToolSettings extends LitElement {
           <label title=${hint}>${label}</label>
           <input type="range" min="0" max=${max} step="5" aria-label=${label} .value=${String(Math.min(max, value))}
             @input=${(e: Event) => this.ctx.setBrushFade({ [key]: Number((e.target as HTMLInputElement).value) })} />
-          <span class="size-value">${value > 0 ? `${value}px` : 'Off'}</span>
+          <span class="size-value">${value > 0 ? `${value}${key === 'sizeLength' && brush.fade.sizeUnit === 'dabs' ? ' dabs' : 'px'}` : 'Off'}</span>
         </div>
       `;
     };

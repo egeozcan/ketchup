@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StampStrokeEngine } from '../src/engine/stamp-stroke.ts';
 import { BrushTipCache } from '../src/engine/brush-tip-cache.ts';
 import { tipFootprint } from '../src/engine/tip-generators.ts';
-import { clearTipMasks, hasTipMask, registerTipMask, resolveTipForStroke } from '../src/engine/tip-images.ts';
+import { clearTipMasks, getTipMask, hasTipMask, registerTipMask, resolveTipForStroke, unregisterTipMask } from '../src/engine/tip-images.ts';
 import { coverageFromRGBA, cropMask, downscaleMask, maskFromRGBA, thumbnailMask, MAX_TIP_SIZE } from '../src/engine/tip-mask.ts';
 import type { TipMask } from '../src/engine/tip-mask.ts';
 import { copyDescriptor, getDefaultDescriptor, normalizeBrushDescriptor, normalizeTip, BRUSH_PRESETS } from '../src/engine/brush-presets.ts';
@@ -192,6 +192,25 @@ describe('sampled tips in the engine', () => {
     engine.commit(document.createElement('canvas').getContext('2d')!);
     expect(out.length).toBeGreaterThan(5);
     for (const d of out) expect(d.w).toBe(d.h);
+  });
+
+  it('keeps a loaded tip for the stroke when it is removed mid-stroke, and lets go when the stroke ends', () => {
+    const out: { w: number; h: number }[] = [];
+    vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage').mockImplementation(function (this: CanvasRenderingContext2D, ...args: unknown[]) {
+      if (args.length === 5 && this.canvas.width >= 200) out.push({ w: args[3] as number, h: args[4] as number });
+    });
+    registerTipMask('leaves', solid(40, 10));
+    const engine = new StampStrokeEngine();
+    engine.begin(makeBrush({ size: 20, pressureSize: false, tip: imageTip('leaves') }), '#000000', false, 400, 100, { seed: 1 });
+    for (let i = 0; i <= 5; i++) engine.stroke(20 + i * 15, 50, 1, undefined, i * 8, { tiltX: 0, tiltY: 0 });
+    unregisterTipMask('leaves');
+    // New strokes see it gone, this one still has it.
+    expect(hasTipMask('leaves')).toBe(false);
+    for (let i = 6; i <= 12; i++) engine.stroke(20 + i * 15, 50, 1, undefined, i * 8, { tiltX: 0, tiltY: 0 });
+    engine.commit(document.createElement('canvas').getContext('2d')!);
+    expect(out.length).toBeGreaterThan(8);
+    for (const d of out) expect(d.w).toBeGreaterThan(d.h);
+    expect(getTipMask('leaves')).toBeNull();
   });
 
   it('is a shape without bristles, aspect or hardness, but with rotation', () => {

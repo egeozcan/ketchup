@@ -3,7 +3,7 @@ import { parseAbr, AbrParseError } from '../src/engine/abr/index.ts';
 import { planAbrImport } from '../src/engine/abr/to-brushes.ts';
 import { normalizeBrushDescriptor } from '../src/engine/brush-presets.ts';
 import { BrushLibrary, toBrushPreset } from '../src/engine/brush-library.ts';
-import { getTexturePattern, unregisterTexturePattern } from '../src/engine/brush-texture.ts';
+import { clearCustomTexturePatterns, getTexturePattern, unregisterTexturePattern } from '../src/engine/brush-texture.ts';
 import { clearTipMasks, getTipMask } from '../src/engine/tip-images.ts';
 import { MemoryBackend } from '../src/storage/memory/index.ts';
 import { IndexedDBBackend } from '../src/storage/indexeddb/indexeddb-backend.ts';
@@ -13,7 +13,10 @@ import {
   type V, type V6Sample,
 } from './abr-writer.ts';
 
-afterEach(() => clearTipMasks());
+afterEach(() => {
+  clearTipMasks();
+  clearCustomTexturePatterns();
+});
 
 const ramp = (n: number) => Array.from({ length: n }, (_, i) => (i * 37) % 256);
 
@@ -195,7 +198,7 @@ describe('mapping into brushes', () => {
       useScatter: bool(true),
       bothAxes: bool(true),
       'Cnt ': long(4),
-      scatterDynamics: dyn(0, 250),
+      scatterDynamics: dyn(0, 60),
       countDynamics: dyn(0, 60),
       usePaintDynamics: bool(true),
       prVr: dyn(0, 35),
@@ -217,7 +220,7 @@ describe('mapping into brushes', () => {
     expect(d.jitter).toMatchObject({ size: 0.4, angle: 0.5, roundness: 0.3, flow: 0.35 });
     expect(d.dynamics.minSize).toBeCloseTo(0.25);
     expect(d.tip.orientation).toBe('direction');
-    expect(d.scatter).toMatchObject({ amount: 2.5, bothAxes: true, count: 4 });
+    expect(d.scatter).toMatchObject({ amount: 1.8, bothAxes: true, count: 4 });
     expect(d.scatter.countJitter).toBeCloseTo(0.6);
     expect(d.pressureOpacity).toBe(true);
     expect(d.color).toMatchObject({ fgBg: 0.8, fgBgPressure: true, perTip: true });
@@ -230,16 +233,23 @@ describe('mapping into brushes', () => {
     expect(plan.unmapped).toContain('dualBrush');
   });
 
-  it('turns a fade into a length from the step count', async () => {
+  it('keeps a fade in dabs, as Photoshop counts it', async () => {
     const plan = await planAbrImport(writeV6({
       samples: [MIDDLE],
       presets: [preset('Fade', sampledShape(MIDDLE.id, 60, { spacing: 50 }), { useTipDynamics: bool(true), szVr: dyn(1, 0, 10) })],
     }));
     const d = plan.brushes[0].descriptor;
-    // 10 dabs, each spaced as Photoshop would (half of the 60px image), which is 1.5 of the 20px cropped tip, within the 100% the control allows.
-    expect(d.spacing).toBe(1);
-    expect(d.fade.sizeLength).toBeCloseTo(10 * 1 * 20);
+    expect(d.fade).toMatchObject({ sizeLength: 10, sizeUnit: 'dabs' });
     expect(d.pressureSize).toBe(false);
+  });
+
+  it('widens scatter by the crop, so it spreads as far as the Photoshop brush', async () => {
+    // 60px brush, painted part a third of it: 100% scatter is 60px, which is 3 of the 20px dabs.
+    const plan = await planAbrImport(writeV6({
+      samples: [MIDDLE],
+      presets: [preset('Scat', sampledShape(MIDDLE.id, 60), { useScatter: bool(true), 'Cnt ': long(1), scatterDynamics: dyn(0, 100) })],
+    }));
+    expect(plan.brushes[0].descriptor.scatter.amount).toBeCloseTo(3);
   });
 
   it('keeps the dab separation when the tip is cropped', async () => {
@@ -581,5 +591,122 @@ describe.each(stores)('importing into the brush library: %s', (_name, open) => {
     expect(result.patterns).toEqual(['Q']);
     expect((await store.listPatterns()).map(p => p.id)).toEqual(['P']);
     await done();
+  });
+});
+
+describe('registries shared by several libraries', () => {
+  it('keeps a pattern and a tip registered until the last library holding them lets go', async () => {
+    const plan = await planAbrImport(writeV6({
+      samples: [MIDDLE],
+      patterns: [{ id: 'SHARED', name: 'Shared', width: 2, height: 2, mode: 1, channels: [[1, 2, 3, 4]] }],
+      presets: [preset('A', sampledShape(MIDDLE.id, 30), { useTexture: bool(true), textureDepth: pct(50), Txtr: obj('Ptrn', { Idnt: text('SHARED') }) })],
+    }));
+    const batch = { group: 'G', tips: plan.tips, brushes: plan.brushes, patterns: plan.patterns };
+    // Two editors, each with its own storage, import the same file.
+    const one = new BrushLibrary(new MemoryBackend().brushes);
+    const two = new BrushLibrary(new MemoryBackend().brushes);
+    await one.importBrushes(batch);
+    await two.importBrushes(batch);
+    const patternId = plan.patterns[0].id;
+    await one.removeGroup('G');
+    expect(getTexturePattern(patternId)).not.toBeNull();
+    await two.removeGroup('G');
+    expect(getTexturePattern(patternId)).toBeNull();
+  });
+
+  it('keeps a tip loaded by two libraries on one database when one deletes it', async () => {
+    const backend = new MemoryBackend();
+    const one = new BrushLibrary(backend.brushes);
+    const [made] = await one.add([{ name: 't', mask: { width: 1, height: 1, alpha: Uint8Array.of(255) } }]);
+    const two = new BrushLibrary(backend.brushes);
+    await two.load();
+    expect(await two.ensureTip(made.tipId!)).toBe(true);
+    await one.removeTip(made.tipId!);
+    expect(getTipMask(made.tipId!)).not.toBeNull();
+    // The second library still lists and holds it until it learns of the delete.
+    await two.reload();
+    expect(getTipMask(made.tipId!)).toBeNull();
+  });
+
+  it('lets a library go of its registrations when released, and takes the patterns again on load', async () => {
+    const backend = new MemoryBackend();
+    const lib = new BrushLibrary(backend.brushes);
+    const plan = await planAbrImport(writeV6({
+      samples: [MIDDLE],
+      patterns: [{ id: 'REL', name: 'Rel', width: 2, height: 2, mode: 1, channels: [[1, 2, 3, 4]] }],
+      presets: [preset('A', sampledShape(MIDDLE.id, 30), { useTexture: bool(true), textureDepth: pct(50), Txtr: obj('Ptrn', { Idnt: text('REL') }) })],
+    }));
+    await lib.importBrushes({ group: 'G', tips: plan.tips, brushes: plan.brushes, patterns: plan.patterns });
+    const tipId = lib.tips[0].id;
+    lib.release();
+    expect(lib.released).toBe(true);
+    expect(getTexturePattern(plan.patterns[0].id)).toBeNull();
+    expect(getTipMask(tipId)).toBeNull();
+    // A read that finishes after the release registers nothing.
+    expect(await lib.ensureTip(tipId)).toBe(false);
+    await lib.load();
+    expect(lib.released).toBe(false);
+    expect(getTexturePattern(plan.patterns[0].id)).not.toBeNull();
+    expect(await lib.ensureTip(tipId)).toBe(true);
+  });
+
+  it('abandons a load that a release overtook, and registers nothing after a release', async () => {
+    const backend = new MemoryBackend();
+    const lib = new BrushLibrary(backend.brushes);
+    const plan = await planAbrImport(writeV6({
+      samples: [MIDDLE],
+      patterns: [{ id: 'LATE', name: 'Late', width: 2, height: 2, mode: 1, channels: [[1, 2, 3, 4]] }],
+      presets: [preset('A', sampledShape(MIDDLE.id, 30), { useTexture: bool(true), textureDepth: pct(50), Txtr: obj('Ptrn', { Idnt: text('LATE') }) })],
+    }));
+    await lib.importBrushes({ group: 'G', tips: plan.tips, brushes: plan.brushes, patterns: plan.patterns });
+    lib.release();
+    let release!: () => void;
+    const real = backend.brushes.listPatterns.bind(backend.brushes);
+    vi.spyOn(backend.brushes, 'listPatterns').mockImplementationOnce(async () => {
+      await new Promise<void>(r => { release = r; });
+      return real();
+    });
+    const loading = lib.load();
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    lib.release();
+    release();
+    await loading;
+    expect(lib.released).toBe(true);
+    expect(getTexturePattern(plan.patterns[0].id)).toBeNull();
+    // A write finishing while released registers nothing either.
+    await lib.importBrushes({ group: 'H', tips: plan.tips, brushes: plan.brushes, patterns: plan.patterns });
+    expect(getTexturePattern(plan.patterns[0].id)).toBeNull();
+  });
+
+  it('does not let a reload that read before a delete bring the brush back while patterns are pruned', async () => {
+    const backend = new MemoryBackend();
+    const lib = new BrushLibrary(backend.brushes);
+    const [made] = await lib.add([{ name: 'x', mask: { width: 1, height: 1, alpha: Uint8Array.of(255) } }]);
+    let release!: () => void;
+    const real = backend.brushes.list.bind(backend.brushes);
+    vi.spyOn(backend.brushes, 'list').mockImplementationOnce(async () => {
+      const before = await real();
+      await new Promise<void>(r => { release = r; });
+      return before;
+    });
+    const reloading = lib.reload();
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    await lib.removePreset(made.id);
+    release();
+    await reloading;
+    expect(lib.presets).toEqual([]);
+  });
+
+  it('does not hold a tip again when asked for it after a release', async () => {
+    const backend = new MemoryBackend();
+    const a = new BrushLibrary(backend.brushes);
+    const [made] = await a.add([{ name: 'x', mask: { width: 1, height: 1, alpha: Uint8Array.of(255) } }]);
+    const b = new BrushLibrary(backend.brushes);
+    await b.load();
+    expect(await b.ensureTip(made.tipId!)).toBe(true);
+    a.release();
+    expect(await a.ensureTip(made.tipId!)).toBe(false);
+    b.release();
+    expect(getTipMask(made.tipId!)).toBeNull();
   });
 });

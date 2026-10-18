@@ -185,7 +185,7 @@ interface Ctx {
 }
 
 /** Layers a preset's dynamics, texture, colour and transfer settings onto `d` (in place). */
-function applySettings(d: BrushDescriptor, o: DescObject, ctx: Ctx): void {
+function applySettings(d: BrushDescriptor, o: DescObject, ctx: Ctx, cropShare: number): void {
   for (const key of o.items.keys()) if (!KNOWN_KEYS.has(key)) ctx.unmapped.add(`preset:${key}`);
   const note = (what: string) => ctx.unmapped.add(what);
 
@@ -196,9 +196,9 @@ function applySettings(d: BrushDescriptor, o: DescObject, ctx: Ctx): void {
     d.pressureSize = sizeControl === CONTROL_PRESSURE;
     d.dynamics.minSize = pct(o, 'minimumDiameter');
     if (sizeControl === CONTROL_FADE) {
-      // A fade is counted in dabs; a dab is `spacing` diameters along the path.
-      const steps = Math.max(0, getNumber(sz, 'fStp') ?? 0);
-      d.fade.sizeLength = clamp(steps * d.spacing * d.size, 0, MAX_FADE_LENGTH);
+      // Photoshop counts a fade in dabs (steps), as the brush does natively.
+      d.fade.sizeLength = clamp(Math.max(0, getNumber(sz, 'fStp') ?? 0), 0, MAX_FADE_LENGTH);
+      d.fade.sizeUnit = 'dabs';
     } else if (sizeControl === 4) {
       note('szVr:stylusWheel');
     }
@@ -215,7 +215,8 @@ function applySettings(d: BrushDescriptor, o: DescObject, ctx: Ctx): void {
 
   if (getBool(o, 'useScatter')) {
     // Photoshop's scatter is up to 1000% of the diameter; a percent over 100 reads as that many diameters.
-    d.scatter.amount = clamp((getNumber(getObject(o, 'scatterDynamics'), 'jitter') ?? 0) / 100, 0, MAX_SCATTER);
+    // Our unit is a dab (the cropped tip), Photoshop's the whole image.
+    d.scatter.amount = clamp((getNumber(getObject(o, 'scatterDynamics'), 'jitter') ?? 0) / 100 / cropShare, 0, MAX_SCATTER);
     d.scatter.bothAxes = getBool(o, 'bothAxes') === true;
     d.scatter.count = Math.round(clamp(getNumber(o, 'Cnt ') ?? 1, 1, MAX_SCATTER_COUNT));
     d.scatter.countJitter = pct(getObject(o, 'countDynamics'), 'jitter');
@@ -408,7 +409,7 @@ export async function planAbrImport(data: ArrayBuffer | ArrayBufferView, opts: P
     }
     const descriptor = normalizeBrushDescriptor({ pressureSize: false, pressureOpacity: false });
     applyTip(descriptor, preset, entry);
-    if (preset.settings) applySettings(descriptor, preset.settings, ctx);
+    if (preset.settings) applySettings(descriptor, preset.settings, ctx, entry ? entry.cropShare : 1);
     if (tip.kind === 'sampled' && (tip.roundness < 0.97)) ctx.unmapped.add('sampledBrush:roundness');
     const brush: PlannedBrush = { name: cleanName(preset.name, `Brush ${i + 1}`), descriptor };
     if (tip.kind === 'sampled' && entry) {

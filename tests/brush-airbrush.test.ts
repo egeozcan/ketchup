@@ -679,4 +679,21 @@ describe('PathSmoother.settle', () => {
     // Ends at the last point of the path either way.
     expect(settled[settled.length - 1]).toBeGreaterThan(130 * 1000 - 3000);
   });
+
+  it('fades a held airbrush by dab count when the fade is counted in dabs, not by distance', () => {
+    const fade = { sizeLength: 10, sizeUnit: 'dabs' as const, taperStart: 0 };
+    const { engine, dabs } = start({ fade });
+    engine.stroke(50, 50, 1, undefined, 0);
+    hold(engine, 0, 1000, 10);
+    expect(dabs[0].w).toBe(20);
+    // Ten steps later the dab is at its smallest, with the pen never having moved.
+    expect(dabs[10].w).toBeLessThan(dabs[5].w);
+    expect(dabs[5].w).toBeLessThan(dabs[0].w);
+    expect(dabs[15].w).toBe(1);
+    // The same fade in px never advances while held.
+    const still = start({ fade: { sizeLength: 10, sizeUnit: 'distance', taperStart: 0 } });
+    still.engine.stroke(50, 50, 1, undefined, 0);
+    hold(still.engine, 0, 1000, 10);
+    expect(still.dabs.every(d => d.w === 20)).toBe(true);
+  });
 });
