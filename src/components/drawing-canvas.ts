@@ -2646,6 +2646,7 @@ export class DrawingCanvas extends LitElement {
       const eraser = this.ctx.state.activeTool === 'eraser';
       this._engine.begin(desc, color, eraser, this._docWidth, this._docHeight, {
         stabilizerMs: stabilizerTimeConstant(this.ctx.state.stabilizer),
+        secondaryColor: this.ctx.state.fillColor,
         // Client (screen) pixels per document pixel, through a host's CSS zoom too.
         viewScale: this._zoom / this._clientScale(this._getCanvasRect()).x,
       });

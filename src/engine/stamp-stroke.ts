@@ -5,15 +5,26 @@ import { Stabilizer, type StabilizedPoint } from './stabilizer.js';
 import { get2dContext, drawImageSafe, tintAlphaMask, createOffscreenCanvas, type AnyCanvas } from './canvas-pool.js';
 import { PRESSURE_CURVES, quantizeDiameter, type BrushDescriptor, type TipDescriptor, type StampPoint, type InkState } from './types.js';
 import { TIP_VARIANT_COUNTS, tipFootprint } from './tip-generators.js';
-import { copyDescriptor } from './brush-presets.js';
+import { copyDescriptor, colorDynamicsActive } from './brush-presets.js';
 import { Rng, freshSeed } from './rng.js';
 import { wrapDegrees } from './angle.js';
-import { initInkState, applyDepletion, applyBuildup, applyPickup } from './ink-model.js';
+import { initInkState, applyDepletion, applyBuildup, applyPickup, lerpOklab, varyColor, type ColorRolls } from './ink-model.js';
 
 /** Mixed into the stroke's seed for the flow jitter's own random stream. */
 const FLOW_STREAM = 0x9E3779B9;
 /** Mixed into the stroke's seed for scatter's own random stream. */
 const SCATTER_STREAM = 0x85EBCA6B;
+
+/** Mixed into the stroke's seed for colour dynamics' own random stream. */
+const COLOR_STREAM = 0xC2B2AE35;
+/** Bytes of tinted tips kept for reuse by a stroke of varying colour; the oldest go first. */
+const TINT_CACHE_BYTES = 16 * 1024 * 1024;
+/** Tinted-tip slots grow in these steps, so a slowly growing dab doesn't restart the cache at every size. */
+const TINT_SLOT_STEP = 32;
+/** Pixels of a tinted tip's edge copied outward in its slot. */
+const TINT_EDGE = 2;
+/** Most tinted tips kept, however small: past a point more colours only mean more canvases to fill and none to reuse. */
+const TINT_CACHE_ENTRIES = 128;
 
 const MIN_DIRECTION_DIST_SQ = 0.25;
 /** How quickly the speed that drives dynamics follows the pointer's, in ms. */
@@ -34,6 +45,8 @@ export interface StrokeOptions {
   viewScale?: number;
   /** Seeds the stroke's jitter, so a stroke can be replayed exactly; random per stroke without. */
   seed?: number;
+  /** The fill colour, which colour dynamics mix toward; without one the mix has nothing to go to. */
+  secondaryColor?: string;
 }
 
 export interface PenTilt {
@@ -212,6 +225,13 @@ export class StampStrokeEngine {
   private _color = '';
   private _eraser = false;
   private _colorMode = false;
+  private _secondary = '';
+  /** Colour dynamics change the colour of a dab (never on the eraser). */
+  private _dynamicColor = false;
+  private _colorRng = new Rng(0);
+  /** With dynamics once per stroke, the rolls and then the colour of the stroke's first dab. */
+  private _strokeRolls: ColorRolls | null = null;
+  private _strokeDabColor: string | null = null;
   private _docWidth = 0;
   private _docHeight = 0;
   private _inkState: InkState | null = null;
@@ -231,6 +251,13 @@ export class StampStrokeEngine {
   // tip and picked-up colour skip re-tinting it.
   private _tintedTip: AnyCanvas | null = null;
   private _tintedColor = '';
+  // Tinted tips by tip and colour, for strokes whose colour varies per dab
+  // (insertion order is age: a hit moves an entry to the back).
+  private _tintCache = new Map<string, AnyCanvas>();
+  private _slotW = 0;
+  private _slotH = 0;
+  private _tipIds = new WeakMap<object, number>();
+  private _nextTipId = 1;
   // Union of every stamp footprint laid down this stroke, in document pixels.
   // Lets the canvas repaint only the touched region of the stroke buffer.
   private _dirtyMinX = Infinity;
@@ -244,7 +271,10 @@ export class StampStrokeEngine {
     this._resetMotion();
     this._color = eraser ? '' : (color.length === 9 ? color.slice(0, 7) : color);
     this._eraser = eraser;
-    this._colorMode = !eraser && descriptor.ink.wetness > 0;
+    this._secondary = options.secondaryColor && options.secondaryColor.length === 9 ? options.secondaryColor.slice(0, 7) : options.secondaryColor ?? '';
+    this._dynamicColor = !eraser && colorDynamicsActive(descriptor.color);
+    // The per-dab colour path serves both what is picked up and what varies.
+    this._colorMode = !eraser && (descriptor.ink.wetness > 0 || this._dynamicColor);
     this._docWidth = docWidth;
     this._docHeight = docHeight;
     this._bufferPool.acquire(docWidth, docHeight, this._rawDirtyRect());
@@ -257,6 +287,10 @@ export class StampStrokeEngine {
     this._rng = new Rng(seed);
     this._flowRng = new Rng(seed ^ FLOW_STREAM);
     this._scatterRng = new Rng(seed ^ SCATTER_STREAM);
+    this._colorRng = new Rng(seed ^ COLOR_STREAM);
+    this._strokeRolls = null;
+    this._strokeDabColor = null;
+    this._clearTintCache();
     this._snapshotCaptured = false;
     this._dirtyMinX = Infinity;
     this._dirtyMinY = Infinity;
@@ -270,7 +304,8 @@ export class StampStrokeEngine {
     const d = this._descriptor;
     let inputPressure = pressure;
     if (!Number.isFinite(pressure) || pressure <= 0) {
-      if (d.pressureSize || d.pressureOpacity) {
+      // A pressure that drives the fill mix is a pressure dynamic like the others.
+      if (d.pressureSize || d.pressureOpacity || (this._dynamicColor && d.color.fgBgPressure && d.color.fgBg > 0)) {
         // A lift ends this part of the stroke where the pen was, then the
         // next contact starts afresh.
         this._finishSegment();
@@ -284,7 +319,8 @@ export class StampStrokeEngine {
       inputPressure = 1;
     }
 
-    if (this._colorMode && !this._snapshotCaptured && layerCtx) {
+    // Only a wet brush reads the layer; varying colour alone never pays for a full-layer read.
+    if (d.ink.wetness > 0 && this._colorMode && !this._snapshotCaptured && layerCtx) {
       this._inkState.layerSnapshot = layerCtx.getImageData(0, 0, this._docWidth, this._docHeight);
       this._snapshotCaptured = true;
     }
@@ -339,6 +375,14 @@ export class StampStrokeEngine {
       const rAngle = this._rng.next();
       const rRound = this._rng.next();
       const rFlow = this._flowRng.next();
+      // Colour dynamics read four values per dab (hue, saturation, brightness,
+      // fill mix) from their own stream, before anything can skip the dab.
+      // Once per stroke they are read at the first dab and kept.
+      let colorRolls: ColorRolls | null = null;
+      if (this._dynamicColor) {
+        if (d.color.perTip) colorRolls = this._rollColor();
+        else colorRolls = this._strokeRolls ??= this._rollColor();
+      }
 
       const depletionMult = applyDepletion(ink, state);
       if (depletionMult <= 0) {
@@ -394,8 +438,19 @@ export class StampStrokeEngine {
         // Jitter only ever takes size off, never below a pixel; spacing stays on
         // the un-jittered size (_dabSpacing), as Photoshop does, so it stays even.
         const stampSize = Math.max(1, nominal * (1 - d.jitter.size * jSize));
-        // A colour is picked up along the path, once per stamp, not at each scattered dab.
-        if (k === 0) applyPickup(ink, state, stamp.x, stamp.y, stampSize / 2);
+        // Varying colour comes first, then what the brush picks up mixes into
+        // it. The pickup is sampled along the path once per stamp, not at each
+        // scattered dab; the extras mix in the stamp's sample.
+        if (colorRolls) {
+          const dabRolls = k > 0 && d.color.perTip ? this._rollColor() : colorRolls;
+          const varied = this._dabColor(dabRolls, stamp.pressure);
+          state.originalColor = varied;
+          state.currentColor = varied;
+          if (k === 0) applyPickup(ink, state, stamp.x, stamp.y, stampSize / 2);
+          else if (state.pickedWeight > 0) state.currentColor = lerpOklab(varied, state.pickedColor, state.pickedWeight);
+        } else if (k === 0) {
+          applyPickup(ink, state, stamp.x, stamp.y, stampSize / 2);
+        }
         const diam = quantizeDiameter(stampSize);
 
         let tip: AnyCanvas;
@@ -431,26 +486,30 @@ export class StampStrokeEngine {
         if (py + reach > this._dirtyMaxY) this._dirtyMaxY = py + reach;
 
         if (this._colorMode) {
-          // Reuse a single tinting canvas — grow only, never shrink
-          if (tipW > this._tintW || tipH > this._tintH) {
-            this._tintW = Math.max(this._tintW, tipW);
-            this._tintH = Math.max(this._tintH, tipH);
-            this._tintCanvas = createOffscreenCanvas(this._tintW, this._tintH);
-            this._tintedTip = null;
+          let tint: HTMLCanvasElement;
+          if (this._dynamicColor) {
+            tint = this._tintedTipFor(tip, state.currentColor) as HTMLCanvasElement;
+          } else {
+            // Reuse a single tinting canvas — grow only, never shrink
+            if (tipW > this._tintW || tipH > this._tintH) {
+              this._tintW = Math.max(this._tintW, tipW);
+              this._tintH = Math.max(this._tintH, tipH);
+              this._tintCanvas = createOffscreenCanvas(this._tintW, this._tintH);
+              this._tintedTip = null;
+            }
+            if (tip !== this._tintedTip || state.currentColor !== this._tintedColor) {
+              const tCtx = get2dContext(this._tintCanvas!);
+              tCtx.globalCompositeOperation = 'source-over';
+              tCtx.clearRect(0, 0, this._tintW, this._tintH);
+              drawImageSafe(tCtx, tip, 0, 0);
+              tintAlphaMask(tCtx, state.currentColor, tipW, tipH);
+              this._tintedTip = tip;
+              this._tintedColor = state.currentColor;
+            }
+            // The tint canvas only grows, so it can be larger than this tip: crop
+            // its top-left tipW×tipH rather than scaling the whole canvas down.
+            tint = this._tintCanvas as HTMLCanvasElement;
           }
-          if (tip !== this._tintedTip || state.currentColor !== this._tintedColor) {
-            const tCtx = get2dContext(this._tintCanvas!);
-            tCtx.globalCompositeOperation = 'source-over';
-            tCtx.clearRect(0, 0, this._tintW, this._tintH);
-            drawImageSafe(tCtx, tip, 0, 0);
-            tintAlphaMask(tCtx, state.currentColor, tipW, tipH);
-            this._tintedTip = tip;
-            this._tintedColor = state.currentColor;
-          }
-
-          // The tint canvas only grows, so it can be larger than this tip: crop
-          // its top-left tipW×tipH rather than scaling the whole canvas down.
-          const tint = this._tintCanvas as HTMLCanvasElement;
           ctx.globalAlpha = stampAlpha;
           ctx.globalCompositeOperation = 'source-over';
           if (transformDab(ctx, px, py, rotation, lean, squash)) {
@@ -476,6 +535,85 @@ export class StampStrokeEngine {
     ctx.globalAlpha = 1;
   }
 
+  private _rollColor(): ColorRolls {
+    const r = this._colorRng;
+    return { hue: r.next(), saturation: r.next(), brightness: r.next(), fgBg: r.next() };
+  }
+
+  /**
+   * The colour of a dab under colour dynamics. With variation once per stroke
+   * it is worked out at the first dab and kept, pressure included.
+   */
+  private _dabColor(rolls: ColorRolls, pressure: number): string {
+    const d = this._descriptor!;
+    if (!d.color.perTip && this._strokeDabColor !== null) return this._strokeDabColor;
+    const c = varyColor(this._color, this._secondary || this._color, d.color, rolls, pressure);
+    if (!d.color.perTip) this._strokeDabColor = c;
+    return c;
+  }
+
+  /**
+   * `tip` tinted `color`, kept for reuse. Retinting a tip is a clear, a draw
+   * and a fill the size of the tip, so a stroke of changing colour would pay
+   * that at every dab; colours are snapped to steps (varyColor) so the same
+   * ones come round again. The tinted tips live in slots all of one size (the
+   * largest tip so far, rounded up; the shared tint canvas is cropped the
+   * same way), at most TINT_CACHE_BYTES of them: a miss on a full cache
+   * redraws the oldest slot rather than allocating, whatever size the tips
+   * vary over. A tip too big for the slots starts the cache afresh with
+   * bigger ones, which only happens as the stroke's largest dab grows.
+   */
+  private _tintedTipFor(tip: AnyCanvas, color: string): AnyCanvas {
+    const w = Math.ceil((tip.width + TINT_EDGE) / TINT_SLOT_STEP) * TINT_SLOT_STEP;
+    const h = Math.ceil((tip.height + TINT_EDGE) / TINT_SLOT_STEP) * TINT_SLOT_STEP;
+    if (w > this._slotW || h > this._slotH) {
+      this._tintCache.clear();
+      this._slotW = Math.max(this._slotW, w);
+      this._slotH = Math.max(this._slotH, h);
+    }
+    let id = this._tipIds.get(tip);
+    if (id === undefined) this._tipIds.set(tip, id = this._nextTipId++);
+    const key = `${id}|${color}`;
+    const hit = this._tintCache.get(key);
+    if (hit) {
+      this._tintCache.delete(key);
+      this._tintCache.set(key, hit);
+      return hit;
+    }
+    const slots = Math.max(1, Math.min(TINT_CACHE_ENTRIES, Math.floor(TINT_CACHE_BYTES / (this._slotW * this._slotH * 4))));
+    let canvas: AnyCanvas | undefined;
+    if (this._tintCache.size >= slots) {
+      const oldest = this._tintCache.keys().next().value!;
+      canvas = this._tintCache.get(oldest);
+      this._tintCache.delete(oldest);
+    }
+    canvas ??= createOffscreenCanvas(this._slotW, this._slotH);
+    const tCtx = get2dContext(canvas);
+    tCtx.globalCompositeOperation = 'source-over';
+    tCtx.clearRect(0, 0, tip.width + TINT_EDGE, tip.height + TINT_EDGE);
+    drawImageSafe(tCtx, tip, 0, 0);
+    tintAlphaMask(tCtx, color, tip.width, tip.height);
+    // A dab is drawn from the top-left of its slot at a fractional size, and
+    // the resampling reads past the tip's edge: on a tip-sized canvas that is
+    // the edge pixel again, in a slot it would be clear padding and soften
+    // the dab. So the edge is copied out, one pixel at a time (exact copies).
+    const src = canvas as HTMLCanvasElement;
+    for (let i = 0; i < TINT_EDGE; i++) {
+      tCtx.drawImage(src, tip.width - 1, 0, 1, tip.height, tip.width + i, 0, 1, tip.height);
+    }
+    for (let i = 0; i < TINT_EDGE; i++) {
+      tCtx.drawImage(src, 0, tip.height - 1, tip.width + TINT_EDGE, 1, 0, tip.height + i, tip.width + TINT_EDGE, 1);
+    }
+    this._tintCache.set(key, canvas);
+    return canvas;
+  }
+
+  private _clearTintCache() {
+    this._tintCache.clear();
+    this._slotW = 0;
+    this._slotH = 0;
+  }
+
   /**
    * Composite the stroke onto `target`. Returns false when no stroke was in
    * progress; otherwise getDirtyBounds() covers every pixel it could change.
@@ -495,12 +633,14 @@ export class StampStrokeEngine {
     );
     this._descriptor = null;
     this._inkState = null;
+    this._clearTintCache();
     return true;
   }
 
   cancel() {
     this._descriptor = null;
     this._inkState = null;
+    this._clearTintCache();
     this._smoother.reset();
     this._stabilizer.reset();
   }

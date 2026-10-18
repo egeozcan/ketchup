@@ -68,6 +68,28 @@ export interface BrushScatter {
   countJitter: number;
 }
 
+/**
+ * Photoshop's Color Dynamics: the colour each dab is painted in varies around
+ * the stroke colour, in OKLCh so a hue step looks as large in every hue. A
+ * stroke where all of it is off paints as it always did.
+ */
+export interface BrushColorDynamics {
+  /** How far (0..1) a dab's hue can turn either way; 1 is half a turn. */
+  hue: number;
+  /** How far (0..1) a dab's chroma can change either way: down to nothing and up to double at 1. */
+  saturation: number;
+  /** How far (0..1) a dab's lightness can change either way: by half the scale at 1. */
+  brightness: number;
+  /** Shifts the chroma of the whole stroke (-1 grey .. 1 doubled), by a fixed amount rather than at random. */
+  purity: number;
+  /** How far (0..1) a dab's colour can move from the stroke colour toward the fill colour. */
+  fgBg: number;
+  /** Pen pressure sets that mix instead of chance: light pressure goes toward the fill colour, full pressure stays on the stroke's. */
+  fgBgPressure: boolean;
+  /** Vary per dab; off picks one variation for the whole stroke (Photoshop's "Apply Per Tip"). */
+  perTip: boolean;
+}
+
 export interface BrushDescriptor {
   size: number;
   opacity: number;
@@ -82,6 +104,7 @@ export interface BrushDescriptor {
   dynamics: BrushDynamics;
   jitter: BrushJitter;
   scatter: BrushScatter;
+  color: BrushColorDynamics;
 }
 
 export interface BrushPreset {
@@ -99,6 +122,9 @@ export interface InkState {
   stampCount: number;
   layerSnapshot: ImageData | null;
   prevRotation: number;
+  /** The canvas colour last picked up and how much of it the stamp takes (0 when there was none to pick up). */
+  pickedColor: string;
+  pickedWeight: number;
 }
 
 /** Values a stroke carries along its path besides pressure, interpolated between samples. */

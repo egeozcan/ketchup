@@ -582,6 +582,7 @@ describe('DrawingApp', () => {
         dynamics: { sizeVelocity: -0.5, flowVelocity: 7, minSize: 0.2, tilt: 0.7 },
         jitter: { size: 0.4, angle: 3, roundness: 0.1 },
         scatter: { amount: 9, bothAxes: true, count: 4.4, countJitter: 0.3 },
+        color: { hue: 3, saturation: 0.2, purity: -5, fgBgPressure: true, perTip: false },
         activePreset: 'flat',
         isPresetModified: true,
         cropAspectRatio: '16:9',
@@ -632,6 +633,8 @@ describe('DrawingApp', () => {
       jitter: { size: 0.4, angle: 1, roundness: 0.1, flow: 0 },
       // Out of range, so clamped.
       scatter: { amount: 5, bothAxes: true, count: 4, countJitter: 0.3 },
+      // Out of range or missing, so clamped or defaulted.
+      color: { hue: 1, saturation: 0.2, brightness: 0, purity: -1, fgBg: 0, fgBgPressure: true, perTip: false },
     });
     expect((app as any)._state.stampSize).toBe(320);
     expect((app as any)._state.activePreset).toBe('flat');

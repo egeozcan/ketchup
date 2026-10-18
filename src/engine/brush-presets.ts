@@ -1,4 +1,4 @@
-import type { BrushDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushPreset } from './types.js';
+import type { BrushDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushPreset } from './types.js';
 import { getDefaultTipDescriptor } from './brush-capabilities.js';
 
 const NO_INK = { depletion: 0, depletionLength: 500, buildup: 0, wetness: 0 };
@@ -9,6 +9,16 @@ export const NO_JITTER: BrushJitter = { size: 0, angle: 0, roundness: 0, flow: 0
 export const MAX_SCATTER = 5;
 export const MAX_SCATTER_COUNT = 16;
 export const NO_SCATTER: BrushScatter = { amount: 0, bothAxes: false, count: 1, countJitter: 0 };
+
+export const NO_COLOR: BrushColorDynamics = { hue: 0, saturation: 0, brightness: 0, purity: 0, fgBg: 0, fgBgPressure: false, perTip: true };
+
+/**
+ * Whether colour dynamics change the colour of any dab. The two switches
+ * alone don't: pressure needs a mix to drive, and per-tip needs a variation.
+ */
+export function colorDynamicsActive(c: BrushColorDynamics | undefined): boolean {
+  return !!c && (c.hue > 0 || c.saturation > 0 || c.brightness > 0 || c.purity !== 0 || c.fgBg > 0);
+}
 
 export const BRUSH_PRESETS: BrushPreset[] = [
   {
@@ -23,6 +33,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
+      color: { ...NO_COLOR },
     },
   },
   {
@@ -37,6 +48,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
+      color: { ...NO_COLOR },
     },
   },
   {
@@ -51,6 +63,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
+      color: { ...NO_COLOR },
     },
   },
   {
@@ -65,6 +78,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
+      color: { ...NO_COLOR },
     },
   },
   {
@@ -79,6 +93,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
+      color: { ...NO_COLOR },
     },
   },
   {
@@ -93,6 +108,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
+      color: { ...NO_COLOR },
     },
   },
   {
@@ -107,6 +123,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
+      color: { ...NO_COLOR },
     },
   },
   {
@@ -121,6 +138,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       dynamics: { ...NO_DYNAMICS },
       jitter: { size: 0.6, angle: 0, roundness: 0, flow: 0.5 },
       scatter: { amount: 2, bothAxes: true, count: 8, countJitter: 0.5 },
+      color: { ...NO_COLOR },
     },
   },
   {
@@ -135,6 +153,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
+      color: { ...NO_COLOR },
     },
   },
   {
@@ -149,6 +168,23 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
+      color: { ...NO_COLOR },
+    },
+  },
+  {
+    id: 'confetti',
+    name: 'Confetti',
+    category: 'effects',
+    descriptor: {
+      size: 14, opacity: 1, flow: 1, hardness: 1, spacing: 0.9,
+      pressureSize: false, pressureOpacity: false, pressureCurve: 'linear',
+      tip: getDefaultTipDescriptor('flat'),
+      ink: { ...NO_INK },
+      dynamics: { ...NO_DYNAMICS },
+      jitter: { size: 0.4, angle: 1, roundness: 0.5, flow: 0 },
+      scatter: { amount: 1.5, bothAxes: true, count: 3, countJitter: 0.3 },
+      // Toward the fill colour as well as around the stroke's own hue, so it also shows on black.
+      color: { hue: 1, saturation: 0.3, brightness: 0.2, purity: 0, fgBg: 1, fgBgPressure: false, perTip: true },
     },
   },
 ];
@@ -163,7 +199,7 @@ export function getDefaultDescriptor(): BrushDescriptor {
 
 /** A descriptor that shares no nested object with `d`. */
 export function copyDescriptor(d: BrushDescriptor): BrushDescriptor {
-  return { ...d, tip: { ...d.tip }, ink: { ...d.ink }, dynamics: { ...d.dynamics }, jitter: { ...NO_JITTER, ...d.jitter }, scatter: { ...NO_SCATTER, ...d.scatter } };
+  return { ...d, tip: { ...d.tip }, ink: { ...d.ink }, dynamics: { ...d.dynamics }, jitter: { ...NO_JITTER, ...d.jitter }, scatter: { ...NO_SCATTER, ...d.scatter }, color: { ...NO_COLOR, ...d.color } };
 }
 
 /** Stored dynamics over the defaults, each clamped to -1..1; a value that isn't a number keeps its default. */
@@ -203,5 +239,20 @@ export function normalizeScatter(stored: Partial<BrushScatter> | undefined): Bru
   out.count = Math.round(num(stored?.count, 1, MAX_SCATTER_COUNT, out.count));
   out.countJitter = num(stored?.countJitter, 0, 1, out.countJitter);
   if (typeof stored?.bothAxes === 'boolean') out.bothAxes = stored.bothAxes;
+  return out;
+}
+
+/** Stored colour dynamics over the defaults: purity -1..1, the other amounts 0..1, the switches booleans; anything else keeps its default. */
+export function normalizeColorDynamics(stored: Partial<BrushColorDynamics> | undefined): BrushColorDynamics {
+  const out = { ...NO_COLOR };
+  const num = (v: unknown, min: number, max: number, fallback: number) =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.max(min, Math.min(max, v)) : fallback;
+  out.hue = num(stored?.hue, 0, 1, out.hue);
+  out.saturation = num(stored?.saturation, 0, 1, out.saturation);
+  out.brightness = num(stored?.brightness, 0, 1, out.brightness);
+  out.purity = num(stored?.purity, -1, 1, out.purity);
+  out.fgBg = num(stored?.fgBg, 0, 1, out.fgBg);
+  if (typeof stored?.fgBgPressure === 'boolean') out.fgBgPressure = stored.fgBgPressure;
+  if (typeof stored?.perTip === 'boolean') out.perTip = stored.perTip;
   return out;
 }

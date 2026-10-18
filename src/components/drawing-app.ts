@@ -2,8 +2,8 @@ import { LitElement, html, css, type PropertyValues } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import { blendModeToCompositeOp, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics, type BrushJitter, type BrushScatter } from '../engine/types.js';
-import { copyDescriptor, getDefaultDescriptor, getPresetById, normalizeDynamics, normalizeJitter, normalizeScatter } from '../engine/brush-presets.js';
+import { blendModeToCompositeOp, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics, type BrushJitter, type BrushScatter, type BrushColorDynamics } from '../engine/types.js';
+import { copyDescriptor, getDefaultDescriptor, getPresetById, normalizeDynamics, normalizeJitter, normalizeScatter, normalizeColorDynamics } from '../engine/brush-presets.js';
 import type { DrawingState, HistoryEntry, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
 import { IndexedDBBackend, MemoryBackend, ProjectService, StorageQuotaError, StorageNotFoundError, StorageClosedError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
@@ -1833,6 +1833,7 @@ export class DrawingApp extends LitElement {
             dynamics: { ...this._state.brush.dynamics },
             jitter: { ...this._state.brush.jitter },
             scatter: { ...this._state.brush.scatter },
+            color: { ...this._state.brush.color },
             activePreset: this._state.activePreset,
             isPresetModified: this._state.isPresetModified,
             cropAspectRatio: this._state.cropAspectRatio,
@@ -2672,6 +2673,7 @@ export class DrawingApp extends LitElement {
         dynamics: normalizeDynamics(ts.dynamics),
         jitter: normalizeJitter(ts.jitter),
         scatter: normalizeScatter(ts.scatter),
+        color: normalizeColorDynamics(ts.color),
       };
       this._state = {
         activeTool: ts.activeTool === 'marker' as string ? 'pencil' : ts.activeTool,
@@ -3097,6 +3099,9 @@ export class DrawingApp extends LitElement {
       },
       setBrushScatter: (scatter: Partial<BrushScatter>) => {
         this._updateBrush({ scatter: { ...this._state.brush.scatter, ...scatter } });
+      },
+      setBrushColorDynamics: (color: Partial<BrushColorDynamics>) => {
+        this._updateBrush({ color: { ...this._state.brush.color, ...color } });
       },
       selectPreset: (presetId: string) => {
         const preset = getPresetById(presetId);

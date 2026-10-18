@@ -6,7 +6,7 @@ import { drawingContext, type DrawingContextValue } from '../contexts/drawing-co
 import { storageBackendContext, projectServiceContext } from '../storage/storage-context.js';
 import type { StampEntry } from '../storage/types.js';
 import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushDynamics, BrushJitter, BrushPreset } from '../engine/types.js';
-import { BRUSH_PRESETS, MAX_SCATTER, MAX_SCATTER_COUNT, copyDescriptor } from '../engine/brush-presets.js';
+import { BRUSH_PRESETS, MAX_SCATTER, MAX_SCATTER_COUNT, colorDynamicsActive, copyDescriptor } from '../engine/brush-presets.js';
 import { getDefaultTipDescriptor, getTipCapabilities } from '../engine/brush-capabilities.js';
 import { StampStrokeEngine, tiltStretch } from '../engine/stamp-stroke.js';
 import { getStampThumbnailUrl, removeStampThumbnail } from '../utils/stamp-thumbnail-cache.js';
@@ -1114,6 +1114,7 @@ export class ToolSettings extends LitElement {
   @state() private _advancedOpen = false;
   @state() private _jitterOpen = false;
   @state() private _scatterOpen = false;
+  @state() private _colorOpen = false;
   @state() private _brushDropdownOpen = false;
   /** Which desktop settings panel (color or brush) is open, if any. */
   @state() private _openPanel: 'color' | 'brush' | null = null;
@@ -1596,7 +1597,9 @@ export class ToolSettings extends LitElement {
       strokeCtx.fillRect(0, 0, W, H);
     }
     // A fixed seed, so the preview changes only with the settings, not with a fresh roll of the jitter.
-    this._previewEngine.begin(d, '#cccccc', eraser, W, H, { seed: 1 });
+    // Grey shows no change of hue, so a brush that varies colour is previewed in two vivid ones.
+    const varies = !eraser && colorDynamicsActive(d.color);
+    this._previewEngine.begin(d, varies ? '#e8a23a' : '#cccccc', eraser, W, H, { seed: 1, secondaryColor: varies ? '#3a8ce8' : undefined });
 
     let timestamp = 0;
 
@@ -1950,6 +1953,30 @@ export class ToolSettings extends LitElement {
         <span class="size-value">${key === 'count' ? show : `${show}%`}</span>
       </div>
     `;
+    const colorToggle = html`
+      <button
+        class="advanced-toggle"
+        aria-expanded=${this._colorOpen ? 'true' : 'false'}
+        @click=${() => { this._colorOpen = !this._colorOpen; }}
+      >Color ${this._colorOpen ? html`&#9650;` : html`&#9660;`}</button>
+    `;
+    const colorSlider = (label: string, key: 'hue' | 'saturation' | 'brightness' | 'purity' | 'fgBg', hint: string, min = 0) => html`
+      <div class="section">
+        <label title=${hint}>${label}</label>
+        <input type="range" min=${min} max="100" aria-label=${`${label} color`} .value=${String(Math.round(brush.color[key] * 100))}
+          @input=${(e: Event) => this.ctx.setBrushColorDynamics({ [key]: Number((e.target as HTMLInputElement).value) / 100 })} />
+        <span class="size-value">${Math.round(brush.color[key] * 100)}%</span>
+      </div>
+    `;
+    const colorSwitch = (label: string, key: 'fgBgPressure' | 'perTip', hint: string) => html`
+      <div class="section">
+        <label class="checkbox-label" title=${hint}>
+          <input type="checkbox" aria-label=${`${label} color`} .checked=${brush.color[key]}
+            @change=${(e: Event) => this.ctx.setBrushColorDynamics({ [key]: (e.target as HTMLInputElement).checked })} />
+          ${label}
+        </label>
+      </div>
+    `;
     return html`
         ${heading('Stroke')}
         <div class="section">
@@ -2041,6 +2068,22 @@ export class ToolSettings extends LitElement {
             </div>
             ${scatterSlider('Count', 'count', 'How many dabs are laid at each step of the stroke.', 1, MAX_SCATTER_COUNT, brush.scatter.count, v => v)}
             ${scatterSlider('Count jitter', 'countJitter', 'How many dabs a step can randomly lose, as a share of the count.', 0, 100, Math.round(brush.scatter.countJitter * 100), v => v / 100)}
+          </div>
+        ` : nothing}
+        ${activeTool !== 'eraser' ? html`<div class="section">${colorToggle}</div>` : nothing}
+        ${activeTool !== 'eraser' && this._colorOpen ? html`
+          <div class="section advanced-group">
+            ${colorSlider('Hue', 'hue', 'How far each dab\'s hue can randomly turn, up to half a turn either way. Needs a colour that is not grey.')}
+            ${colorSlider('Saturation', 'saturation', 'How much more or less colourful each dab can randomly be.')}
+            ${colorSlider('Brightness', 'brightness', 'How much lighter or darker each dab can randomly be.')}
+            ${colorSlider('Purity', 'purity', 'Makes the whole stroke less colourful (toward grey at -100%) or more.', -100)}
+            ${colorSlider('FG/BG', 'fgBg', 'How far each dab can randomly move from the stroke colour toward the fill colour.')}
+            <div class="section">
+              <label title="The colour FG/BG moves each dab toward; it is also the fill colour of shapes.">Fill colour</label>
+              <input type="color" aria-label="Fill colour" .value=${this.ctx.state.fillColor} @input=${(e: Event) => this._onFillColor(e)} />
+            </div>
+            ${colorSwitch('Pressure', 'fgBgPressure', 'Let pen pressure set the mix instead of chance: light pressure goes toward the fill colour. A mouse always presses fully.')}
+            ${colorSwitch('Per tip', 'perTip', 'Vary the colour at every dab. Off picks one variation for the whole stroke.')}
           </div>
         ` : nothing}
         <div class="section">${advancedToggle}</div>

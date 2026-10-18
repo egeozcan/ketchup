@@ -87,6 +87,37 @@ describe('ToolSettings brush controls', () => {
     expect(setBrushScatter).toHaveBeenLastCalledWith({ bothAxes: true });
   });
 
+  it('sets colour dynamics from its controls once the group is opened, and hides the group from the eraser', () => {
+    const setBrushColorDynamics = vi.fn();
+    const settings = new ToolSettings();
+    (settings as any)._colorOpen = true;
+    (settings as any)._ctx = { value: { state: makeState({ activeTool: 'pencil' }), isMobile: true, setBrushColorDynamics } };
+    const container = document.createElement('div');
+    render(settings.render(), container);
+    for (const [label, key, raw, value] of [['Hue', 'hue', '60', 0.6], ['Purity', 'purity', '-40', -0.4], ['FG/BG', 'fgBg', '25', 0.25]] as const) {
+      const input = container.querySelector(`input[aria-label="${label} color"]`) as HTMLInputElement;
+      input.value = raw;
+      input.dispatchEvent(new Event('input'));
+      expect(setBrushColorDynamics).toHaveBeenLastCalledWith({ [key]: value });
+    }
+    const setFillColor = vi.fn();
+    (settings as any)._ctx = { value: { state: makeState({ activeTool: 'pencil' }), isMobile: true, setBrushColorDynamics, setFillColor } };
+    render(settings.render(), container);
+    const fill = container.querySelector('input[aria-label="Fill colour"]') as HTMLInputElement;
+    fill.value = '#00ff00';
+    fill.dispatchEvent(new Event('input'));
+    expect(setFillColor).toHaveBeenCalledWith('#00ff00');
+    const perTip = container.querySelector('input[aria-label="Per tip color"]') as HTMLInputElement;
+    perTip.checked = false;
+    perTip.dispatchEvent(new Event('change'));
+    expect(setBrushColorDynamics).toHaveBeenLastCalledWith({ perTip: false });
+
+    (settings as any)._ctx = { value: { state: makeState({ activeTool: 'eraser' }), isMobile: true, setBrushColorDynamics } };
+    const erased = document.createElement('div');
+    render(settings.render(), erased);
+    expect(erased.querySelector('input[aria-label="Hue color"]')).toBeNull();
+  });
+
   it('sets jitter from its sliders once the group is opened', () => {
     const setBrushJitter = vi.fn();
     const settings = new ToolSettings();
