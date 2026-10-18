@@ -9,6 +9,9 @@ import type { PixelRect } from '../utils/image-diff.js';
  * by more than one span; the duplicate is discarded by the `visited` check when
  * popped, so it costs a stack slot but never changes the result.
  *
+ * With `keepAlpha` (an alpha-locked layer) the fill recolours the region and
+ * leaves every pixel's alpha as it was.
+ *
  * Returns the rectangle of filled pixels, or null when nothing was filled.
  * Only that rectangle is written back to the canvas, and callers can pass it
  * on as the region to diff for history.
@@ -19,6 +22,7 @@ export function floodFill(
   startY: number,
   fillColor: string,
   tolerance: number = 32,
+  keepAlpha = false,
 ): PixelRect | null {
   const { width, height } = ctx.canvas;
 
@@ -70,7 +74,8 @@ export function floodFill(
       data[pi] = fc.r;
       data[pi + 1] = fc.g;
       data[pi + 2] = fc.b;
-      data[pi + 3] = fc.a;
+      // An alpha-locked layer takes the colour only: each pixel keeps its alpha.
+      if (!keepAlpha) data[pi + 3] = fc.a;
       visited[row + px] = mark;
     }
     if (lx < minX) minX = lx;

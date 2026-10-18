@@ -90,6 +90,49 @@ export interface BrushColorDynamics {
   perTip: boolean;
 }
 
+/**
+ * Photoshop's tool "Mode": how a stroke combines with the layer it is painted
+ * on. The first twelve are canvas blend modes; `behind` paints only under
+ * what is already there and `clear` erases, as the eraser does.
+ */
+export type BrushBlendMode =
+  | 'normal'
+  | 'multiply'
+  | 'screen'
+  | 'overlay'
+  | 'darken'
+  | 'lighten'
+  | 'color-burn'
+  | 'color-dodge'
+  | 'hue'
+  | 'saturation'
+  | 'color'
+  | 'luminosity'
+  | 'behind'
+  | 'clear';
+
+export const BRUSH_BLEND_MODE_LABELS: Record<BrushBlendMode, string> = {
+  'normal': 'Normal',
+  'multiply': 'Multiply',
+  'screen': 'Screen',
+  'overlay': 'Overlay',
+  'darken': 'Darken',
+  'lighten': 'Lighten',
+  'color-burn': 'Color Burn',
+  'color-dodge': 'Color Dodge',
+  'hue': 'Hue',
+  'saturation': 'Saturation',
+  'color': 'Color',
+  'luminosity': 'Luminosity',
+  'behind': 'Behind',
+  'clear': 'Clear',
+};
+
+/** Whether a stored value names a brush blend mode (older stored brushes have none). */
+export function isBrushBlendMode(v: unknown): v is BrushBlendMode {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(BRUSH_BLEND_MODE_LABELS, v);
+}
+
 export interface BrushDescriptor {
   size: number;
   opacity: number;
@@ -105,6 +148,13 @@ export interface BrushDescriptor {
   jitter: BrushJitter;
   scatter: BrushScatter;
   color: BrushColorDynamics;
+  /**
+   * How the stroke combines with the layer, defaulting to 'normal'. It lives
+   * on the descriptor, not beside it in the tool state, so presets can carry
+   * it and it is saved, copied and reset with the rest of the brush. The
+   * eraser tool ignores it: it always erases.
+   */
+  blendMode: BrushBlendMode;
 }
 
 export interface BrushPreset {

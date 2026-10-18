@@ -75,6 +75,7 @@ function checkHistoryRecord(entry: unknown): asserts entry is SerializedHistoryE
     case 'opacity':
     case 'rename':
     case 'blend-mode':
+    case 'alpha-lock':
       return;
     default:
       malformed(`unknown type ${String(entry.type)}`);
@@ -107,6 +108,7 @@ async function serializeSnapshot(snapshot: LayerSnapshot, blobs: BlobStore): Pro
     visible: snapshot.visible,
     opacity: snapshot.opacity,
     blendMode: snapshot.blendMode,
+    alphaLocked: snapshot.alphaLocked,
     imageData: await serializeImageData(snapshot.imageData, blobs),
   };
 }
@@ -118,6 +120,7 @@ async function deserializeSnapshot(s: SerializedLayerSnapshot, blobs: BlobStore)
     visible: s.visible,
     opacity: s.opacity,
     blendMode: (s.blendMode as BlendMode) ?? 'normal',
+    alphaLocked: s.alphaLocked === true,
     imageData: await deserializeImageData(s.imageData, blobs),
   };
 }
@@ -127,13 +130,13 @@ async function deserializeSnapshot(s: SerializedLayerSnapshot, blobs: BlobStore)
 // ---------------------------------------------------------------------------
 
 export async function serializeLayerFromImageData(
-  meta: { id: string; name: string; visible: boolean; opacity: number; blendMode?: string },
+  meta: { id: string; name: string; visible: boolean; opacity: number; blendMode?: string; alphaLocked?: boolean },
   imageData: ImageData,
   blobs: BlobStore,
 ): Promise<SerializedLayer> {
   const blob = await imageDataToBlob(imageData);
   const imageBlobRef = await blobs.put(blob);
-  return { id: meta.id, name: meta.name, visible: meta.visible, opacity: meta.opacity, blendMode: meta.blendMode ?? 'normal', imageBlobRef };
+  return { id: meta.id, name: meta.name, visible: meta.visible, opacity: meta.opacity, blendMode: meta.blendMode ?? 'normal', alphaLocked: meta.alphaLocked === true, imageBlobRef };
 }
 
 export async function deserializeLayer(
@@ -144,7 +147,7 @@ export async function deserializeLayer(
 ): Promise<Layer> {
   const blob = await blobs.get(sl.imageBlobRef);
   const canvas = await blobToCanvas(blob, width, height);
-  return { id: sl.id, name: sl.name, visible: sl.visible, opacity: sl.opacity, blendMode: (sl.blendMode as BlendMode) ?? 'normal', canvas };
+  return { id: sl.id, name: sl.name, visible: sl.visible, opacity: sl.opacity, blendMode: (sl.blendMode as BlendMode) ?? 'normal', alphaLocked: sl.alphaLocked === true, canvas };
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +204,7 @@ export async function serializeHistoryEntry(
     case 'opacity':
     case 'rename':
     case 'blend-mode':
+    case 'alpha-lock':
       return entry;
     case 'transform': {
       const [before, after] = await Promise.all([
@@ -262,6 +266,7 @@ export async function deserializeHistoryEntry(
     case 'visibility':
     case 'opacity':
     case 'rename':
+    case 'alpha-lock':
       return entry;
     case 'blend-mode':
       return { type: 'blend-mode', layerId: entry.layerId, before: entry.before as BlendMode, after: entry.after as BlendMode };

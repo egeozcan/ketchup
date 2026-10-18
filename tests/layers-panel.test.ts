@@ -315,3 +315,32 @@ describe('LayersPanel menus and rows', () => {
     }
   });
 });
+
+describe('LayersPanel lock transparency', () => {
+  it('toggles a layer lock from an accessibly labelled button that reports its state', async () => {
+    const host = document.createElement('div');
+    const setLayerAlphaLocked = vi.fn();
+    const layers = [makeLayer(10, 10, { id: 'a', name: 'Sky' }), makeLayer(10, 10, { id: 'b', name: 'Ink', alphaLocked: true })];
+    const context = {
+      state: makeState({ layers, activeLayerId: 'a', layersPanelOpen: true }),
+      isMobile: false,
+      setLayerAlphaLocked,
+    } as unknown as DrawingContextValue;
+    new ContextProvider(host, { context: drawingContext, initialValue: context });
+    const panel = new LayersPanel();
+    host.append(panel);
+    document.body.append(host);
+    try {
+      await panel.updateComplete;
+      const buttons = [...panel.shadowRoot!.querySelectorAll<HTMLButtonElement>('.lock-btn')];
+      // The top layer is listed first.
+      expect(buttons.map(b => b.getAttribute('aria-label'))).toEqual(['Lock transparent pixels of Ink', 'Lock transparent pixels of Sky']);
+      expect(buttons.map(b => b.getAttribute('aria-pressed'))).toEqual(['true', 'false']);
+      buttons[1].click();
+      buttons[0].click();
+      expect(setLayerAlphaLocked.mock.calls).toEqual([['a', true], ['b', false]]);
+    } finally {
+      host.remove();
+    }
+  });
+});

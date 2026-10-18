@@ -49,7 +49,7 @@ describe('deleteSelection on a pasted float should push a history entry', () => 
       value: {
         state: makeState({
           activeTool: 'select',
-          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, blendMode: 'normal', canvas: layerCanvas }],
+          layers: [{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, blendMode: 'normal', alphaLocked: false, canvas: layerCanvas }],
           activeLayerId: 'l1',
           documentWidth: 800,
           documentHeight: 600,

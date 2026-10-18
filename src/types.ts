@@ -50,6 +50,8 @@ export interface Layer {
   visible: boolean;
   opacity: number;
   blendMode: BlendMode;
+  /** Lock transparent pixels: brush strokes recolour existing pixels but never change a pixel's alpha. */
+  alphaLocked: boolean;
   canvas: HTMLCanvasElement;
 }
 
@@ -59,6 +61,7 @@ export interface LayerSnapshot {
   visible: boolean;
   opacity: number;
   blendMode: BlendMode;
+  alphaLocked: boolean;
   imageData: ImageData;
 }
 
@@ -114,5 +117,6 @@ export type HistoryEntry =
       previousActiveLayerId: string;
       afterActiveLayerId: string;
     }
+  | { type: 'alpha-lock'; layerId: string; before: boolean; after: boolean }
   | { type: 'blend-mode'; layerId: string; before: BlendMode; after: BlendMode }
   | { type: 'transform'; layerId: string; before: ImageData; after: ImageData };

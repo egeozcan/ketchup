@@ -3,7 +3,7 @@ import { StrokeBufferPool } from './stroke-buffer-pool.js';
 import { PathSmoother } from './path-smoother.js';
 import { Stabilizer, type StabilizedPoint } from './stabilizer.js';
 import { get2dContext, drawImageSafe, tintAlphaMask, createOffscreenCanvas, type AnyCanvas } from './canvas-pool.js';
-import { PRESSURE_CURVES, quantizeDiameter, type BrushDescriptor, type TipDescriptor, type StampPoint, type InkState } from './types.js';
+import { PRESSURE_CURVES, quantizeDiameter, type BrushDescriptor, type BrushBlendMode, type TipDescriptor, type StampPoint, type InkState } from './types.js';
 import { TIP_VARIANT_COUNTS, tipFootprint } from './tip-generators.js';
 import { copyDescriptor, colorDynamicsActive } from './brush-presets.js';
 import { Rng, freshSeed } from './rng.js';
@@ -47,6 +47,8 @@ export interface StrokeOptions {
   seed?: number;
   /** The fill colour, which colour dynamics mix toward; without one the mix has nothing to go to. */
   secondaryColor?: string;
+  /** The layer being painted on keeps its alpha: the stroke only recolours existing pixels. */
+  alphaLocked?: boolean;
 }
 
 export interface PenTilt {
@@ -224,6 +226,7 @@ export class StampStrokeEngine {
   private _descriptor: BrushDescriptor | null = null;
   private _color = '';
   private _eraser = false;
+  private _alphaLocked = false;
   private _colorMode = false;
   private _secondary = '';
   /** Colour dynamics change the colour of a dab (never on the eraser). */
@@ -264,6 +267,11 @@ export class StampStrokeEngine {
   private _dirtyMinY = Infinity;
   private _dirtyMaxX = -Infinity;
   private _dirtyMaxY = -Infinity;
+  // The same, but only since the preview last took it (takePreviewDelta).
+  private _deltaMinX = Infinity;
+  private _deltaMinY = Infinity;
+  private _deltaMaxX = -Infinity;
+  private _deltaMaxY = -Infinity;
 
   begin(descriptor: BrushDescriptor, color: string, eraser: boolean, docWidth: number, docHeight: number, options: StrokeOptions = {}) {
     this._descriptor = copyDescriptor(descriptor);
@@ -271,6 +279,7 @@ export class StampStrokeEngine {
     this._resetMotion();
     this._color = eraser ? '' : (color.length === 9 ? color.slice(0, 7) : color);
     this._eraser = eraser;
+    this._alphaLocked = options.alphaLocked === true;
     this._secondary = options.secondaryColor && options.secondaryColor.length === 9 ? options.secondaryColor.slice(0, 7) : options.secondaryColor ?? '';
     this._dynamicColor = !eraser && colorDynamicsActive(descriptor.color);
     // The per-dab colour path serves both what is picked up and what varies.
@@ -296,6 +305,7 @@ export class StampStrokeEngine {
     this._dirtyMinY = Infinity;
     this._dirtyMaxX = -Infinity;
     this._dirtyMaxY = -Infinity;
+    this._resetPreviewDelta();
     this._inkState = initInkState(this._color, null);
   }
 
@@ -484,6 +494,10 @@ export class StampStrokeEngine {
         if (py - reach < this._dirtyMinY) this._dirtyMinY = py - reach;
         if (px + reach > this._dirtyMaxX) this._dirtyMaxX = px + reach;
         if (py + reach > this._dirtyMaxY) this._dirtyMaxY = py + reach;
+        if (px - reach < this._deltaMinX) this._deltaMinX = px - reach;
+        if (py - reach < this._deltaMinY) this._deltaMinY = py - reach;
+        if (px + reach > this._deltaMaxX) this._deltaMaxX = px + reach;
+        if (py + reach > this._deltaMaxY) this._deltaMaxY = py + reach;
 
         if (this._colorMode) {
           let tint: HTMLCanvasElement;
@@ -630,6 +644,8 @@ export class StampStrokeEngine {
       this._eraser,
       this.getDirtyBounds(),
       this._colorMode,
+      this._descriptor.blendMode,
+      this._alphaLocked,
     );
     this._descriptor = null;
     this._inkState = null;
@@ -749,6 +765,30 @@ export class StampStrokeEngine {
     return { x, y, w, h };
   }
 
+  private _resetPreviewDelta() {
+    this._deltaMinX = Infinity;
+    this._deltaMinY = Infinity;
+    this._deltaMaxX = -Infinity;
+    this._deltaMaxY = -Infinity;
+  }
+
+  /**
+   * The region stamped since this was last called (or since begin()), clamped
+   * to the document, or null when nothing was. Outside it the stroke buffer is
+   * as the preview last saw it, which lets a preview that is costly per pixel
+   * redo only this part of the stroke's bounds.
+   */
+  takePreviewDelta(): { x: number; y: number; w: number; h: number } | null {
+    if (this._deltaMaxX < this._deltaMinX) return null;
+    const x = Math.max(0, Math.floor(this._deltaMinX));
+    const y = Math.max(0, Math.floor(this._deltaMinY));
+    const w = Math.min(this._docWidth, Math.ceil(this._deltaMaxX)) - x;
+    const h = Math.min(this._docHeight, Math.ceil(this._deltaMaxY)) - y;
+    this._resetPreviewDelta();
+    if (w <= 0 || h <= 0) return null;
+    return { x, y, w, h };
+  }
+
   /**
    * Everything stamped since the last begin(), unclamped: stamps near an edge
    * can write past the document into a larger (grow-only) buffer, and that
@@ -765,6 +805,9 @@ export class StampStrokeEngine {
     canvas: AnyCanvas;
     eraser: boolean;
     opacity: number;
+    /** The brush's mode and the layer's alpha lock, which the preview applies as commit does (see paintStroke). */
+    mode: BrushBlendMode;
+    alphaLocked: boolean;
     color: string | null;
     bounds: { x: number; y: number; w: number; h: number } | null;
   } | null {
@@ -773,6 +816,8 @@ export class StampStrokeEngine {
       canvas: this._bufferPool.current,
       eraser: this._eraser,
       opacity: this._descriptor.opacity,
+      mode: this._descriptor.blendMode,
+      alphaLocked: this._alphaLocked,
       color: this._colorMode ? null : this._color,
       bounds: this.getDirtyBounds(),
     };

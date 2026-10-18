@@ -65,6 +65,7 @@ export function makeLayer(
     visible: overrides.visible ?? true,
     opacity: overrides.opacity ?? 1,
     blendMode: overrides.blendMode ?? 'normal',
+    alphaLocked: overrides.alphaLocked ?? false,
     canvas,
   };
 }

@@ -1,4 +1,5 @@
 import type { BrushDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushPreset } from './types.js';
+import { isBrushBlendMode } from './types.js';
 import { getDefaultTipDescriptor } from './brush-capabilities.js';
 
 const NO_INK = { depletion: 0, depletionLength: 500, buildup: 0, wetness: 0 };
@@ -34,6 +35,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
+      blendMode: 'normal',
     },
   },
   {
@@ -49,6 +51,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
+      blendMode: 'normal',
     },
   },
   {
@@ -64,6 +67,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
+      blendMode: 'normal',
     },
   },
   {
@@ -79,6 +83,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
+      blendMode: 'normal',
     },
   },
   {
@@ -94,6 +99,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
+      blendMode: 'normal',
     },
   },
   {
@@ -109,6 +115,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
+      blendMode: 'normal',
     },
   },
   {
@@ -124,6 +131,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
+      blendMode: 'normal',
     },
   },
   {
@@ -139,6 +147,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       jitter: { size: 0.6, angle: 0, roundness: 0, flow: 0.5 },
       scatter: { amount: 2, bothAxes: true, count: 8, countJitter: 0.5 },
       color: { ...NO_COLOR },
+      blendMode: 'normal',
     },
   },
   {
@@ -154,6 +163,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
+      blendMode: 'normal',
     },
   },
   {
@@ -169,6 +179,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       jitter: { ...NO_JITTER },
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
+      blendMode: 'normal',
     },
   },
   {
@@ -185,6 +196,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { amount: 1.5, bothAxes: true, count: 3, countJitter: 0.3 },
       // Toward the fill colour as well as around the stroke's own hue, so it also shows on black.
       color: { hue: 1, saturation: 0.3, brightness: 0.2, purity: 0, fgBg: 1, fgBgPressure: false, perTip: true },
+      blendMode: 'normal',
     },
   },
 ];
@@ -199,7 +211,7 @@ export function getDefaultDescriptor(): BrushDescriptor {
 
 /** A descriptor that shares no nested object with `d`. */
 export function copyDescriptor(d: BrushDescriptor): BrushDescriptor {
-  return { ...d, tip: { ...d.tip }, ink: { ...d.ink }, dynamics: { ...d.dynamics }, jitter: { ...NO_JITTER, ...d.jitter }, scatter: { ...NO_SCATTER, ...d.scatter }, color: { ...NO_COLOR, ...d.color } };
+  return { ...d, tip: { ...d.tip }, ink: { ...d.ink }, dynamics: { ...d.dynamics }, jitter: { ...NO_JITTER, ...d.jitter }, scatter: { ...NO_SCATTER, ...d.scatter }, color: { ...NO_COLOR, ...d.color }, blendMode: isBrushBlendMode(d.blendMode) ? d.blendMode : 'normal' };
 }
 
 /** Stored dynamics over the defaults, each clamped to -1..1; a value that isn't a number keeps its default. */

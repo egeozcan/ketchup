@@ -203,6 +203,36 @@ export class LayersPanel extends LitElement {
       height: 14px;
     }
 
+    /* ── Lock transparency button ──────────────── */
+    .lock-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: #666;
+      cursor: pointer;
+      padding: 0;
+      flex-shrink: 0;
+    }
+
+    .lock-btn:hover {
+      background: #555;
+      color: #fff;
+    }
+
+    .lock-btn[aria-pressed='true'] {
+      color: #f2c14e;
+    }
+
+    .lock-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
     /* ── Layer thumbnail ──────────────────────── */
     .layer-thumb {
       width: 48px;
@@ -599,6 +629,16 @@ export class LayersPanel extends LitElement {
   private _plusIcon = html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`;
 
   private _trashIcon = html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
+
+  private _lockOpen = html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/></svg>`;
+  private _lockClosed = html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
+
+  // ── Lock transparency toggle ───────────────
+
+  private _toggleAlphaLock(layer: Layer, e: Event) {
+    e.stopPropagation();
+    this.ctx.setLayerAlphaLocked(layer.id, !layer.alphaLocked);
+  }
 
   // ── Visibility toggle ──────────────────────
 
@@ -1161,6 +1201,16 @@ export class LayersPanel extends LitElement {
               </svg>
             </button>
           ` : ''}
+
+          <button
+            class="lock-btn"
+            aria-label=${`Lock transparent pixels of ${layer.name}`}
+            aria-pressed=${layer.alphaLocked ? 'true' : 'false'}
+            title=${layer.alphaLocked ? 'Unlock transparent pixels' : 'Lock transparent pixels'}
+            @click=${(e: Event) => this._toggleAlphaLock(layer, e)}
+          >
+            ${layer.alphaLocked ? this._lockClosed : this._lockOpen}
+          </button>
 
           <div class="reorder-btns">
             <button

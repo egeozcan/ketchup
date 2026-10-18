@@ -36,8 +36,8 @@ describe('cancelExternalFloat preserves global history entries', () => {
       value: {
         state: makeState({
           layers: [
-            { id: existingLayerId, name: 'Layer 1', visible: true, opacity: 1, blendMode: 'normal', canvas: document.createElement('canvas') },
-            { id: pastedLayerId, name: 'Pasted Image', visible: true, opacity: 1, blendMode: 'normal', canvas: document.createElement('canvas') },
+            { id: existingLayerId, name: 'Layer 1', visible: true, opacity: 1, blendMode: 'normal', alphaLocked: false, canvas: document.createElement('canvas') },
+            { id: pastedLayerId, name: 'Pasted Image', visible: true, opacity: 1, blendMode: 'normal', alphaLocked: false, canvas: document.createElement('canvas') },
           ],
           activeLayerId: pastedLayerId,
           documentWidth: 800,
@@ -123,8 +123,8 @@ describe('cancelExternalFloat preserves global history entries', () => {
       value: {
         state: makeState({
           layers: [
-            { id: existingLayerId, name: 'Layer 1', visible: true, opacity: 1, blendMode: 'normal', canvas: document.createElement('canvas') },
-            { id: pastedLayerId, name: 'Pasted Image', visible: true, opacity: 1, blendMode: 'normal', canvas: document.createElement('canvas') },
+            { id: existingLayerId, name: 'Layer 1', visible: true, opacity: 1, blendMode: 'normal', alphaLocked: false, canvas: document.createElement('canvas') },
+            { id: pastedLayerId, name: 'Pasted Image', visible: true, opacity: 1, blendMode: 'normal', alphaLocked: false, canvas: document.createElement('canvas') },
           ],
           activeLayerId: pastedLayerId,
           documentWidth: 400,

@@ -47,6 +47,7 @@ export interface DrawingContextValue {
   setBrushColorDynamics: (color: Partial<BrushColorDynamics>) => void;
   selectPreset: (presetId: string) => void;
   setLayerBlendMode: (id: string, mode: BlendMode) => void;
+  setLayerAlphaLocked: (id: string, locked: boolean) => void;
   setEyedropperSampleAll: (v: boolean) => void;
   setStabilizer: (percent: number) => void;
   /** Asks a yes/no question in the editor's own modal dialog (not `window.confirm`); resolves true to go ahead. */

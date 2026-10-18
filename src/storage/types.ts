@@ -36,6 +36,8 @@ export interface ToolSettings {
   jitter?: Partial<BrushJitter>;
   scatter?: Partial<BrushScatter>;
   color?: Partial<BrushColorDynamics>;
+  /** The brush's blend mode; absent in settings stored before it existed: 'normal'. */
+  blendMode?: string;
   activePreset?: string;
   isPresetModified?: boolean;
   cropAspectRatio?: string;
@@ -64,6 +66,8 @@ export interface SerializedLayerSnapshot {
   visible: boolean;
   opacity: number;
   blendMode?: string;
+  /** Absent in layers stored before alpha lock existed: unlocked. */
+  alphaLocked?: boolean;
   imageData: SerializedImageData;
 }
 
@@ -93,6 +97,7 @@ export type SerializedHistoryEntry =
       afterActiveLayerId: string;
     }
   | { type: 'blend-mode'; layerId: string; before: string; after: string }
+  | { type: 'alpha-lock'; layerId: string; before: boolean; after: boolean }
   | { type: 'transform'; layerId: string; before: SerializedImageData; after: SerializedImageData };
 
 export interface SerializedLayer {
@@ -101,6 +106,7 @@ export interface SerializedLayer {
   visible: boolean;
   opacity: number;
   blendMode?: string;
+  alphaLocked?: boolean;
   imageBlobRef: BlobRef;
 }
 

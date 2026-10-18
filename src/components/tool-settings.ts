@@ -5,7 +5,8 @@ import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import { storageBackendContext, projectServiceContext } from '../storage/storage-context.js';
 import type { StampEntry } from '../storage/types.js';
-import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushDynamics, BrushJitter, BrushPreset } from '../engine/types.js';
+import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushDynamics, BrushJitter, BrushPreset, BrushBlendMode } from '../engine/types.js';
+import { BRUSH_BLEND_MODE_LABELS } from '../engine/types.js';
 import { BRUSH_PRESETS, MAX_SCATTER, MAX_SCATTER_COUNT, colorDynamicsActive, copyDescriptor } from '../engine/brush-presets.js';
 import { getDefaultTipDescriptor, getTipCapabilities } from '../engine/brush-capabilities.js';
 import { StampStrokeEngine, tiltStretch } from '../engine/stamp-stroke.js';
@@ -1559,7 +1560,8 @@ export class ToolSettings extends LitElement {
     const scatterRoom = 12;
     const fitted = Math.max(2, Math.min(18, 2 + Math.log2(Math.max(1, descriptor.size)) * 2.5));
     const previewSize = descriptor.scatter.amount > 0 ? Math.max(2, Math.min(fitted, scatterRoom / descriptor.scatter.amount)) : fitted;
-    const d: BrushDescriptor = { ...copyDescriptor(descriptor), size: previewSize };
+    // The preview strokes an empty canvas, where a mode such as Behind would show nothing.
+    const d: BrushDescriptor = { ...copyDescriptor(descriptor), size: previewSize, blendMode: 'normal' };
 
     // Generate S-curve points — keep amplitude small enough that
     // the largest stamp (previewSize) stays fully within the canvas
@@ -1979,6 +1981,15 @@ export class ToolSettings extends LitElement {
     `;
     return html`
         ${heading('Stroke')}
+        ${activeTool !== 'eraser' ? html`
+        <div class="section">
+          <label title="How the stroke combines with the layer. Behind paints only under what is already there; Clear erases. On a layer with its transparency locked, Behind and Clear do nothing.">Mode</label>
+          <select class="font-select" aria-label="Brush mode" .value=${brush.blendMode}
+            @change=${(e: Event) => this.ctx.setBrush({ blendMode: (e.target as HTMLSelectElement).value as BrushBlendMode })}>
+            ${(Object.keys(BRUSH_BLEND_MODE_LABELS) as BrushBlendMode[]).map(m => html`<option value=${m} ?selected=${brush.blendMode === m}>${BRUSH_BLEND_MODE_LABELS[m]}</option>`)}
+          </select>
+        </div>
+        ` : nothing}
         <div class="section">
           <label>Flow</label>
           <input type="range" aria-label="Brush flow" min="1" max="100" .value=${String(Math.round(brush.flow * 100))}

@@ -35,8 +35,11 @@ const DEFAULT_DB_NAME = 'ketchup-projects';
 // browser refuses to open a database at a version lower than the one it is at
 // (VersionError), so those builds fail to open the database instead.
 // Bumping on every upgrade (not only once a raw blob is written) keeps the gate
-// independent of what any one session stores. New builds read v1-v4 data as is.
-const DEFAULT_VERSION = 5;
+// independent of what any one session stores. New builds read v1-v5 data as is.
+// v6 is the same kind of gate, for the `alpha-lock` history entry: a v5 build
+// drops history it can't read (and everything older) and would then save
+// without each layer's lock.
+const DEFAULT_VERSION = 6;
 
 export class IndexedDBBackend implements StorageBackend {
   private _projects?: ProjectStore;

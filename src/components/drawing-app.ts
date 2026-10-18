@@ -2,7 +2,7 @@ import { LitElement, html, css, type PropertyValues } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import { blendModeToCompositeOp, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics, type BrushJitter, type BrushScatter, type BrushColorDynamics } from '../engine/types.js';
+import { blendModeToCompositeOp, isBrushBlendMode, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics, type BrushJitter, type BrushScatter, type BrushColorDynamics } from '../engine/types.js';
 import { copyDescriptor, getDefaultDescriptor, getPresetById, normalizeDynamics, normalizeJitter, normalizeScatter, normalizeColorDynamics } from '../engine/brush-presets.js';
 import type { DrawingState, HistoryEntry, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
@@ -299,6 +299,7 @@ export class DrawingApp extends LitElement {
       visible: true,
       opacity: 1.0,
       blendMode: 'normal' as BlendMode,
+      alphaLocked: false,
       canvas,
     };
   }
@@ -527,6 +528,7 @@ export class DrawingApp extends LitElement {
       visible: layer.visible,
       opacity: layer.opacity,
       blendMode: layer.blendMode,
+      alphaLocked: layer.alphaLocked === true,
       imageData: ctx.getImageData(0, 0, layer.canvas.width, layer.canvas.height),
     };
   }
@@ -1834,6 +1836,7 @@ export class DrawingApp extends LitElement {
             jitter: { ...this._state.brush.jitter },
             scatter: { ...this._state.brush.scatter },
             color: { ...this._state.brush.color },
+            blendMode: this._state.brush.blendMode,
             activePreset: this._state.activePreset,
             isPresetModified: this._state.isPresetModified,
             cropAspectRatio: this._state.cropAspectRatio,
@@ -1888,7 +1891,7 @@ export class DrawingApp extends LitElement {
             return preview.imageData;
           };
           const layerSnapshots = this._state.layers.map((l, i) => {
-            const meta = { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode };
+            const meta = { id: l.id, name: l.name, visible: l.visible, opacity: l.opacity, blendMode: l.blendMode, alphaLocked: l.alphaLocked === true };
             if (reuseSaved || layerUnchanged[i]) return { ...meta, imageData: null as ImageData | null };
             if (floatKey && l.id === floatKey.layerId) {
               return { ...meta, imageData: readLayerWithFloat(l.id) as ImageData | null };
@@ -1980,7 +1983,7 @@ export class DrawingApp extends LitElement {
                 if (saved && saved.hash === layerHashes[i] && oldLayerRefs.includes(saved.blobRef)) {
                   return {
                     id: snap.id, name: snap.name, visible: snap.visible, opacity: snap.opacity,
-                    blendMode: snap.blendMode, imageBlobRef: saved.blobRef,
+                    blendMode: snap.blendMode, alphaLocked: snap.alphaLocked, imageBlobRef: saved.blobRef,
                   };
                 }
                 let imageData = snap.imageData;
@@ -2674,6 +2677,7 @@ export class DrawingApp extends LitElement {
         jitter: normalizeJitter(ts.jitter),
         scatter: normalizeScatter(ts.scatter),
         color: normalizeColorDynamics(ts.color),
+        blendMode: isBrushBlendMode(ts.blendMode) ? ts.blendMode : 'normal',
       };
       this._state = {
         activeTool: ts.activeTool === 'marker' as string ? 'pencil' : ts.activeTool,
@@ -2845,7 +2849,7 @@ export class DrawingApp extends LitElement {
         const cctx = cleared.getContext('2d')!;
         cctx.fillStyle = '#ffffff';
         cctx.fillRect(0, 0, w, h);
-        const baseLayer: Layer = { ...base, visible: true, opacity: 1, blendMode: 'normal' as BlendMode, canvas: cleared };
+        const baseLayer: Layer = { ...base, visible: true, opacity: 1, blendMode: 'normal' as BlendMode, alphaLocked: false, canvas: cleared };
         this._state = { ...this._state, layers: [baseLayer], activeLayerId: baseLayer.id };
         const afterLayers = this._snapshotAllLayers();
         this.canvas?.pushLayerOperation({
@@ -2957,6 +2961,17 @@ export class DrawingApp extends LitElement {
         this.canvas?.pushLayerOperation({ type: 'blend-mode', layerId: id, before, after: mode });
         this._markDirty();
       },
+      setLayerAlphaLocked: (id: string, locked: boolean) => {
+        const layer = this._state.layers.find(l => l.id === id);
+        if (!layer || (layer.alphaLocked === true) === locked) return;
+        const before = layer.alphaLocked === true;
+        const newLayers = this._state.layers.map(l =>
+          l.id === id ? { ...l, alphaLocked: locked } : l
+        );
+        this._state = { ...this._state, layers: newLayers };
+        this.canvas?.pushLayerOperation({ type: 'alpha-lock', layerId: id, before, after: locked });
+        this._markDirty();
+      },
       mergeLayerDown: (id: string) => {
         const layers = this._state.layers;
         const idx = layers.findIndex(l => l.id === id);
@@ -3045,6 +3060,7 @@ export class DrawingApp extends LitElement {
           visible: true,
           opacity: 1,
           blendMode: 'normal' as BlendMode,
+          alphaLocked: false,
           canvas: mergedCanvas,
         };
 
@@ -3715,6 +3731,7 @@ export class DrawingApp extends LitElement {
           visible: snapshot.visible,
           opacity: snapshot.opacity,
           blendMode: snapshot.blendMode ?? ('normal' as BlendMode),
+          alphaLocked: snapshot.alphaLocked === true,
           canvas,
         };
         const newLayers = [...this._state.layers];
@@ -3750,7 +3767,7 @@ export class DrawingApp extends LitElement {
           canvas.width = snap.imageData.width;
           canvas.height = snap.imageData.height;
           canvas.getContext('2d')!.putImageData(snap.imageData, 0, 0);
-          return { ...layer, canvas, visible: snap.visible, opacity: snap.opacity, blendMode: snap.blendMode ?? ('normal' as BlendMode), name: snap.name };
+          return { ...layer, canvas, visible: snap.visible, opacity: snap.opacity, blendMode: snap.blendMode ?? ('normal' as BlendMode), alphaLocked: snap.alphaLocked === true, name: snap.name };
         });
         this._applyDocumentDimensions(width, height);
         this._state = { ...this._state, layers: newLayers };
@@ -3770,6 +3787,7 @@ export class DrawingApp extends LitElement {
             visible: snap.visible,
             opacity: snap.opacity,
             blendMode: snap.blendMode ?? ('normal' as BlendMode),
+            alphaLocked: snap.alphaLocked === true,
             canvas,
           };
         });
