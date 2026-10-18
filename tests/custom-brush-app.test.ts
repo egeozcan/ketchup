@@ -4,6 +4,7 @@ import { BrushLibrary } from '../src/engine/brush-library.ts';
 import { clearTipMasks, hasTipMask } from '../src/engine/tip-images.ts';
 import { MemoryBackend } from '../src/storage/memory/index.ts';
 import { makeAppCanvasStub } from './helpers.ts';
+import { writeV6, obj, text, unit, pct, bool, type V } from './abr-writer.ts';
 
 function image(width: number, height: number, paint: (x: number, y: number) => boolean): ImageData {
   const data = new Uint8ClampedArray(width * height * 4).fill(255);
@@ -169,5 +170,57 @@ describe('custom brushes in the app', () => {
     expect((app as any)._library.presets).toHaveLength(1);
     await ctx().deleteUserPreset(id);
     expect((app as any)._library.presets).toHaveLength(0);
+  });
+
+  describe('importing a Photoshop brush file', () => {
+    const sample = { id: 'S1', width: 4, height: 4, px: Array.from({ length: 16 }, (_, i) => (i % 5 === 0 ? 255 : 0)) };
+    const shape = (id: string): V => obj('sampledBrush', { Dmtr: unit('#Pxl', 20), Angl: unit('#Ang', 0), Rndn: pct(100), Spcn: pct(25), Intr: bool(true), flipX: bool(false), flipY: bool(false), sampledData: text(id) });
+    const file = (name: string, bytes: Uint8Array) => new File([bytes as BlobPart], name);
+
+    it('stores the brushes as a group named after the file and says how many were skipped', async () => {
+      const { ctx, backend } = makeApp();
+      const bytes = writeV6({
+        samples: [sample],
+        presets: [obj('null', { 'Nm  ': text('Dots'), Brsh: shape('S1') }), obj('null', { 'Nm  ': text('Lost'), Brsh: shape('missing') })],
+      });
+      const progress: number[] = [];
+      const result = await ctx().importBrushFile(file('Chalk Set.abr', bytes), (f: number) => progress.push(f));
+      expect(result).toEqual({ ok: true, message: 'Imported 1 brush, 1 skipped' });
+      expect(progress.at(-1)).toBe(1);
+      const stored = await backend.brushes.list();
+      expect(stored.presets.map(p => [p.name, p.group])).toEqual([['Dots', 'Chalk Set']]);
+      expect(ctx().userPresets[0].group).toBe('Chalk Set');
+    });
+
+    it('reports a file that is not a brush file without storing anything', async () => {
+      const { ctx, backend } = makeApp();
+      const result = await ctx().importBrushFile(file('photo.abr', new TextEncoder().encode('GIF89a-not-brushes')));
+      expect(result.ok).toBe(false);
+      expect(result.message).toMatch(/brush file/);
+      expect(await backend.brushes.list()).toEqual({ tips: [], presets: [] });
+    });
+
+    it('deletes a group after asking', async () => {
+      const { app, ctx, backend } = makeApp();
+      await ctx().importBrushFile(file('G.abr', writeV6({ samples: [sample], presets: [obj('null', { 'Nm  ': text('A'), Brsh: shape('S1') })] })));
+      const ask = vi.spyOn(app as any, '_confirm').mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+      await ctx().deleteUserGroup('G');
+      expect((app as any)._library.presets).toHaveLength(1);
+      await ctx().deleteUserGroup('G');
+      expect(ask).toHaveBeenCalledTimes(2);
+      expect(await backend.brushes.list()).toEqual({ tips: [], presets: [] });
+    });
+
+    it('loads the tips of the asked-for groups only', async () => {
+      const { ctx, app } = makeApp();
+      await ctx().importBrushFile(file('G.abr', writeV6({ samples: [sample], presets: [obj('null', { 'Nm  ': text('A'), Brsh: shape('S1') })] })));
+      clearTipMasks();
+      const tipId = (app as any)._library.tips[0].id;
+      ctx().loadUserTips(['']);
+      await new Promise(r => setTimeout(r, 0));
+      expect(hasTipMask(tipId)).toBe(false);
+      ctx().loadUserTips(['G']);
+      await vi.waitFor(() => expect(hasTipMask(tipId)).toBe(true));
+    });
   });
 });

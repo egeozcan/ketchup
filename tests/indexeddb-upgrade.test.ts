@@ -53,7 +53,7 @@ describe('IndexedDB upgrade to the current format', () => {
     const current = new IndexedDBBackend({ dbName: name });
     backends.push(current);
     await current.init();
-    expect(await versionOf(name)).toBe(7);
+    expect(await versionOf(name)).toBe(8);
     expect((await current.projects.list()).map(p => p.name)).toEqual(['Old']);
 
     const { app, canvas } = appOn(current, [], -1, 'fresh');
@@ -76,7 +76,7 @@ describe('IndexedDB upgrade to the current format', () => {
     await current.dispose();
 
     // What a v4 or v5 build does when it opens it (v5 can't read `alpha-lock` history entries).
-    for (const version of [4, 5, 6]) {
+    for (const version of [4, 5, 6, 7]) {
       const opened = await new Promise<string>(resolve => {
         const req = indexedDB.open(name, version);
         req.onsuccess = () => { req.result.close(); resolve('opened'); };

@@ -735,6 +735,31 @@ export class ToolSettings extends LitElement {
       text-transform: uppercase;
       border-top: 1px solid #444;
     }
+    .brush-dropdown-heading.group-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0;
+    }
+    .group-toggle {
+      flex: 1;
+      min-width: 0;
+      background: none;
+      border: none;
+      color: inherit;
+      font: inherit;
+      text-transform: inherit;
+      text-align: left;
+      padding: 0.25rem 0.5rem;
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .import-progress {
+      width: 100%;
+      height: 0.5rem;
+    }
     .tip-grid {
       display: flex;
       flex-wrap: wrap;
@@ -1201,6 +1226,10 @@ export class ToolSettings extends LitElement {
   @state() private _brushDropdownOpen = false;
   @state() private _tipMessage = '';
   @state() private _tipMessageError = false;
+  /** Imported groups open in the preset picker; they start closed, since one file can hold thousands of brushes. */
+  @state() private _openGroups = new Set<string>();
+  /** 0..1 while a brush file is being imported, else null. */
+  @state() private _importProgress: number | null = null;
   private _tipThumbUrls = new Map<string, string>();
   /** Which desktop settings panel (color or brush) is open, if any. */
   @state() private _openPanel: 'color' | 'brush' | null = null;
@@ -1828,7 +1857,7 @@ export class ToolSettings extends LitElement {
   private _toggleBrushDropdown() {
     this._brushDropdownOpen = !this._brushDropdownOpen;
     if (this._brushDropdownOpen) {
-      this.ctx.loadUserTips?.();
+      this.ctx.loadUserTips?.(['', ...this._openGroups]);
       // Close on outside click
       requestAnimationFrame(() => {
         document.addEventListener('click', this._onBrushDropdownOutsideClick);
@@ -2019,6 +2048,58 @@ export class ToolSettings extends LitElement {
     this._showTipMessage(await this.ctx.defineBrushFromFile(file, file.name), 'Brush added to Custom.');
   };
 
+  private _importBrushes = async (e: Event) => {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file || this._importProgress !== null) return;
+    this._showTipMessage(null);
+    this._importProgress = 0;
+    try {
+      const { ok, message } = await this.ctx.importBrushFile(file, f => { this._importProgress = f; });
+      this._showTipMessage(ok ? null : message, ok ? message : '');
+    } finally {
+      this._importProgress = null;
+    }
+  };
+
+  private _toggleGroup(group: string) {
+    const open = new Set(this._openGroups);
+    if (open.has(group)) open.delete(group);
+    else {
+      open.add(group);
+      this.ctx.loadUserTips?.([group]);
+    }
+    this._openGroups = open;
+  }
+
+  /** The custom presets of the picker: the user's own under "Custom", then each import under its file's name, closed until opened. */
+  private _renderCustomPresets(userPresets: BrushPreset[]) {
+    const own = userPresets.filter(p => !p.group);
+    const groups = [...new Set(userPresets.flatMap(p => (p.group ? [p.group] : [])))];
+    return html`
+      ${own.length > 0 ? html`
+        <div class="brush-dropdown-heading">Custom</div>
+        ${own.map(preset => this._renderPresetRow(preset, true))}
+      ` : nothing}
+      ${groups.map(group => {
+        const open = this._openGroups.has(group);
+        const members = userPresets.filter(p => p.group === group);
+        return html`
+          <div class="brush-dropdown-heading group-heading">
+            <button class="group-toggle" aria-expanded=${open ? 'true' : 'false'} title=${group}
+              @click=${() => this._toggleGroup(group)}>
+              <span aria-hidden="true">${open ? '▾' : '▸'}</span> ${group} (${members.length})
+            </button>
+            <button class="brush-dropdown-delete" title="Delete these brushes" aria-label=${`Delete brushes imported from ${group}`}
+              @click=${() => { void this.ctx.deleteUserGroup(group); }}>&times;</button>
+          </div>
+          ${open ? members.map(preset => this._renderPresetRow(preset, true)) : nothing}
+        `;
+      })}
+    `;
+  }
+
   /** A small picture of a library tip: its mask in black on white, as sampled brushes are drawn. */
   private _tipThumbUrl(tip: BrushTipMeta): string {
     const cached = this._tipThumbUrls.get(tip.id);
@@ -2040,7 +2121,8 @@ export class ToolSettings extends LitElement {
   }
 
   private _renderTipLibrary() {
-    const tips = this.ctx.userTips ?? [];
+    // Imported tips are browsed through their group in the preset picker.
+    const tips = (this.ctx.userTips ?? []).filter(t => !t.group);
     const imageId = this.ctx.state.brush.tip.shape === 'image' ? this.ctx.state.brush.tip.imageId : undefined;
     return html`
       <div class="section">
@@ -2049,7 +2131,15 @@ export class ToolSettings extends LitElement {
           @click=${(e: Event) => ((e.currentTarget as HTMLElement).nextElementSibling as HTMLInputElement | null)?.click()}
         >From image…</button>
         <input type="file" accept="image/*" hidden aria-label="Image to make a brush tip from" @change=${this._defineFromFile} />
+        <button class="pill-btn" ?disabled=${this._importProgress !== null}
+          title="Import the brushes of a Photoshop brush file (.abr): tips, spacing, dynamics, scattering, texture and colour settings."
+          @click=${(e: Event) => ((e.currentTarget as HTMLElement).nextElementSibling as HTMLInputElement | null)?.click()}
+        >Import brushes (.abr)…</button>
+        <input type="file" accept=".abr" hidden aria-label="Photoshop brush file to import" @change=${this._importBrushes} />
       </div>
+      ${this._importProgress !== null ? html`
+        <progress class="import-progress" max="1" .value=${this._importProgress} aria-label="Importing brushes"></progress>
+      ` : nothing}
       ${this._renderTipMessage()}
       ${tips.length > 0 ? html`
         <div class="tip-grid" role="list">
@@ -2479,7 +2569,7 @@ export class ToolSettings extends LitElement {
     const activePreset = knownPreset ?? BRUSH_PRESETS[0];
     // A custom preset deleted (here or in another tab) leaves its settings in use, as a brush of no preset.
     const presetModified = state.isPresetModified || (!knownPreset && state.activePreset !== 'round');
-    if (this._brushDropdownOpen) this.ctx.loadUserTips?.();
+    if (this._brushDropdownOpen) this.ctx.loadUserTips?.(['', ...this._openGroups]);
 
     // Select tool: show transform controls or a hint
     if (activeTool === 'select') {
@@ -2644,10 +2734,7 @@ export class ToolSettings extends LitElement {
             ${this._brushDropdownOpen ? html`
               <div class="brush-dropdown-panel">
                 ${BRUSH_PRESETS.map(preset => this._renderPresetRow(preset, false))}
-                ${userPresets.length > 0 ? html`
-                  <div class="brush-dropdown-heading">Custom</div>
-                  ${userPresets.map(preset => this._renderPresetRow(preset, true))}
-                ` : nothing}
+                ${this._renderCustomPresets(userPresets)}
               </div>
             ` : nothing}
           </div>

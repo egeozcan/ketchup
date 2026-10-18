@@ -5,6 +5,8 @@ import { drawingContext, type DrawingContextValue } from '../contexts/drawing-co
 import { blendModeToCompositeOp, isBrushBlendMode, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics, type BrushJitter, type BrushScatter, type BrushColorDynamics, type BrushFade, type BrushTexture } from '../engine/types.js';
 import { copyDescriptor, getDefaultDescriptor, getPresetById, normalizeBrushDescriptor } from '../engine/brush-presets.js';
 import { BrushLibrary, toBrushPreset } from '../engine/brush-library.js';
+import { planAbrImport, logUnmapped } from '../engine/abr/to-brushes.js';
+import { AbrParseError } from '../engine/abr/errors.js';
 import type { TipMask } from '../engine/tip-mask.js';
 import { hasTipMask } from '../engine/tip-images.js';
 import { getDefaultTipDescriptor } from '../engine/brush-capabilities.js';
@@ -90,6 +92,9 @@ function historyRecordBlobRefs(record: ProjectHistoryRecord): BlobRef[] {
   }
   return [...refs].filter(ref => typeof ref === 'string' && ref !== '');
 }
+
+/** Largest .abr file read (bigger libraries exist, but not for a browser to hold twice over). */
+const MAX_ABR_FILE_BYTES = 512 * 1024 * 1024;
 
 @customElement('drawing-app')
 export class DrawingApp extends LitElement {
@@ -796,6 +801,35 @@ export class DrawingApp extends LitElement {
     } catch (err) {
       console.error('Could not define the brush:', err);
       return this._brushStorageMessage(err);
+    }
+  }
+
+  /** Reads a Photoshop brush file and stores its brushes as a group named after the file. */
+  private _importBrushFile(file: File, onProgress?: (fraction: number) => void): Promise<{ ok: boolean; message: string }> {
+    // Tracked from the read on, so a reload or storage upgrade doesn't cut in while the file is parsed.
+    return this._trackBrushOp(this._readAndStoreBrushFile(file, onProgress));
+  }
+
+  private async _readAndStoreBrushFile(file: File, onProgress?: (fraction: number) => void): Promise<{ ok: boolean; message: string }> {
+    const library = this._library;
+    if (!library) return { ok: false, message: 'Custom brushes are not available here.' };
+    if (file.size > MAX_ABR_FILE_BYTES) return { ok: false, message: 'That file is too large to import.' };
+    try {
+      const plan = await planAbrImport(await file.arrayBuffer(), { onProgress: onProgress && (f => onProgress(0.9 * f)) });
+      const group = file.name.replace(/\.[^.]*$/, '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'Imported brushes';
+      await library.importBrushes({ group, tips: plan.tips, brushes: plan.brushes, patterns: plan.patterns });
+      onProgress?.(1);
+      logUnmapped(file.name, plan.unmapped);
+      const n = plan.brushes.length;
+      return {
+        ok: true,
+        message: `Imported ${n} brush${n === 1 ? '' : 'es'}${plan.skipped > 0 ? `, ${plan.skipped} skipped` : ''}`,
+      };
+    } catch (err) {
+      if (err instanceof AbrParseError) return { ok: false, message: err.message };
+      if (err instanceof StorageQuotaError) return { ok: false, message: this._brushStorageMessage(err) };
+      console.error('Could not import the brushes:', err);
+      return { ok: false, message: err instanceof DOMException && err.name === 'NotReadableError' ? 'That file could not be read.' : 'Could not import the brushes.' };
     }
   }
 
@@ -3221,8 +3255,27 @@ export class DrawingApp extends LitElement {
         if (!mask) return 'The image has nothing to paint with: it is all white or transparent.';
         return this._defineBrush(mask, name?.replace(/\.[^.]*$/, '').trim() || `Brush ${this._userPresets().length + 1}`);
       },
-      loadUserTips: () => {
-        for (const p of this._library?.presets ?? []) if (p.tipId) void this._library!.ensureTip(p.tipId);
+      loadUserTips: (groups?: string[]) => {
+        const wanted = groups ? new Set(groups) : null;
+        for (const p of this._library?.presets ?? []) {
+          if (p.tipId && (!wanted || wanted.has(p.group ?? ''))) void this._library!.ensureTip(p.tipId);
+        }
+      },
+      importBrushFile: (file: File, onProgress?: (fraction: number) => void) => this._importBrushFile(file, onProgress),
+      deleteUserGroup: async (group: string) => {
+        const count = this._library?.presets.filter(p => p.group === group).length ?? 0;
+        if (count === 0) return;
+        const ok = await this._confirm({
+          message: `Delete the ${count === 1 ? 'brush' : `${count} brushes`} imported from "${group}"? Projects that use their tips will paint with a round tip.`,
+          confirmLabel: 'Delete',
+          danger: true,
+        });
+        if (!ok) return;
+        try {
+          await this._trackBrushOp(Promise.resolve(this._library?.removeGroup(group)));
+        } catch (err) {
+          this._notice = this._brushStorageMessage(err);
+        }
       },
       selectUserTip: (tipId: string) => {
         const meta = this._library?.tipMeta(tipId);

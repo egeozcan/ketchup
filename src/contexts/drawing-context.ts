@@ -56,8 +56,17 @@ export interface DrawingContextValue {
   defineBrushFromSelection: () => Promise<string | null>;
   /** Makes a custom brush from an image file and selects it. Resolves to a message when it can't, else null. */
   defineBrushFromFile: (file: Blob, name?: string) => Promise<string | null>;
-  /** Loads the images of the custom presets, so their previews show the tip (only the active brush's is loaded otherwise). */
-  loadUserTips: () => void;
+  /**
+   * Loads the images of the custom presets, so their previews show the tip (only
+   * the active brush's is loaded otherwise). With `groups`, only those headings'
+   * presets ('' is the ungrouped "Custom" ones): an imported file can hold
+   * thousands, which are read when its heading is opened.
+   */
+  loadUserTips: (groups?: string[]) => void;
+  /** Imports the brushes of a Photoshop .abr file as a group named after it. Resolves to a message to show, and whether it went through. */
+  importBrushFile: (file: File, onProgress?: (fraction: number) => void) => Promise<{ ok: boolean; message: string }>;
+  /** Deletes every brush of an import, after asking. */
+  deleteUserGroup: (group: string) => Promise<void>;
   /** Paints with a library tip, keeping the rest of the brush. */
   selectUserTip: (tipId: string) => void;
   deleteUserPreset: (presetId: string) => Promise<void>;

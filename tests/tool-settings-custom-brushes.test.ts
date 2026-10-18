@@ -27,6 +27,7 @@ function mount(over: Record<string, unknown> = {}, state: Parameters<typeof make
     setBrushDynamics: vi.fn(), setBrushJitter: vi.fn(), selectPreset: vi.fn(),
     userTips: [tip], userPresets: [custom],
     selectUserTip: vi.fn(), deleteUserTip: vi.fn(async () => {}), deleteUserPreset: vi.fn(async () => {}),
+    deleteUserGroup: vi.fn(async () => {}), importBrushFile: vi.fn(async () => ({ ok: true, message: '' })),
     defineBrushFromFile: vi.fn(async () => null), defineBrushFromSelection: vi.fn(async () => null),
     ...over,
   };
@@ -118,5 +119,43 @@ describe('custom brushes in tool settings', () => {
     loadUserTips.mockClear();
     mount({ loadUserTips }, {}, false);
     expect(loadUserTips).not.toHaveBeenCalled();
+  });
+
+  describe('imported brush groups', () => {
+    const imported: BrushPreset = { ...custom, id: 'imp-1', name: 'Dots', group: 'Chalk Set' };
+    const importedTip: BrushTipMeta = { ...tip, id: 'tip-imp', group: 'Chalk Set' };
+
+    it('lists a group closed under its own heading, opens it on a click and loads its tips', () => {
+      const loadUserTips = vi.fn();
+      const { container, settings, ctx } = mount({ userPresets: [custom, imported], userTips: [tip, importedTip], loadUserTips }, {}, true);
+      const toggle = container.querySelector<HTMLButtonElement>('.group-toggle')!;
+      expect(toggle.textContent).toContain('Chalk Set (1)');
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+      expect(container.querySelectorAll('.brush-dropdown-row')).toHaveLength(BRUSH_PRESETS.length + 1);
+      toggle.click();
+      expect(loadUserTips).toHaveBeenLastCalledWith(['Chalk Set']);
+      render(settings.render(), container);
+      expect(container.querySelectorAll('.brush-dropdown-row')).toHaveLength(BRUSH_PRESETS.length + 2);
+      container.querySelector<HTMLButtonElement>('.group-heading .brush-dropdown-delete')!.click();
+      expect(ctx.deleteUserGroup).toHaveBeenCalledWith('Chalk Set');
+    });
+
+    it('keeps imported tips out of the tip grid', () => {
+      const { container } = mount({ userPresets: [], userTips: [importedTip] });
+      expect(container.querySelector('button.tip-pick')).toBeNull();
+    });
+
+    it('imports a chosen .abr file and shows the result', async () => {
+      const importBrushFile = vi.fn(async () => ({ ok: true, message: 'Imported 3 brushes' }));
+      const { container, settings } = mount({ importBrushFile });
+      const input = container.querySelector<HTMLInputElement>('input[accept=".abr"]')!;
+      const file = new File(['x'], 'a.abr');
+      Object.defineProperty(input, 'files', { value: [file] });
+      await (settings as any)._importBrushes({ target: input } as unknown as Event);
+      expect(importBrushFile).toHaveBeenCalledWith(file, expect.any(Function));
+      expect((settings as any)._tipMessage).toBe('Imported 3 brushes');
+      expect((settings as any)._tipMessageError).toBe(false);
+      expect((settings as any)._importProgress).toBeNull();
+    });
   });
 });

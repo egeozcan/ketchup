@@ -220,6 +220,8 @@ export interface BrushTipMeta {
   createdAt: number;
   /** A small copy of the mask, for lists. */
   thumb: TipMask;
+  /** The import it came from (a file's name); absent for a tip the user made. */
+  group?: string;
 }
 
 /** A brush the user defined or imported: a full descriptor under a name, listed under "Custom". */
@@ -231,6 +233,18 @@ export interface UserBrushPreset {
   /** The sampled tip the descriptor uses, if any: deleting that tip deletes this preset. */
   tipId?: string;
   createdAt: number;
+  /** The import it came from (a file's name), listed under that heading; absent for a brush the user made ("Custom"). */
+  group?: string;
+}
+
+/** A texture pattern tile kept for brushes that use it (an imported one): 8-bit heights, row by row. */
+export interface StoredPattern {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  createdAt: number;
+  data: Uint8Array;
 }
 
 /**
@@ -246,7 +260,15 @@ export interface BrushLibraryStore {
    * Adds or replaces tips (with their masks) and presets in one step: all or
    * none are stored. Importing many brushes at once is a single call.
    */
-  putBatch(batch: { tips?: { meta: BrushTipMeta; mask: TipMask }[]; presets?: UserBrushPreset[] }): Promise<void>;
+  putBatch(batch: { tips?: { meta: BrushTipMeta; mask: TipMask }[]; presets?: UserBrushPreset[]; patterns?: StoredPattern[] }): Promise<void>;
+  /** Every stored pattern, with its pixels (they are few and small enough to register at startup). */
+  listPatterns(): Promise<StoredPattern[]>;
+  /**
+   * Deletes presets and tips (with their masks) by id, and then the `unusedPatterns` that no
+   * stored preset names, all in one step (so a brush another tab stored meanwhile keeps its
+   * pattern). Ids that aren't stored are ignored. Resolves to the patterns deleted.
+   */
+  deleteMany(batch: { presets?: string[]; tips?: string[]; unusedPatterns?: string[] }): Promise<{ patterns: string[] }>;
   /** Deletes a preset, and its tip when no other preset uses it. */
   deletePreset(id: string): Promise<void>;
   /** Deletes a tip, its mask, and every preset that uses it. */

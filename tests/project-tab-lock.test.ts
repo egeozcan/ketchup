@@ -1535,7 +1535,7 @@ describe('a newer build', () => {
     expect((app as any)._backend).toBeInstanceOf(IndexedDBBackend);
 
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const req = indexedDB.open('ketchup-projects', 8);
+      const req = indexedDB.open('ketchup-projects', 9);
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });
@@ -1571,7 +1571,7 @@ describe('a newer build', () => {
     await vi.waitFor(() => expect((app as any)._backendClosed).toBe(true));
     // Another window, on a newer build, upgrades storage meanwhile.
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const req = indexedDB.open('ketchup-projects', 8);
+      const req = indexedDB.open('ketchup-projects', 9);
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
     });

@@ -244,6 +244,8 @@ export interface BrushPreset {
   name: string;
   category: 'basic' | 'artistic' | 'effects' | 'custom';
   descriptor: BrushDescriptor;
+  /** A custom preset's import (a file's name): the picker lists it under that heading instead of "Custom". */
+  group?: string;
 }
 
 export interface InkState {

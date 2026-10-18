@@ -338,7 +338,7 @@ describe('IndexedDB upgrade to the brush library', () => {
 
     const backend = new IndexedDBBackend({ dbName: name });
     await backend.init();
-    expect((await indexedDB.databases()).find(d => d.name === name)?.version).toBe(7);
+    expect((await indexedDB.databases()).find(d => d.name === name)?.version).toBe(8);
     expect((await backend.projects.list()).map(p => p.name)).toEqual(['Old']);
     expect((await backend.stamps.list('p1')).map(s => s.id)).toEqual(['s1']);
     expect(await backend.brushes!.list()).toEqual({ tips: [], presets: [] });

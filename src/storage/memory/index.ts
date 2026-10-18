@@ -20,6 +20,7 @@ import type {
   BrushLibraryStore,
   BrushTipMeta,
   UserBrushPreset,
+  StoredPattern,
 } from '../types.js';
 import type { TipMask } from '../../engine/tip-mask.js';
 import { createBlobRef } from '../types.js';
@@ -182,6 +183,7 @@ class MemoryStampStore implements StampStore {
 class MemoryBrushStore implements BrushLibraryStore {
   private _tips = new Map<string, { meta: BrushTipMeta; mask: TipMask }>();
   private _presets = new Map<string, UserBrushPreset>();
+  private _patterns = new Map<string, StoredPattern>();
 
   // Copies go in and out, as a database's structured clone does, so a caller
   // can't change what is stored.
@@ -195,7 +197,8 @@ class MemoryBrushStore implements BrushLibraryStore {
     const t = this._tips.get(id);
     return t ? { width: t.mask.width, height: t.mask.height, alpha: t.mask.alpha.slice() } : null;
   }
-  async putBatch(batch: { tips?: { meta: BrushTipMeta; mask: TipMask }[]; presets?: UserBrushPreset[] }): Promise<void> {
+  async putBatch(batch: { tips?: { meta: BrushTipMeta; mask: TipMask }[]; presets?: UserBrushPreset[]; patterns?: StoredPattern[] }): Promise<void> {
+    for (const p of batch.patterns ?? []) this._patterns.set(p.id, { ...p, data: p.data.slice() });
     for (const { meta, mask } of batch.tips ?? []) {
       this._tips.set(meta.id, {
         meta: structuredClone(meta),
@@ -203,6 +206,17 @@ class MemoryBrushStore implements BrushLibraryStore {
       });
     }
     for (const preset of batch.presets ?? []) this._presets.set(preset.id, structuredClone(preset));
+  }
+  async listPatterns(): Promise<StoredPattern[]> {
+    return [...this._patterns.values()].map(p => ({ ...p, data: p.data.slice() })).sort((a, b) => a.createdAt - b.createdAt);
+  }
+  async deleteMany(batch: { presets?: string[]; tips?: string[]; unusedPatterns?: string[] }): Promise<{ patterns: string[] }> {
+    for (const id of batch.presets ?? []) this._presets.delete(id);
+    for (const id of batch.tips ?? []) this._tips.delete(id);
+    const used = new Set([...this._presets.values()].map(p => p.descriptor?.texture?.pattern));
+    const patterns = (batch.unusedPatterns ?? []).filter(id => !used.has(id) && this._patterns.has(id));
+    for (const id of patterns) this._patterns.delete(id);
+    return { patterns };
   }
   async deletePreset(id: string): Promise<void> {
     const tipId = this._presets.get(id)?.tipId;

@@ -44,7 +44,7 @@ const DEFAULT_DB_NAME = 'ketchup-projects';
 // `brush-presets`: a schema change) and is a gate as well: a v6 build doesn't
 // know the 'image' tip shape a brush may now name, and would fail on it in
 // the middle of a stroke.
-const DEFAULT_VERSION = 7;
+const DEFAULT_VERSION = 8;
 
 export class IndexedDBBackend implements StorageBackend {
   private _projects?: ProjectStore;
@@ -258,6 +258,11 @@ export class IndexedDBBackend implements StorageBackend {
         if (!db.objectStoreNames.contains('brush-presets')) {
           const store = db.createObjectStore('brush-presets', { keyPath: 'id' });
           store.createIndex('tipId', 'tipId');
+        }
+
+        // v7→v8: imported texture patterns.
+        if (!db.objectStoreNames.contains('brush-patterns')) {
+          db.createObjectStore('brush-patterns', { keyPath: 'id' });
         }
 
         // v3→v4: create blobs store and migrate inline blobs
