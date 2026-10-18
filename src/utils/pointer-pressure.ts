@@ -51,3 +51,9 @@ export function pointerTilt(input: PointerTiltInput): { tiltX: number; tiltY: nu
   const toDeg = (along: number) => Math.atan2(Math.abs(along) < 1e-9 ? 0 : along, t) * 180 / Math.PI;
   return { tiltX: toDeg(Math.cos(azimuthAngle!)), tiltY: toDeg(Math.sin(azimuthAngle!)) };
 }
+
+/** A pen barrel's rotation in degrees (0..360), 0 for a device that reports none (a mouse, most pens). */
+export function pointerTwist(input: { pointerType: string; twist?: number }): number {
+  if (input.pointerType !== 'pen' || !Number.isFinite(input.twist)) return 0;
+  return ((input.twist! % 360) + 360) % 360;
+}

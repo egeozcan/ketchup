@@ -27,6 +27,8 @@ Brush randomness comes only from the stroke's seeded `Rng` (`engine/rng.ts`, see
 
 Tools are **stateless pure functions** in `src/tools/`. Each takes a `CanvasRenderingContext2D` plus parameters and draws directly. `drawing-canvas.ts` dispatches to the correct tool function based on `activeTool` from context state inside its pointer event handlers (`_onPointerDown`/`_onPointerMove`/`_onPointerUp`). Tools draw to the **active layer's** offscreen canvas, not the display canvas.
 
+Pen channels (pressure, tilt, twist, speed) travel as `PathChannels` from `drawing-canvas.ts` through the stabilizer and `PathSmoother`, which interpolate them per sample; angles (twist) must go through `lerpDegrees` (shortest arc), never a plain lerp, and a new channel needs adding to all three. The tip orientations `tilt`/`twist` turn a dab by the pen (a mouse reports neither, so it strokes as `fixed`; an upright pen under `tilt` keeps its last angle), and anything that predicts a dab's turn, such as bar-tip spacing in `_leanSpacing`, must use `penRotation`.
+
 Adding a new tool requires: add to `ToolType` union in `types.ts`, create tool function in `src/tools/`, add SVG icon + label in `tool-icons.ts`, add to a toolbar group in `app-toolbar.ts`, and wire pointer dispatch in `drawing-canvas.ts`.
 
 ### Layer System

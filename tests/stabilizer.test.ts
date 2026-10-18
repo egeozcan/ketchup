@@ -25,7 +25,7 @@ describe('Stabilizer', () => {
     const s = new Stabilizer();
     s.reset(0);
     s.add(0, 0, 1, 0);
-    expect(s.add(50, 7, 0.3, 4, 20, -10)).toEqual({ x: 50, y: 7, pressure: 0.3, tiltX: 20, tiltY: -10 });
+    expect(s.add(50, 7, 0.3, 4, 20, -10)).toEqual({ x: 50, y: 7, pressure: 0.3, tiltX: 20, tiltY: -10, twist: 0 });
     expect(s.catchUp()).toEqual([]);
   });
 
@@ -134,7 +134,7 @@ describe('Stabilizer', () => {
     s.add(0, 0, 1, 0);
     s.add(100, 0, 1, 10);
     s.reset();
-    expect(s.add(300, 40, 0.5, 20)).toEqual({ x: 300, y: 40, pressure: 0.5, tiltX: 0, tiltY: 0 });
+    expect(s.add(300, 40, 0.5, 20)).toEqual({ x: 300, y: 40, pressure: 0.5, tiltX: 0, tiltY: 0, twist: 0 });
   });
 
   it('maps the setting to a time constant, clamping and ignoring non-numbers', () => {

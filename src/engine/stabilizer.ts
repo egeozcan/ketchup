@@ -1,3 +1,5 @@
+import { lerpDegrees } from './angle.js';
+
 /** Lag of the strongest stabilizer setting (100 %), in milliseconds. */
 export const MAX_STABILIZER_MS = 120;
 
@@ -23,6 +25,7 @@ export interface StabilizedPoint {
   pressure: number;
   tiltX: number;
   tiltY: number;
+  twist: number;
   timestamp: number;
 }
 
@@ -32,6 +35,7 @@ interface PenSample {
   pressure: number;
   tiltX: number;
   tiltY: number;
+  twist: number;
 }
 
 /**
@@ -40,7 +44,7 @@ interface PenSample {
  * 60 Hz or (coalesced) at 240 Hz. It needs increasing timestamps: while they
  * stand still, so does the point.
  *
- * Pressure and tilt aren't averaged with it: a change would then start as
+ * Pressure, tilt and twist aren't averaged with it: a change would then start as
  * soon as the pen made it, a whole lag before the drawn point gets there.
  * They are read where the pen was when it had gone as far along its path as
  * the average of that distance, which (the average being linear) is exactly
@@ -92,7 +96,7 @@ export class Stabilizer {
   }
 
   /** The smoothed sample for a raw one at `timestamp` (ms). */
-  add(x: number, y: number, pressure: number, timestamp: number, tiltX = 0, tiltY = 0): Omit<StabilizedPoint, 'timestamp'> {
+  add(x: number, y: number, pressure: number, timestamp: number, tiltX = 0, tiltY = 0, twist = 0): Omit<StabilizedPoint, 'timestamp'> {
     if (!this._started || this._tau <= 0) {
       this._rawX = x;
       this._rawY = y;
@@ -107,9 +111,9 @@ export class Stabilizer {
       this._anchorS = 0;
       this._rawS = 0;
       this._penS = 0;
-      this._history = [{ s: 0, pressure, tiltX, tiltY }];
+      this._history = [{ s: 0, pressure, tiltX, tiltY, twist }];
       this._started = true;
-      return { x, y, pressure, tiltX, tiltY };
+      return { x, y, pressure, tiltX, tiltY, twist };
     }
     let off = Math.hypot(x - this._anchorX, y - this._anchorY);
     if (off > this._slack) {
@@ -122,7 +126,7 @@ export class Stabilizer {
     this._rawS = Math.max(this._rawS, this._anchorS + off);
     this._rawX = x;
     this._rawY = y;
-    this._remember({ s: this._rawS, pressure, tiltX, tiltY });
+    this._remember({ s: this._rawS, pressure, tiltX, tiltY, twist });
     const dt = timestamp - this._t;
     if (dt > 0) {
       this._prevX = this._x;
@@ -136,7 +140,7 @@ export class Stabilizer {
     }
     this._trim();
     const pen = this._penAt(this._penS);
-    return { x: this._x, y: this._y, pressure: pen.pressure, tiltX: pen.tiltX, tiltY: pen.tiltY };
+    return { x: this._x, y: this._y, pressure: pen.pressure, tiltX: pen.tiltX, tiltY: pen.tiltY, twist: pen.twist };
   }
 
   /**
@@ -171,6 +175,7 @@ export class Stabilizer {
         pressure: pen.pressure,
         tiltX: pen.tiltX,
         tiltY: pen.tiltY,
+        twist: pen.twist,
         timestamp: from.t + dt * i,
       });
     }
@@ -225,6 +230,7 @@ export class Stabilizer {
       pressure: a.pressure + (b.pressure - a.pressure) * f,
       tiltX: a.tiltX + (b.tiltX - a.tiltX) * f,
       tiltY: a.tiltY + (b.tiltY - a.tiltY) * f,
+      twist: lerpDegrees(a.twist, b.twist, f),
     };
   }
 }

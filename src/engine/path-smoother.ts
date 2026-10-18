@@ -1,4 +1,5 @@
 import type { PathChannels, StampPoint } from './types.js';
+import { lerpDegrees } from './angle.js';
 
 interface RawPoint extends PathChannels {
   x: number;
@@ -12,6 +13,8 @@ function lerpChannels(a: PathChannels, b: PathChannels, t: number): PathChannels
     velocity: a.velocity + (b.velocity - a.velocity) * t,
     tiltX: a.tiltX + (b.tiltX - a.tiltX) * t,
     tiltY: a.tiltY + (b.tiltY - a.tiltY) * t,
+    // An angle goes the short way round; tilt is a vector, which does so by itself.
+    twist: lerpDegrees(a.twist, b.twist, t),
   };
 }
 
@@ -87,6 +90,7 @@ export class PathSmoother {
       velocity: channels.velocity ?? 0,
       tiltX: channels.tiltX ?? 0,
       tiltY: channels.tiltY ?? 0,
+      twist: channels.twist ?? 0,
     };
     this._count++;
 
@@ -100,7 +104,7 @@ export class PathSmoother {
 
     // Single point (stroke start dot)
     if (n === 1) {
-      const stamp: StampPoint = { x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, velocity: pt.velocity, tiltX: pt.tiltX, tiltY: pt.tiltY };
+      const stamp: StampPoint = { x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, velocity: pt.velocity, tiltX: pt.tiltX, tiltY: pt.tiltY, twist: pt.twist };
       this._lay(stamp, spacing);
       return [stamp];
     }
@@ -155,6 +159,7 @@ export class PathSmoother {
       velocity: p2.velocity,
       tiltX: p2.tiltX,
       tiltY: p2.tiltY,
+      twist: p2.twist,
     };
     return this._walkCatmullRom(p0, p1, p2, p3, spacing);
   }

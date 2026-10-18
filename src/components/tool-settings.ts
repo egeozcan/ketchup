@@ -2071,7 +2071,7 @@ export class ToolSettings extends LitElement {
             ` : nothing}
             ${tipCapabilities.rotation ? html`
             <div class="section">
-              <label>${brush.tip.orientation === 'direction' ? 'Offset' : 'Angle'}</label>
+              <label>${brush.tip.orientation === 'fixed' ? 'Angle' : 'Offset'}</label>
               <input type="range" min="0" max="360" .value=${String(brush.tip.angle)}
                 @input=${(e: Event) => this.ctx.setBrushTip({ angle: Number((e.target as HTMLInputElement).value) })} />
               <span class="size-value">${brush.tip.angle}&deg;</span>
@@ -2082,6 +2082,8 @@ export class ToolSettings extends LitElement {
                 @change=${(e: Event) => this.ctx.setBrushTip({ orientation: (e.target as HTMLSelectElement).value as OrientationMode })}>
                 <option value="fixed">Fixed</option>
                 <option value="direction">Direction</option>
+                <option value="tilt">Pen tilt</option>
+                <option value="twist">Pen rotation</option>
               </select>
             </div>
             ` : nothing}

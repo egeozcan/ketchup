@@ -10,7 +10,7 @@ import { blendModeToCompositeOp } from '../engine/types.js';
 import type { BrushDescriptor } from '../engine/types.js';
 import { tintAlphaMask } from '../engine/canvas-pool.js';
 import { createThrottledScheduler } from '../utils/raf-throttle.js';
-import { normalizePointerPressure, pointerTilt } from '../utils/pointer-pressure.js';
+import { normalizePointerPressure, pointerTilt, pointerTwist } from '../utils/pointer-pressure.js';
 import { getDefaultDescriptor } from '../engine/brush-presets.js';
 import { floodFill } from '../tools/fill.js';
 import { drawSelectionRect } from '../tools/select.js';
@@ -2654,7 +2654,7 @@ export class DrawingCanvas extends LitElement {
       this._strokeTintNeedsClear = true;
       this._tintPreviewNeedsCopy = true;
       const layerCtx = desc.ink.wetness > 0 ? this._getActiveLayerCtx() ?? undefined : undefined;
-      this._engine.stroke(p.x, p.y, normalizePointerPressure(e), layerCtx, e.timeStamp, pointerTilt(e));
+      this._engine.stroke(p.x, p.y, normalizePointerPressure(e), layerCtx, e.timeStamp, { ...pointerTilt(e), twist: pointerTwist(e) });
       this.composite();
     }
   }
@@ -2818,7 +2818,7 @@ export class DrawingCanvas extends LitElement {
       // catch up, and their pressure may be a lift.
       for (const sample of coalescedSamples(e)) {
         const sp = sample === e ? p : this._getDocPoint(sample);
-        this._engine.stroke(sp.x, sp.y, normalizePointerPressure(sample), layerCtx, sample.timeStamp, pointerTilt(sample));
+        this._engine.stroke(sp.x, sp.y, normalizePointerPressure(sample), layerCtx, sample.timeStamp, { ...pointerTilt(sample), twist: pointerTwist(sample) });
       }
       this._lastPoint = p;
       // The stroke stays in the engine's buffer until pointerup; the layer is unchanged.

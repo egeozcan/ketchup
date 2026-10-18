@@ -1,7 +1,12 @@
 export type PressureCurveName = 'linear' | 'light' | 'heavy';
 
 export type TipShape = 'round' | 'flat' | 'chisel' | 'calligraphy' | 'fan' | 'splatter';
-export type OrientationMode = 'fixed' | 'direction';
+/**
+ * What turns the tip: nothing, the stroke's direction, the way the pen leans
+ * (its azimuth) or the pen barrel's rotation (twist). `TipDescriptor.angle`
+ * is added to the last three.
+ */
+export type OrientationMode = 'fixed' | 'direction' | 'tilt' | 'twist';
 
 export interface TipDescriptor {
   shape: TipShape;
@@ -103,6 +108,8 @@ export interface PathChannels {
   /** Pen tilt in degrees (-90..90), as Pointer Events report it; 0, 0 is upright. */
   tiltX: number;
   tiltY: number;
+  /** Pen barrel rotation in degrees (0..360), as Pointer Events report it; 0 for a pen that reports none. */
+  twist: number;
 }
 
 export interface StampPoint extends PathChannels {

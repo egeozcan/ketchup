@@ -7,6 +7,7 @@ import { PRESSURE_CURVES, quantizeDiameter, type BrushDescriptor, type TipDescri
 import { TIP_VARIANT_COUNTS, tipFootprint } from './tip-generators.js';
 import { copyDescriptor } from './brush-presets.js';
 import { Rng, freshSeed } from './rng.js';
+import { wrapDegrees } from './angle.js';
 import { initInkState, applyDepletion, applyBuildup, applyPickup } from './ink-model.js';
 
 /** Mixed into the stroke's seed for the flow jitter's own random stream. */
@@ -39,12 +40,31 @@ export interface PenTilt {
   /** Degrees (-90..90), as Pointer Events report them; 0, 0 is upright. */
   tiltX: number;
   tiltY: number;
+  /** Pen barrel rotation in degrees (0..360); absent or 0 for a device that reports none. */
+  twist?: number;
 }
 
 const UPRIGHT: PenTilt = { tiltX: 0, tiltY: 0 };
 
 function clampTilt(deg: number): number {
   return Number.isFinite(deg) ? Math.max(-MAX_TILT_DEG, Math.min(MAX_TILT_DEG, deg)) : 0;
+}
+
+function cleanTwist(deg: number | undefined): number {
+  return deg !== undefined && Number.isFinite(deg) ? wrapDegrees(deg) : 0;
+}
+
+/** Lean (degrees from upright, both axes together) below which a pen counts as upright and has no direction to lean in. */
+const MIN_LEAN_DEG = 0.5;
+
+/**
+ * The direction (radians) a pen leans toward, or null when it is upright (or
+ * reports no tilt, as a mouse doesn't), where the direction is noise.
+ */
+export function tiltAzimuth(tiltX: number, tiltY: number): number | null {
+  const x = clampTilt(tiltX), y = clampTilt(tiltY);
+  if (Math.hypot(x, y) < MIN_LEAN_DEG) return null;
+  return Math.atan2(Math.tan(y * Math.PI / 180), Math.tan(x * Math.PI / 180));
 }
 
 interface DabStretch {
@@ -134,6 +154,26 @@ function speedFactor(control: number, v: number): number {
   return control >= 0 ? 1 - control + control * v : 1 + control * v;
 }
 
+/**
+ * The turn a pen gives a dab of a tip following it, plus the tip's offset;
+ * null for any other orientation, and for 'tilt' with the pen upright, which
+ * has no direction to follow.
+ */
+function penRotation(stamp: StampPoint, tip: TipDescriptor): number | null {
+  const offset = tip.angle * Math.PI / 180;
+  if (tip.orientation === 'twist') return stamp.twist * Math.PI / 180 + offset;
+  if (tip.orientation === 'tilt') {
+    const az = tiltAzimuth(stamp.tiltX, stamp.tiltY);
+    return az === null ? null : az + offset;
+  }
+  return null;
+}
+
+/**
+ * A mouse reports no tilt and no twist, so 'tilt' and 'twist' turn its dabs
+ * by the offset alone, as 'fixed' does. A pen that comes upright mid-stroke
+ * keeps the angle it had, as direction following does while still.
+ */
 function computeStampRotation(
   stamp: StampPoint,
   prevStamp: StampPoint | null,
@@ -142,6 +182,9 @@ function computeStampRotation(
 ): number {
   if (tip.orientation === 'fixed') {
     return tip.angle * Math.PI / 180;
+  }
+  if (tip.orientation === 'tilt' || tip.orientation === 'twist') {
+    return penRotation(stamp, tip) ?? (prevStamp ? prevRotation : tip.angle * Math.PI / 180);
   }
   if (!prevStamp) return tip.angle * Math.PI / 180;
   const dx = stamp.x - prevStamp.x;
@@ -247,7 +290,7 @@ export class StampStrokeEngine {
     }
 
     const curveFn = PRESSURE_CURVES[d.pressureCurve];
-    const at = this._stabilizer.add(x, y, curveFn(inputPressure), timestamp, clampTilt(tilt.tiltX), clampTilt(tilt.tiltY));
+    const at = this._stabilizer.add(x, y, curveFn(inputPressure), timestamp, clampTilt(tilt.tiltX), clampTilt(tilt.tiltY), cleanTwist(tilt.twist));
     this._stampPoints(this._feed({ ...at, timestamp }));
   }
 
@@ -256,7 +299,7 @@ export class StampStrokeEngine {
     // Speed and heading are measured along the stabilized path, the one the dabs follow.
     const v = this._trackVelocity(p.x, p.y, p.timestamp);
     return this._smoother.addPoint(p.x, p.y, p.pressure, this._dabSpacing, p.timestamp,
-      { velocity: v, tiltX: p.tiltX, tiltY: p.tiltY });
+      { velocity: v, tiltX: p.tiltX, tiltY: p.tiltY, twist: p.twist });
   }
 
   private _stampPoints(stamps: StampPoint[]) {
@@ -503,17 +546,21 @@ export class StampStrokeEngine {
    * reach along the stroke shrank, so ones that touched upright still do.
    * Round dabs only grow when stretched.
    */
-  private _leanSpacing(tilt: PenTilt, heading: number | null): number {
+  private _leanSpacing(at: StampPoint, heading: number | null): number {
     const d = this._descriptor!;
-    const lean = tiltStretch(tilt.tiltX, tilt.tiltY, d.dynamics.tilt);
+    const lean = tiltStretch(at.tiltX, at.tiltY, d.dynamics.tilt);
     if (lean.stretch === 1 || !BAR_TIPS.has(d.tip.shape)) return 1;
     const angle = d.tip.angle * Math.PI / 180;
     const aspect = Math.max(1, d.tip.aspect);
     const shape = d.tip.shape;
-    // As _stampPoints turns it: along the way from the dab before, or at
-    // the tip's own angle when there is none yet (and then any way on).
+    // As _stampPoints turns it: by the pen where the tip follows it, along
+    // the way from the dab before, or at the tip's own angle when there is
+    // none yet (and then any way on). A tilt below the upright threshold has
+    // a stretch of about 1, so its unknown turn costs nothing worth closing up.
+    const byPen = penRotation(at, d.tip);
+    const follows = !['fixed', 'tilt', 'twist'].includes(d.tip.orientation);
     const shrink = (h: number) => {
-      const rotation = d.tip.orientation === 'fixed' || heading === null ? angle : h + angle;
+      const rotation = byPen ?? (!follows || heading === null ? angle : h + angle);
       return barReach(shape, aspect, rotation, lean, h) / barReach(shape, aspect, rotation, NO_STRETCH, h);
     };
     return Math.min(1, ...(heading === null ? ANY_HEADING : [heading]).map(shrink));
