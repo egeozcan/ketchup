@@ -1,9 +1,9 @@
 import { vi } from 'vitest';
 import { getDefaultDescriptor } from '../src/engine/brush-presets.ts';
-import type { BrushDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushFade, InkDescriptor, TipDescriptor } from '../src/engine/types.ts';
+import type { BrushDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushFade, BrushTexture, InkDescriptor, TipDescriptor } from '../src/engine/types.ts';
 import type { DrawingState, Layer } from '../src/types.ts';
 
-type BrushOverrides = Omit<Partial<BrushDescriptor>, 'tip' | 'ink' | 'dynamics' | 'jitter' | 'scatter' | 'color' | 'fade'> & {
+type BrushOverrides = Omit<Partial<BrushDescriptor>, 'tip' | 'ink' | 'dynamics' | 'jitter' | 'scatter' | 'color' | 'fade' | 'texture'> & {
   tip?: Partial<TipDescriptor>;
   ink?: Partial<InkDescriptor>;
   dynamics?: Partial<BrushDynamics>;
@@ -11,6 +11,7 @@ type BrushOverrides = Omit<Partial<BrushDescriptor>, 'tip' | 'ink' | 'dynamics' 
   scatter?: Partial<BrushScatter>;
   color?: Partial<BrushColorDynamics>;
   fade?: Partial<BrushFade>;
+  texture?: Partial<BrushTexture>;
 };
 
 export function makeBrush(overrides: BrushOverrides = {}): BrushDescriptor {
@@ -45,6 +46,10 @@ export function makeBrush(overrides: BrushOverrides = {}): BrushDescriptor {
     fade: {
       ...base.fade,
       ...(overrides.fade ?? {}),
+    },
+    texture: {
+      ...base.texture,
+      ...(overrides.texture ?? {}),
     },
   };
 }

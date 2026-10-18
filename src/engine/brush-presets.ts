@@ -1,5 +1,6 @@
-import type { BrushDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushFade, BrushPreset } from './types.js';
-import { isBrushBlendMode } from './types.js';
+import type { BrushDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushFade, BrushTexture, BrushPreset } from './types.js';
+import { isBrushBlendMode, isTextureMode } from './types.js';
+import { MAX_PATTERN_ID_LENGTH } from './brush-texture.js';
 import { getDefaultTipDescriptor } from './brush-capabilities.js';
 
 const NO_INK = { depletion: 0, depletionLength: 500, buildup: 0, wetness: 0 };
@@ -35,6 +36,24 @@ export function normalizeFade(stored: Partial<BrushFade> | undefined): BrushFade
   return out;
 }
 
+export const MIN_TEXTURE_SCALE = 0.1;
+export const MAX_TEXTURE_SCALE = 4;
+export const NO_TEXTURE: BrushTexture = { pattern: 'none', scale: 1, depth: 0.8, mode: 'multiply', invert: false, depthPressure: false, perTip: false };
+
+/** Stored texture settings over the defaults; anything of the wrong kind or out of range keeps its default or is clamped. */
+export function normalizeTexture(stored: Partial<BrushTexture> | undefined): BrushTexture {
+  const out = { ...NO_TEXTURE };
+  if (!stored || typeof stored !== 'object') return out;
+  if (typeof stored.pattern === 'string' && stored.pattern.length > 0 && stored.pattern.length <= MAX_PATTERN_ID_LENGTH) out.pattern = stored.pattern;
+  if (typeof stored.scale === 'number' && Number.isFinite(stored.scale)) out.scale = Math.max(MIN_TEXTURE_SCALE, Math.min(MAX_TEXTURE_SCALE, stored.scale));
+  if (typeof stored.depth === 'number' && Number.isFinite(stored.depth)) out.depth = Math.max(0, Math.min(1, stored.depth));
+  if (isTextureMode(stored.mode)) out.mode = stored.mode;
+  out.invert = stored.invert === true;
+  out.depthPressure = stored.depthPressure === true;
+  out.perTip = stored.perTip === true;
+  return out;
+}
+
 export const NO_COLOR: BrushColorDynamics = { hue: 0, saturation: 0, brightness: 0, purity: 0, fgBg: 0, fgBgPressure: false, perTip: true };
 
 /**
@@ -60,6 +79,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       fade: { ...NO_FADE },
+      texture: { ...NO_TEXTURE },
       blendMode: 'normal',
       airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
@@ -78,6 +98,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       fade: { sizeLength: 0, taperStart: 40 },
+      texture: { ...NO_TEXTURE },
       blendMode: 'normal',
       airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
@@ -96,6 +117,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       fade: { ...NO_FADE },
+      texture: { ...NO_TEXTURE },
       blendMode: 'normal',
       airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
@@ -114,6 +136,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       fade: { ...NO_FADE },
+      texture: { ...NO_TEXTURE },
       blendMode: 'normal',
       airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
@@ -132,6 +155,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       fade: { ...NO_FADE },
+      texture: { ...NO_TEXTURE },
       blendMode: 'normal',
       airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
@@ -150,6 +174,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       fade: { ...NO_FADE },
+      texture: { ...NO_TEXTURE },
       blendMode: 'normal',
       airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
@@ -168,6 +193,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       fade: { ...NO_FADE },
+      texture: { ...NO_TEXTURE },
       blendMode: 'normal',
       airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
@@ -186,6 +212,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       fade: { ...NO_FADE },
+      texture: { ...NO_TEXTURE },
       blendMode: 'normal',
       airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
@@ -204,6 +231,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { amount: 2, bothAxes: true, count: 8, countJitter: 0.5 },
       color: { ...NO_COLOR },
       fade: { ...NO_FADE },
+      texture: { ...NO_TEXTURE },
       blendMode: 'normal',
       airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
@@ -222,6 +250,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       fade: { ...NO_FADE },
+      texture: { ...NO_TEXTURE },
       blendMode: 'normal',
       airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
@@ -240,6 +269,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       scatter: { ...NO_SCATTER },
       color: { ...NO_COLOR },
       fade: { ...NO_FADE },
+      texture: { ...NO_TEXTURE },
       blendMode: 'normal',
       airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
@@ -259,6 +289,26 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       // Toward the fill colour as well as around the stroke's own hue, so it also shows on black.
       color: { hue: 1, saturation: 0.3, brightness: 0.2, purity: 0, fgBg: 1, fgBgPressure: false, perTip: true },
       fade: { ...NO_FADE },
+      texture: { ...NO_TEXTURE },
+      blendMode: 'normal',
+      airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
+    },
+  },
+  {
+    id: 'charcoal',
+    name: 'Charcoal',
+    category: 'artistic',
+    descriptor: {
+      size: 30, opacity: 1, flow: 0.8, hardness: 0.6, spacing: 0.1,
+      pressureSize: true, pressureOpacity: true, pressureCurve: 'linear',
+      tip: getDefaultTipDescriptor('round'),
+      ink: { ...NO_INK },
+      dynamics: { ...NO_DYNAMICS, minSize: 0.4 },
+      jitter: { ...NO_JITTER },
+      scatter: { ...NO_SCATTER },
+      color: { ...NO_COLOR },
+      fade: { ...NO_FADE },
+      texture: { pattern: 'charcoal', scale: 1, depth: 0.9, mode: 'height', invert: false, depthPressure: false, perTip: false },
       blendMode: 'normal',
       airbrush: false, airbrushRate: DEFAULT_AIRBRUSH_RATE,
     },
@@ -275,7 +325,7 @@ export function getDefaultDescriptor(): BrushDescriptor {
 
 /** A descriptor that shares no nested object with `d`. */
 export function copyDescriptor(d: BrushDescriptor): BrushDescriptor {
-  return { ...d, tip: { ...d.tip }, ink: { ...d.ink }, dynamics: { ...d.dynamics }, jitter: { ...NO_JITTER, ...d.jitter }, scatter: { ...NO_SCATTER, ...d.scatter }, color: { ...NO_COLOR, ...d.color }, fade: { ...NO_FADE, ...d.fade }, blendMode: isBrushBlendMode(d.blendMode) ? d.blendMode : 'normal', airbrush: d.airbrush === true, airbrushRate: normalizeAirbrushRate(d.airbrushRate) };
+  return { ...d, tip: { ...d.tip }, ink: { ...d.ink }, dynamics: { ...d.dynamics }, jitter: { ...NO_JITTER, ...d.jitter }, scatter: { ...NO_SCATTER, ...d.scatter }, color: { ...NO_COLOR, ...d.color }, fade: { ...NO_FADE, ...d.fade }, texture: normalizeTexture(d.texture), blendMode: isBrushBlendMode(d.blendMode) ? d.blendMode : 'normal', airbrush: d.airbrush === true, airbrushRate: normalizeAirbrushRate(d.airbrushRate) };
 }
 
 /** Stored dynamics over the defaults, each clamped to -1..1; a value that isn't a number keeps its default. */

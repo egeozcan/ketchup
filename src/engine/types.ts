@@ -110,6 +110,44 @@ export interface BrushColorDynamics {
   perTip: boolean;
 }
 
+/** How the grain takes paint away: scaling the coverage, subtracting from it, or as a height the coverage must rise above. */
+export type TextureMode = 'multiply' | 'subtract' | 'height';
+
+export const TEXTURE_MODE_LABELS: Record<TextureMode, string> = {
+  multiply: 'Multiply',
+  subtract: 'Subtract',
+  height: 'Height',
+};
+
+export function isTextureMode(v: unknown): v is TextureMode {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(TEXTURE_MODE_LABELS, v);
+}
+
+/**
+ * Photoshop's Texture: a paper grain the stroke's coverage is masked by,
+ * fixed in the document (so it stays put as the view moves and a second pass
+ * over a spot shows the same grain). Pattern 'none' is off, and a brush with
+ * it paints exactly as it did.
+ */
+export interface BrushTexture {
+  /** A pattern id from brush-texture.ts, or 'none'. An id nothing is registered under paints without grain. */
+  pattern: string;
+  /** Size of the grain as a multiple of the pattern's own (0.1..4). */
+  scale: number;
+  /** How strongly the grain holes the paint (0..1). */
+  depth: number;
+  mode: TextureMode;
+  /** Swap the pattern's peaks and pits. */
+  invert: boolean;
+  /** With `perTip`, pressure scales the depth of each dab (light touches show less grain). */
+  depthPressure: boolean;
+  /**
+   * Grain each dab on its own (Photoshop's "Texture Each Tip"); off grains the
+   * stroke's coverage once, where overlapping dabs build up to a solid.
+   */
+  perTip: boolean;
+}
+
 /**
  * Photoshop's tool "Mode": how a stroke combines with the layer it is painted
  * on. The first twelve are canvas blend modes; `behind` paints only under
@@ -169,6 +207,7 @@ export interface BrushDescriptor {
   scatter: BrushScatter;
   color: BrushColorDynamics;
   fade: BrushFade;
+  texture: BrushTexture;
   /**
    * How the stroke combines with the layer, defaulting to 'normal'. It lives
    * on the descriptor, not beside it in the tool state, so presets can carry

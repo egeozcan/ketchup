@@ -5,9 +5,10 @@ import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import { storageBackendContext, projectServiceContext } from '../storage/storage-context.js';
 import type { StampEntry } from '../storage/types.js';
-import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushDynamics, BrushJitter, BrushPreset, BrushBlendMode } from '../engine/types.js';
-import { BRUSH_BLEND_MODE_LABELS } from '../engine/types.js';
+import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushDynamics, BrushJitter, BrushPreset, BrushBlendMode, BrushTexture, TextureMode } from '../engine/types.js';
+import { BRUSH_BLEND_MODE_LABELS, TEXTURE_MODE_LABELS } from '../engine/types.js';
 import { BRUSH_PRESETS, MAX_SCATTER, MAX_SCATTER_COUNT, colorDynamicsActive, copyDescriptor, MIN_AIRBRUSH_RATE, MAX_AIRBRUSH_RATE, normalizeAirbrushRate } from '../engine/brush-presets.js';
+import { texturePatternList } from '../engine/brush-texture.js';
 import { getDefaultTipDescriptor, getTipCapabilities } from '../engine/brush-capabilities.js';
 import { StampStrokeEngine, tiltStretch } from '../engine/stamp-stroke.js';
 import { getStampThumbnailUrl, removeStampThumbnail } from '../utils/stamp-thumbnail-cache.js';
@@ -1116,6 +1117,7 @@ export class ToolSettings extends LitElement {
   @state() private _jitterOpen = false;
   @state() private _scatterOpen = false;
   @state() private _colorOpen = false;
+  @state() private _textureOpen = false;
   @state() private _brushDropdownOpen = false;
   /** Which desktop settings panel (color or brush) is open, if any. */
   @state() private _openPanel: 'color' | 'brush' | null = null;
@@ -1990,6 +1992,30 @@ export class ToolSettings extends LitElement {
         </label>
       </div>
     `;
+    const textureToggle = html`
+      <button
+        class="advanced-toggle"
+        aria-expanded=${this._textureOpen ? 'true' : 'false'}
+        @click=${() => { this._textureOpen = !this._textureOpen; }}
+      >Texture ${this._textureOpen ? html`&#9650;` : html`&#9660;`}</button>
+    `;
+    const textureSlider = (label: string, key: 'scale' | 'depth', hint: string, min: number, max: number) => html`
+      <div class="section">
+        <label title=${hint}>${label}</label>
+        <input type="range" min=${min} max=${max} aria-label=${`${label} texture`} .value=${String(Math.round(brush.texture[key] * 100))}
+          @input=${(e: Event) => this.ctx.setBrushTexture({ [key]: Number((e.target as HTMLInputElement).value) / 100 })} />
+        <span class="size-value">${Math.round(brush.texture[key] * 100)}%</span>
+      </div>
+    `;
+    const textureSwitch = (label: string, key: 'invert' | 'depthPressure' | 'perTip', hint: string) => html`
+      <div class="section">
+        <label class="checkbox-label" title=${hint}>
+          <input type="checkbox" aria-label=${`${label} texture`} .checked=${brush.texture[key]}
+            @change=${(e: Event) => this.ctx.setBrushTexture({ [key]: (e.target as HTMLInputElement).checked } as Partial<BrushTexture>)} />
+          ${label}
+        </label>
+      </div>
+    `;
     return html`
         ${heading('Stroke')}
         ${activeTool !== 'eraser' ? html`
@@ -2123,6 +2149,31 @@ export class ToolSettings extends LitElement {
             </div>
             ${colorSwitch('Pressure', 'fgBgPressure', 'Let pen pressure set the mix instead of chance: light pressure goes toward the fill colour. A mouse always presses fully.')}
             ${colorSwitch('Per tip', 'perTip', 'Vary the colour at every dab. Off picks one variation for the whole stroke.')}
+          </div>
+        ` : nothing}
+        <div class="section">${textureToggle}</div>
+        ${this._textureOpen ? html`
+          <div class="section advanced-group">
+            <div class="section">
+              <label title="The paper grain that holes the paint. It stays fixed on the canvas, so a second pass over a spot shows the same grain.">Pattern</label>
+              <select class="font-select" aria-label="Texture pattern" .value=${brush.texture.pattern}
+                @change=${(e: Event) => this.ctx.setBrushTexture({ pattern: (e.target as HTMLSelectElement).value })}>
+                <option value="none" ?selected=${brush.texture.pattern === 'none'}>None</option>
+                ${texturePatternList().map(p => html`<option value=${p.id} ?selected=${brush.texture.pattern === p.id}>${p.label}</option>`)}
+              </select>
+            </div>
+            ${textureSlider('Scale', 'scale', 'How large the grain is.', 10, 400)}
+            ${textureSlider('Depth', 'depth', 'How strongly the grain holes the paint.', 0, 100)}
+            <div class="section">
+              <label title="Multiply thins the paint by the grain. Subtract takes the grain off the paint, so thin strokes break up first. Height only lets paint into the pits once the stroke is heavy.">Mode</label>
+              <select class="font-select" aria-label="Texture mode" .value=${brush.texture.mode}
+                @change=${(e: Event) => this.ctx.setBrushTexture({ mode: (e.target as HTMLSelectElement).value as TextureMode })}>
+                ${(Object.keys(TEXTURE_MODE_LABELS) as TextureMode[]).map(m => html`<option value=${m} ?selected=${brush.texture.mode === m}>${TEXTURE_MODE_LABELS[m]}</option>`)}
+              </select>
+            </div>
+            ${textureSwitch('Invert', 'invert', 'Swap the grain\'s peaks and pits.')}
+            ${textureSwitch('Per tip', 'perTip', 'Grain every dab on its own. Off grains the stroke as a whole, so overlapping dabs do not fill the pits in.')}
+            ${brush.texture.perTip ? textureSwitch('Depth by pressure', 'depthPressure', 'Let pen pressure scale the depth of each dab: light pressure shows less grain. A mouse always presses fully.') : nothing}
           </div>
         ` : nothing}
         <div class="section">${advancedToggle}</div>

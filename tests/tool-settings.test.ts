@@ -437,3 +437,51 @@ describe('ToolSettings fades', () => {
     expect(render_({ taperStart: 20 }).container.querySelector('input[aria-label="Minimum size"]')).not.toBeNull();
   });
 });
+
+describe('ToolSettings texture', () => {
+  function render_(texture = {}, activeTool: 'pencil' | 'eraser' = 'pencil') {
+    const setBrushTexture = vi.fn();
+    const settings = new ToolSettings();
+    (settings as any)._textureOpen = true;
+    (settings as any)._ctx = {
+      value: {
+        state: makeState({ activeTool, brush: { texture } }),
+        isMobile: true,
+        setBrush: vi.fn(), setBrushTip: vi.fn(), setBrushInk: vi.fn(), setBrushDynamics: vi.fn(), setBrushJitter: vi.fn(), setBrushTexture, selectPreset: vi.fn(),
+      },
+    };
+    const container = document.createElement('div');
+    render(settings.render(), container);
+    return { container, setBrushTexture };
+  }
+
+  it('sets the pattern, mode, scale, depth and the switches', () => {
+    const { container, setBrushTexture } = render_({ pattern: 'paper', scale: 1.5, depth: 0.4, perTip: true });
+    const pattern = container.querySelector<HTMLSelectElement>('select[aria-label="Texture pattern"]')!;
+    expect(Array.from(pattern.options).map(o => o.value)).toEqual(['none', 'paper', 'canvas', 'noise', 'charcoal']);
+    pattern.value = 'canvas';
+    pattern.dispatchEvent(new Event('change'));
+    expect(setBrushTexture).toHaveBeenLastCalledWith({ pattern: 'canvas' });
+    const mode = container.querySelector<HTMLSelectElement>('select[aria-label="Texture mode"]')!;
+    mode.value = 'height';
+    mode.dispatchEvent(new Event('change'));
+    expect(setBrushTexture).toHaveBeenLastCalledWith({ mode: 'height' });
+    const scale = container.querySelector<HTMLInputElement>('input[aria-label="Scale texture"]')!;
+    const depth = container.querySelector<HTMLInputElement>('input[aria-label="Depth texture"]')!;
+    expect(scale.value).toBe('150');
+    expect(depth.value).toBe('40');
+    depth.value = '90';
+    depth.dispatchEvent(new Event('input'));
+    expect(setBrushTexture).toHaveBeenLastCalledWith({ depth: 0.9 });
+    const invert = container.querySelector<HTMLInputElement>('input[aria-label="Invert texture"]')!;
+    invert.checked = true;
+    invert.dispatchEvent(new Event('change'));
+    expect(setBrushTexture).toHaveBeenLastCalledWith({ invert: true });
+  });
+
+  it('offers depth by pressure only for texture on each tip, and for the eraser too', () => {
+    expect(render_({ perTip: false }).container.querySelector('input[aria-label="Depth by pressure texture"]')).toBeNull();
+    expect(render_({ perTip: true }).container.querySelector('input[aria-label="Depth by pressure texture"]')).not.toBeNull();
+    expect(render_({}, 'eraser').container.querySelector('select[aria-label="Texture pattern"]')).not.toBeNull();
+  });
+});

@@ -636,6 +636,34 @@ describe('DrawingApp', () => {
     expect((app as any)._state.brush.fade).toEqual(fade);
   });
 
+  it.each([
+    [{}, { pattern: 'none', scale: 1, depth: 0.8, mode: 'multiply', invert: false, depthPressure: false, perTip: false }],
+    [{ texture: { pattern: 'canvas', scale: 2, depth: 0.5, mode: 'subtract', invert: true, depthPressure: true, perTip: true } }, { pattern: 'canvas', scale: 2, depth: 0.5, mode: 'subtract', invert: true, depthPressure: true, perTip: true }],
+    [{ texture: { pattern: 4, scale: 50, depth: 'x', mode: 'bogus' } }, { pattern: 'none', scale: 4, depth: 0.8, mode: 'multiply', invert: false, depthPressure: false, perTip: false }],
+  ])('loads stored texture settings %j as %j', async (stored, texture) => {
+    const app = createAppWithCanvasSpies();
+    Object.defineProperty(app, 'updateComplete', { configurable: true, get: () => Promise.resolve(true) });
+    (app as any)._backend = {
+      state: { get: vi.fn(async () => ({
+        toolSettings: { activeTool: 'pencil', strokeColor: '#000000', fillColor: '#ff0000', useFill: false, brushSize: 4, ...stored },
+        canvasWidth: 100,
+        canvasHeight: 100,
+        layers: [{ id: 'real-layer', name: 'Layer 1', visible: true, opacity: 1, imageBlobRef: 'ref1' }],
+        activeLayerId: 'real-layer',
+        layersPanelOpen: true,
+        historyIndex: -1,
+      })) },
+      history: { getEntries: vi.fn(async () => []) },
+      blobs: { get: vi.fn(async () => new Blob([new Uint8Array(4)], { type: 'image/png' })) },
+    };
+    const serMod = await import('../src/utils/storage-serialization.js');
+    vi.spyOn(serMod, 'deserializeLayer').mockResolvedValue(makeLayer(100, 100, { id: 'real-layer', name: 'Layer 1' }));
+
+    await (app as any)._loadProject('test-project');
+
+    expect((app as any)._state.brush.texture).toEqual(texture);
+  });
+
   it('restores advanced brush, crop, and text settings from saved project state', async () => {
     const app = createAppWithCanvasSpies();
 

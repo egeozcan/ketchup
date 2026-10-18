@@ -1,6 +1,6 @@
 // src/storage/types.ts
 import type { ToolType } from '../types.js';
-import type { PressureCurveName, TipDescriptor, InkDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushFade } from '../engine/types.js';
+import type { PressureCurveName, TipDescriptor, InkDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushColorDynamics, BrushFade, BrushTexture } from '../engine/types.js';
 
 // ---------------------------------------------------------------------------
 // BlobRef — branded string, opaque to consumers
@@ -38,6 +38,8 @@ export interface ToolSettings {
   color?: Partial<BrushColorDynamics>;
   /** Absent in settings stored before fades existed: off. */
   fade?: Partial<BrushFade>;
+  /** Absent in settings stored before textures existed: none. */
+  texture?: Partial<BrushTexture>;
   /** The brush's blend mode; absent in settings stored before it existed: 'normal'. */
   blendMode?: string;
   /** Absent in settings stored before the airbrush existed: off. */

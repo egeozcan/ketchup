@@ -119,14 +119,17 @@ export class StrokeBufferPool {
     colorMode = false,
     mode: BrushBlendMode = 'normal',
     alphaLocked = false,
+    grained: BufferCanvas | null = null,
   ) {
-    if (!this._canvas || !bounds) return;
+    // A grained stroke is laid from its own canvas (the buffer with the grain applied); the buffer stays as the dabs built it.
+    const canvas = grained ?? this._canvas;
+    if (!canvas || !bounds) return;
     const { x, y, w, h } = bounds;
 
     if (!eraser && !colorMode) {
       // Alpha-mask mode: tint the stroke's region before compositing. The
       // clip keeps source-in from touching (clearing) the rest of the buffer.
-      const ctx = get2dContext(this._canvas);
+      const ctx = get2dContext(canvas);
       ctx.save();
       ctx.beginPath();
       ctx.rect(x, y, w, h);
@@ -138,7 +141,7 @@ export class StrokeBufferPool {
     }
     // Eraser removes the stroke's coverage; color mode's buffer already holds
     // tinted RGBA, as does the alpha mask once tinted above.
-    paintStroke(target, this._canvas, bounds, { opacity: strokeOpacity, eraser, mode, alphaLocked });
+    paintStroke(target, canvas, bounds, { opacity: strokeOpacity, eraser, mode, alphaLocked });
   }
 
   /** Get the current buffer canvas (for stamping onto during a stroke). */

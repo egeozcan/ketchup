@@ -7,6 +7,7 @@ import { PRESSURE_CURVES, quantizeDiameter, type BrushDescriptor, type BrushBlen
 import { TIP_VARIANT_COUNTS, tipFootprint } from './tip-generators.js';
 import { copyDescriptor, colorDynamicsActive } from './brush-presets.js';
 import { Rng, freshSeed } from './rng.js';
+import { resolveGrain, applyGrain, type Grain } from './brush-texture.js';
 import { wrapDegrees } from './angle.js';
 import { initInkState, applyDepletion, applyBuildup, applyPickup, lerpOklab, varyColor, type ColorRolls } from './ink-model.js';
 
@@ -274,6 +275,16 @@ export class StampStrokeEngine {
   /** The time of the last pen sample, to tell a pen at rest from one that moves slowly. */
   private _lastEvent = 0;
   private _snapshotCaptured = false;
+  /** The stroke's texture, null when it has none (or the pattern is gone). */
+  private _grain: Grain | null = null;
+  /** With a grain not applied per tip: the stroke buffer with the grain applied, rebuilt over what was stamped since it last was. */
+  private _grainCanvas: AnyCanvas | null = null;
+  private _grainDeltaMinX = Infinity;
+  private _grainDeltaMinY = Infinity;
+  private _grainDeltaMaxX = -Infinity;
+  private _grainDeltaMaxY = -Infinity;
+  /** Where a textured dab is drawn before its grain is applied; only grows. */
+  private _dabScratch: AnyCanvas | null = null;
   // Reusable tinting canvas for color mode — avoids per-stamp allocation
   private _tintCanvas: AnyCanvas | null = null;
   private _tintW = 0;
@@ -314,7 +325,11 @@ export class StampStrokeEngine {
     this._colorMode = !eraser && (descriptor.ink.wetness > 0 || this._dynamicColor);
     this._docWidth = docWidth;
     this._docHeight = docHeight;
-    this._bufferPool.acquire(docWidth, docHeight, this._rawDirtyRect());
+    const stale = this._rawDirtyRect();
+    this._bufferPool.acquire(docWidth, docHeight, stale);
+    if (this._grainCanvas && stale) get2dContext(this._grainCanvas).clearRect(stale.x, stale.y, stale.w, stale.h);
+    this._grain = resolveGrain(this._descriptor.texture);
+    this._resetGrainDelta();
     this._smoother.reset();
     this._stabilizer.reset(options.stabilizerMs ?? 0, STABILIZER_SLACK_PX / this._viewScale);
     this._prevStamp = null;
@@ -348,7 +363,7 @@ export class StampStrokeEngine {
     if (!Number.isFinite(pressure) || pressure <= 0) {
       // A pressure that drives the fill mix is a pressure dynamic like the others.
       // A start taper needs the lift too, for the new contact to taper in.
-      if (d.pressureSize || d.pressureOpacity || d.fade.taperStart > 0 || (this._dynamicColor && d.color.fgBgPressure && d.color.fgBg > 0)) {
+      if (d.pressureSize || d.pressureOpacity || d.fade.taperStart > 0 || (this._dynamicColor && d.color.fgBgPressure && d.color.fgBg > 0) || (this._grain?.perTip && this._grain.depthPressure)) {
         // A lift ends this part of the stroke where the pen was, then the
         // next contact starts afresh.
         this._finishSegment();
@@ -683,6 +698,25 @@ export class StampStrokeEngine {
         if (py - reach < this._deltaMinY) this._deltaMinY = py - reach;
         if (px + reach > this._deltaMaxX) this._deltaMaxX = px + reach;
         if (py + reach > this._deltaMaxY) this._deltaMaxY = py + reach;
+        if (this._grain && !this._grain.perTip) {
+          if (px - reach < this._grainDeltaMinX) this._grainDeltaMinX = px - reach;
+          if (py - reach < this._grainDeltaMinY) this._grainDeltaMinY = py - reach;
+          if (px + reach > this._grainDeltaMaxX) this._grainDeltaMaxX = px + reach;
+          if (py + reach > this._grainDeltaMaxY) this._grainDeltaMaxY = py + reach;
+        }
+
+        // Texture on each tip: the dab is drawn on a scratch canvas, masked by
+        // the grain where it lies in the document, then laid on the buffer.
+        let dctx = ctx;
+        let qx = px, qy = py;
+        let box: { x: number; y: number; w: number; h: number } | null = null;
+        if (this._grain?.perTip) {
+          box = this._dabBox(px, py, reach);
+          if (!box) continue;
+          dctx = this._scratchFor(box);
+          qx = px - box.x;
+          qy = py - box.y;
+        }
 
         if (this._colorMode) {
           let tint: HTMLCanvasElement;
@@ -709,29 +743,99 @@ export class StampStrokeEngine {
             // its top-left tipW×tipH rather than scaling the whole canvas down.
             tint = this._tintCanvas as HTMLCanvasElement;
           }
-          ctx.globalAlpha = stampAlpha;
-          ctx.globalCompositeOperation = 'source-over';
-          if (transformDab(ctx, px, py, rotation, lean, squash)) {
-            ctx.drawImage(tint, 0, 0, tipW, tipH, -drawW / 2, -drawH / 2, drawW, drawH);
-            ctx.restore();
+          dctx.globalAlpha = stampAlpha;
+          dctx.globalCompositeOperation = 'source-over';
+          if (transformDab(dctx, qx, qy, rotation, lean, squash)) {
+            dctx.drawImage(tint, 0, 0, tipW, tipH, -drawW / 2, -drawH / 2, drawW, drawH);
+            dctx.restore();
           } else {
-            ctx.drawImage(tint, 0, 0, tipW, tipH, px - drawW / 2, py - drawH / 2, drawW, drawH);
+            dctx.drawImage(tint, 0, 0, tipW, tipH, qx - drawW / 2, qy - drawH / 2, drawW, drawH);
           }
         } else {
-          ctx.globalAlpha = stampAlpha;
-          ctx.globalCompositeOperation = 'source-over';
-          if (transformDab(ctx, px, py, rotation, lean, squash)) {
-            drawImageSafe(ctx, tip, -drawW / 2, -drawH / 2, drawW, drawH);
-            ctx.restore();
+          dctx.globalAlpha = stampAlpha;
+          dctx.globalCompositeOperation = 'source-over';
+          if (transformDab(dctx, qx, qy, rotation, lean, squash)) {
+            drawImageSafe(dctx, tip, -drawW / 2, -drawH / 2, drawW, drawH);
+            dctx.restore();
           } else {
-            drawImageSafe(ctx, tip, px - drawW / 2, py - drawH / 2, drawW, drawH);
+            drawImageSafe(dctx, tip, qx - drawW / 2, qy - drawH / 2, drawW, drawH);
           }
         }
+        if (box) this._layGrainedDab(ctx, dctx, box, stamp.pressure);
       }
 
       this._prevStamp = stamp;
     }
     ctx.globalAlpha = 1;
+  }
+
+  private _resetGrainDelta() {
+    this._grainDeltaMinX = Infinity;
+    this._grainDeltaMinY = Infinity;
+    this._grainDeltaMaxX = -Infinity;
+    this._grainDeltaMaxY = -Infinity;
+  }
+
+  /** The part of the document a dab reaching `reach` from (px, py) can touch, whole pixels; null when none of it is on the document. */
+  private _dabBox(px: number, py: number, reach: number): { x: number; y: number; w: number; h: number } | null {
+    const x = Math.max(0, Math.floor(px - reach));
+    const y = Math.max(0, Math.floor(py - reach));
+    const w = Math.min(this._docWidth, Math.ceil(px + reach)) - x;
+    const h = Math.min(this._docHeight, Math.ceil(py + reach)) - y;
+    return w > 0 && h > 0 ? { x, y, w, h } : null;
+  }
+
+  /** The cleared scratch canvas's context a dab over `box` is drawn on. Clipped to the document, so a huge dab costs at most one document's worth. */
+  private _scratchFor(box: { w: number; h: number }) {
+    if (!this._dabScratch || this._dabScratch.width < box.w || this._dabScratch.height < box.h) {
+      this._dabScratch = createOffscreenCanvas(Math.max(box.w, this._dabScratch?.width ?? 0), Math.max(box.h, this._dabScratch?.height ?? 0));
+    }
+    const sctx = get2dContext(this._dabScratch, { willReadFrequently: true });
+    sctx.clearRect(0, 0, box.w, box.h);
+    return sctx;
+  }
+
+  /** Apply the grain to the dab drawn on the scratch canvas and lay it on the stroke buffer. */
+  private _layGrainedDab(
+    ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+    sctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+    box: { x: number; y: number; w: number; h: number },
+    pressure: number,
+  ) {
+    const grain = this._grain!;
+    const img = sctx.getImageData(0, 0, box.w, box.h);
+    applyGrain(img.data, box.w, box.h, box.x, box.y, grain, grain.depthPressure ? grain.depth * Math.max(0, Math.min(1, pressure)) : grain.depth);
+    sctx.putImageData(img, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(this._dabScratch as HTMLCanvasElement, 0, 0, box.w, box.h, box.x, box.y, box.w, box.h);
+  }
+
+  /**
+   * The stroke buffer with the grain applied to everything stamped since this
+   * last ran (the buffer stays as the dabs built it, so later dabs go on
+   * accumulating); the buffer itself when the stroke has no grain, or grains
+   * each dab. Preview and commit both read this, so they show the same pixels.
+   */
+  private _grainedBuffer(): AnyCanvas | null {
+    const buf = this._bufferPool.current;
+    if (!buf || !this._grain || this._grain.perTip) return buf;
+    if (!this._grainCanvas || this._grainCanvas.width !== this._docWidth || this._grainCanvas.height !== this._docHeight) {
+      this._grainCanvas = createOffscreenCanvas(this._docWidth, this._docHeight);
+    }
+    if (this._grainDeltaMaxX >= this._grainDeltaMinX) {
+      const x = Math.max(0, Math.floor(this._grainDeltaMinX));
+      const y = Math.max(0, Math.floor(this._grainDeltaMinY));
+      const w = Math.min(this._docWidth, Math.ceil(this._grainDeltaMaxX)) - x;
+      const h = Math.min(this._docHeight, Math.ceil(this._grainDeltaMaxY)) - y;
+      if (w > 0 && h > 0) {
+        const img = get2dContext(buf).getImageData(x, y, w, h);
+        applyGrain(img.data, w, h, x, y, this._grain);
+        get2dContext(this._grainCanvas).putImageData(img, x, y);
+      }
+      this._resetGrainDelta();
+    }
+    return this._grainCanvas;
   }
 
   private _rollColor(): ColorRolls {
@@ -831,6 +935,7 @@ export class StampStrokeEngine {
       this._colorMode,
       this._descriptor.blendMode,
       this._alphaLocked,
+      this._grain && !this._grain.perTip ? this._grainedBuffer() : null,
     );
     this._descriptor = null;
     this._inkState = null;
@@ -1024,7 +1129,7 @@ export class StampStrokeEngine {
   } | null {
     if (!this._descriptor || !this._bufferPool.current) return null;
     return {
-      canvas: this._bufferPool.current,
+      canvas: this._grainedBuffer()!,
       eraser: this._eraser,
       opacity: this._descriptor.opacity,
       mode: this._descriptor.blendMode,
