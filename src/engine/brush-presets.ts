@@ -1,8 +1,9 @@
-import type { BrushDescriptor, BrushDynamics, BrushPreset } from './types.js';
+import type { BrushDescriptor, BrushDynamics, BrushJitter, BrushPreset } from './types.js';
 import { getDefaultTipDescriptor } from './brush-capabilities.js';
 
 const NO_INK = { depletion: 0, depletionLength: 500, buildup: 0, wetness: 0 };
 export const NO_DYNAMICS: BrushDynamics = { sizeVelocity: 0, flowVelocity: 0, minSize: 0, tilt: 0 };
+export const NO_JITTER: BrushJitter = { size: 0, angle: 0, roundness: 0 };
 
 export const BRUSH_PRESETS: BrushPreset[] = [
   {
@@ -15,6 +16,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       tip: getDefaultTipDescriptor('round'),
       ink: { ...NO_INK },
       dynamics: { ...NO_DYNAMICS },
+      jitter: { ...NO_JITTER },
     },
   },
   {
@@ -27,6 +29,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       tip: getDefaultTipDescriptor('round'),
       ink: { ...NO_INK },
       dynamics: { ...NO_DYNAMICS },
+      jitter: { ...NO_JITTER },
     },
   },
   {
@@ -39,6 +42,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       tip: getDefaultTipDescriptor('flat'),
       ink: { depletion: 0.3, depletionLength: 800, buildup: 0, wetness: 0 },
       dynamics: { ...NO_DYNAMICS },
+      jitter: { ...NO_JITTER },
     },
   },
   {
@@ -51,6 +55,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       tip: getDefaultTipDescriptor('chisel'),
       ink: { depletion: 0.2, depletionLength: 600, buildup: 0.3, wetness: 0 },
       dynamics: { ...NO_DYNAMICS },
+      jitter: { ...NO_JITTER },
     },
   },
   {
@@ -63,6 +68,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       tip: getDefaultTipDescriptor('calligraphy'),
       ink: { ...NO_INK },
       dynamics: { ...NO_DYNAMICS },
+      jitter: { ...NO_JITTER },
     },
   },
   {
@@ -75,6 +81,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       tip: getDefaultTipDescriptor('fan'),
       ink: { depletion: 0.5, depletionLength: 600, buildup: 0, wetness: 0 },
       dynamics: { ...NO_DYNAMICS },
+      jitter: { ...NO_JITTER },
     },
   },
   {
@@ -87,6 +94,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       tip: getDefaultTipDescriptor('splatter'),
       ink: { depletion: 0.7, depletionLength: 400, buildup: 0, wetness: 0 },
       dynamics: { ...NO_DYNAMICS },
+      jitter: { ...NO_JITTER },
     },
   },
   {
@@ -99,6 +107,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       tip: getDefaultTipDescriptor('round'),
       ink: { depletion: 0.8, depletionLength: 300, buildup: 0.4, wetness: 0 },
       dynamics: { ...NO_DYNAMICS },
+      jitter: { ...NO_JITTER },
     },
   },
   {
@@ -111,6 +120,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       tip: getDefaultTipDescriptor('round'),
       ink: { depletion: 0, depletionLength: 500, buildup: 0.2, wetness: 0.91 },
       dynamics: { ...NO_DYNAMICS },
+      jitter: { ...NO_JITTER },
     },
   },
 ];
@@ -125,7 +135,7 @@ export function getDefaultDescriptor(): BrushDescriptor {
 
 /** A descriptor that shares no nested object with `d`. */
 export function copyDescriptor(d: BrushDescriptor): BrushDescriptor {
-  return { ...d, tip: { ...d.tip }, ink: { ...d.ink }, dynamics: { ...d.dynamics } };
+  return { ...d, tip: { ...d.tip }, ink: { ...d.ink }, dynamics: { ...d.dynamics }, jitter: { ...NO_JITTER, ...d.jitter } };
 }
 
 /** Stored dynamics over the defaults, each clamped to -1..1; a value that isn't a number keeps its default. */
@@ -142,6 +152,16 @@ export function normalizeDynamics(stored: Partial<BrushDynamics> | undefined): B
     const v = stored?.[key];
     const [min, max] = DYNAMICS_RANGES[key];
     if (typeof v === 'number' && Number.isFinite(v)) out[key] = Math.max(min, Math.min(max, v));
+  }
+  return out;
+}
+
+/** Stored jitter over the defaults, each clamped to 0..1; a value that isn't a number keeps its default. */
+export function normalizeJitter(stored: Partial<BrushJitter> | undefined): BrushJitter {
+  const out = { ...NO_JITTER };
+  for (const key of Object.keys(out) as (keyof BrushJitter)[]) {
+    const v = stored?.[key];
+    if (typeof v === 'number' && Number.isFinite(v)) out[key] = Math.max(0, Math.min(1, v));
   }
   return out;
 }

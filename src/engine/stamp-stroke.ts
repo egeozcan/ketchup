@@ -6,6 +6,7 @@ import { get2dContext, drawImageSafe, tintAlphaMask, createOffscreenCanvas, type
 import { PRESSURE_CURVES, quantizeDiameter, type BrushDescriptor, type TipDescriptor, type StampPoint, type InkState } from './types.js';
 import { TIP_VARIANT_COUNTS, tipFootprint } from './tip-generators.js';
 import { copyDescriptor } from './brush-presets.js';
+import { Rng, freshSeed } from './rng.js';
 import { initInkState, applyDepletion, applyBuildup, applyPickup } from './ink-model.js';
 
 const MIN_DIRECTION_DIST_SQ = 0.25;
@@ -25,6 +26,8 @@ export interface StrokeOptions {
   stabilizerMs?: number;
   /** Screen pixels per document pixel, so speed dynamics and the stabilizer feel the same at any zoom. */
   viewScale?: number;
+  /** Seeds the stroke's jitter, so a stroke can be replayed exactly; random per stroke without. */
+  seed?: number;
 }
 
 export interface PenTilt {
@@ -63,10 +66,11 @@ export function tiltStretch(tiltX: number, tiltY: number, amount: number): DabSt
 /**
  * Set up `ctx` so a dab drawn centred on the origin lands at (x, y), turned
  * by `rotation` and then stretched by the pen's lean; false (and nothing
- * set up) when an untransformed draw at (x, y) will do. Restore after.
+ * set up) when an untransformed draw at (x, y) will do. `squash` (≤ 1)
+ * shortens the dab across its own axis, after the lean. Restore after.
  */
-function transformDab(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, x: number, y: number, rotation: number, lean: DabStretch): boolean {
-  if (rotation === 0 && lean.stretch === 1) return false;
+function transformDab(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, x: number, y: number, rotation: number, lean: DabStretch, squash = 1): boolean {
+  if (rotation === 0 && lean.stretch === 1 && squash === 1) return false;
   ctx.save();
   ctx.translate(x, y);
   if (lean.stretch !== 1) {
@@ -76,6 +80,7 @@ function transformDab(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingCo
   } else {
     ctx.rotate(rotation);
   }
+  if (squash !== 1) ctx.scale(1, squash);
   return true;
 }
 
@@ -164,6 +169,7 @@ export class StampStrokeEngine {
   private _inkState: InkState | null = null;
   private _prevStamp: StampPoint | null = null;
   private _variantCounter = 0;
+  private _rng = new Rng(0);
   private _snapshotCaptured = false;
   // Reusable tinting canvas for color mode — avoids per-stamp allocation
   private _tintCanvas: AnyCanvas | null = null;
@@ -194,6 +200,7 @@ export class StampStrokeEngine {
     this._stabilizer.reset(options.stabilizerMs ?? 0, STABILIZER_SLACK_PX / this._viewScale);
     this._prevStamp = null;
     this._variantCounter = 0;
+    this._rng = new Rng(options.seed ?? freshSeed());
     this._snapshotCaptured = false;
     this._dirtyMinX = Infinity;
     this._dirtyMinY = Infinity;
@@ -260,6 +267,14 @@ export class StampStrokeEngine {
       }
       state.stampCount++;
 
+      // The stroke's random stream is read in a fixed order, three values per
+      // dab (size, angle, roundness) whether or not each jitter is on and
+      // before anything can skip the dab, so turning one jitter on or off
+      // doesn't reshuffle the others. Jitter added later must draw after these.
+      const rSize = this._rng.next();
+      const rAngle = this._rng.next();
+      const rRound = this._rng.next();
+
       const depletionMult = applyDepletion(ink, state);
       if (depletionMult <= 0) {
         this._prevStamp = stamp;
@@ -270,7 +285,9 @@ export class StampStrokeEngine {
         speedFactor(d.dynamics.flowVelocity, stamp.velocity);
       const effectiveFlow = applyBuildup(ink, baseFlow, stamp.speedPxPerMs);
 
-      const stampSize = this._sizeAt(stamp.pressure, stamp.velocity);
+      // Jitter only ever takes size off, never below a pixel; spacing stays on
+      // the un-jittered size (_dabSpacing), as Photoshop does, so it stays even.
+      const stampSize = Math.max(1, this._sizeAt(stamp.pressure, stamp.velocity) * (1 - d.jitter.size * rSize));
       applyPickup(ink, state, stamp.x, stamp.y, stampSize / 2);
       const diam = quantizeDiameter(stampSize);
 
@@ -283,8 +300,11 @@ export class StampStrokeEngine {
         tip = this._tipCache.get(diam, d.hardness, d.tip);
       }
 
-      const rotation = computeStampRotation(stamp, this._prevStamp, state.prevRotation, d.tip);
-      state.prevRotation = rotation;
+      const baseRotation = computeStampRotation(stamp, this._prevStamp, state.prevRotation, d.tip);
+      // Direction following reads prevRotation, so the jitter stays out of it.
+      state.prevRotation = baseRotation;
+      const rotation = baseRotation + (rAngle - 0.5) * d.jitter.angle * 2 * Math.PI;
+      const squash = 1 - d.jitter.roundness * rRound;
 
       const stampAlpha = Math.min(1, effectiveFlow * depletionMult);
 
@@ -297,7 +317,7 @@ export class StampStrokeEngine {
       const lean = tiltStretch(stamp.tiltX, stamp.tiltY, d.dynamics.tilt);
 
       // Half-diagonal covers the tip footprint at any rotation, times the
-      // lean's stretch; +1 absorbs resampling spill at the fractional edges.
+      // lean's stretch (the squash only shortens a dab); +1 absorbs resampling spill at the fractional edges.
       const reach = Math.sqrt(drawW * drawW + drawH * drawH) / 2 * lean.stretch + 1;
       if (stamp.x - reach < this._dirtyMinX) this._dirtyMinX = stamp.x - reach;
       if (stamp.y - reach < this._dirtyMinY) this._dirtyMinY = stamp.y - reach;
@@ -327,7 +347,7 @@ export class StampStrokeEngine {
         const tint = this._tintCanvas as HTMLCanvasElement;
         ctx.globalAlpha = stampAlpha;
         ctx.globalCompositeOperation = 'source-over';
-        if (transformDab(ctx, stamp.x, stamp.y, rotation, lean)) {
+        if (transformDab(ctx, stamp.x, stamp.y, rotation, lean, squash)) {
           ctx.drawImage(tint, 0, 0, tipW, tipH, -drawW / 2, -drawH / 2, drawW, drawH);
           ctx.restore();
         } else {
@@ -336,7 +356,7 @@ export class StampStrokeEngine {
       } else {
         ctx.globalAlpha = stampAlpha;
         ctx.globalCompositeOperation = 'source-over';
-        if (transformDab(ctx, stamp.x, stamp.y, rotation, lean)) {
+        if (transformDab(ctx, stamp.x, stamp.y, rotation, lean, squash)) {
           drawImageSafe(ctx, tip, -drawW / 2, -drawH / 2, drawW, drawH);
           ctx.restore();
         } else {

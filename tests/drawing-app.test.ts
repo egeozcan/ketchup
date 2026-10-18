@@ -580,6 +580,7 @@ describe('DrawingApp', () => {
         tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' as const },
         ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
         dynamics: { sizeVelocity: -0.5, flowVelocity: 7, minSize: 0.2, tilt: 0.7 },
+        jitter: { size: 0.4, angle: 3, roundness: 0.1 },
         activePreset: 'flat',
         isPresetModified: true,
         cropAspectRatio: '16:9',
@@ -627,6 +628,7 @@ describe('DrawingApp', () => {
       ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
       // Out of range, so clamped.
       dynamics: { sizeVelocity: -0.5, flowVelocity: 1, minSize: 0.2, tilt: 0.7 },
+      jitter: { size: 0.4, angle: 1, roundness: 0.1 },
     });
     expect((app as any)._state.stampSize).toBe(320);
     expect((app as any)._state.activePreset).toBe('flat');
@@ -731,6 +733,7 @@ describe('DrawingApp', () => {
         tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' },
         ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
         dynamics: { sizeVelocity: 0.3, flowVelocity: -0.2, minSize: 0.15, tilt: 0.4 },
+        jitter: { size: 0.2, angle: 0.3, roundness: 0.6 },
       },
       activePreset: 'flat',
       isPresetModified: true,
@@ -794,6 +797,7 @@ describe('DrawingApp', () => {
       tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' },
       ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
       dynamics: { sizeVelocity: 0.3, flowVelocity: -0.2, minSize: 0.15, tilt: 0.4 },
+      jitter: { size: 0.2, angle: 0.3, roundness: 0.6 },
       activePreset: 'flat',
       isPresetModified: true,
       cropAspectRatio: '16:9',

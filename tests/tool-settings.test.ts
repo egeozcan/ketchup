@@ -10,6 +10,7 @@ function renderBrushSettings(
   brushOverrides: { flow?: number; pressureOpacity?: boolean; pressureSize?: boolean; dynamics?: { flowVelocity?: number; minSize?: number; tilt?: number } } = {},
   setBrushTip = vi.fn(),
   setBrushDynamics = vi.fn(),
+  setBrushJitter = vi.fn(),
 ): HTMLElement {
   const settings = new ToolSettings();
   (settings as any)._advancedOpen = true;
@@ -23,6 +24,7 @@ function renderBrushSettings(
       setBrushTip,
       setBrushInk: vi.fn(),
       setBrushDynamics,
+      setBrushJitter,
       selectPreset: vi.fn(),
     },
   };
@@ -66,6 +68,22 @@ describe('ToolSettings keyboard handling', () => {
 });
 
 describe('ToolSettings brush controls', () => {
+  it('sets jitter from its sliders once the group is opened', () => {
+    const setBrushJitter = vi.fn();
+    const settings = new ToolSettings();
+    (settings as any)._jitterOpen = true;
+    (settings as any)._ctx = { value: { state: makeState({ activeTool: 'pencil' }), isMobile: true, setBrushJitter } };
+    const container = document.createElement('div');
+    render(settings.render(), container);
+    for (const [label, key] of [['Size', 'size'], ['Angle', 'angle'], ['Roundness', 'roundness']]) {
+      const input = container.querySelector(`input[aria-label="${label} jitter"]`) as HTMLInputElement;
+      input.value = '40';
+      input.dispatchEvent(new Event('input'));
+      expect(setBrushJitter).toHaveBeenLastCalledWith({ [key]: 0.4 });
+    }
+  });
+
+
   it('renders only controls supported by the selected tip shape', () => {
     const round = renderBrushSettings('round').textContent ?? '';
     expect(round).not.toContain('Aspect');

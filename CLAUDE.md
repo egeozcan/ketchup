@@ -23,6 +23,8 @@ Uses `@lit/context` with a single `DrawingContextValue` defined in `src/contexts
 
 ### Tool System
 
+Brush randomness comes only from the stroke's seeded `Rng` (`engine/rng.ts`, seeded in `StampStrokeEngine.begin()` or by `StrokeOptions.seed`): `_stampPoints` draws three values per dab (size, angle, roundness jitter) in that fixed order before anything can skip the dab, so later jitters must draw after them; jitter never feeds `prevRotation` or `_dabSpacing`, and any new `BrushDescriptor` block must default in `copyDescriptor` and a `normalize…` on load.
+
 Tools are **stateless pure functions** in `src/tools/`. Each takes a `CanvasRenderingContext2D` plus parameters and draws directly. `drawing-canvas.ts` dispatches to the correct tool function based on `activeTool` from context state inside its pointer event handlers (`_onPointerDown`/`_onPointerMove`/`_onPointerUp`). Tools draw to the **active layer's** offscreen canvas, not the display canvas.
 
 Adding a new tool requires: add to `ToolType` union in `types.ts`, create tool function in `src/tools/`, add SVG icon + label in `tool-icons.ts`, add to a toolbar group in `app-toolbar.ts`, and wire pointer dispatch in `drawing-canvas.ts`.

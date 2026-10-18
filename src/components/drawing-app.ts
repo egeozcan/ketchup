@@ -2,8 +2,8 @@ import { LitElement, html, css, type PropertyValues } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import { blendModeToCompositeOp, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics } from '../engine/types.js';
-import { copyDescriptor, getDefaultDescriptor, getPresetById, normalizeDynamics } from '../engine/brush-presets.js';
+import { blendModeToCompositeOp, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics, type BrushJitter } from '../engine/types.js';
+import { copyDescriptor, getDefaultDescriptor, getPresetById, normalizeDynamics, normalizeJitter } from '../engine/brush-presets.js';
 import type { DrawingState, HistoryEntry, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
 import { IndexedDBBackend, MemoryBackend, ProjectService, StorageQuotaError, StorageNotFoundError, StorageClosedError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
@@ -1831,6 +1831,7 @@ export class DrawingApp extends LitElement {
             tip: { ...this._state.brush.tip },
             ink: { ...this._state.brush.ink },
             dynamics: { ...this._state.brush.dynamics },
+            jitter: { ...this._state.brush.jitter },
             activePreset: this._state.activePreset,
             isPresetModified: this._state.isPresetModified,
             cropAspectRatio: this._state.cropAspectRatio,
@@ -2668,6 +2669,7 @@ export class DrawingApp extends LitElement {
         tip: { ...defaultDesc.tip, ...(ts.tip ?? {}) },
         ink: { ...defaultDesc.ink, ...(ts.ink ?? {}) },
         dynamics: normalizeDynamics(ts.dynamics),
+        jitter: normalizeJitter(ts.jitter),
       };
       this._state = {
         activeTool: ts.activeTool === 'marker' as string ? 'pencil' : ts.activeTool,
@@ -3087,6 +3089,9 @@ export class DrawingApp extends LitElement {
       },
       setBrushDynamics: (dynamics: Partial<BrushDynamics>) => {
         this._updateBrush({ dynamics: { ...this._state.brush.dynamics, ...dynamics } });
+      },
+      setBrushJitter: (jitter: Partial<BrushJitter>) => {
+        this._updateBrush({ jitter: { ...this._state.brush.jitter, ...jitter } });
       },
       selectPreset: (presetId: string) => {
         const preset = getPresetById(presetId);

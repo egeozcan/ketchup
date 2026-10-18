@@ -34,6 +34,16 @@ export interface BrushDynamics {
   tilt: number;
 }
 
+/** Random variation per dab, each 0 (none) to 1 (the most); drawn from the stroke's seeded RNG. */
+export interface BrushJitter {
+  /** The share (0..1) of the dab's size that can randomly be taken off. */
+  size: number;
+  /** The range, in turns (0..1), the dab's angle varies over, centred on its own. */
+  angle: number;
+  /** How far (0..1) a dab can be squashed across its axis: down to 1 - this of its height. */
+  roundness: number;
+}
+
 export interface BrushDescriptor {
   size: number;
   opacity: number;
@@ -46,6 +56,7 @@ export interface BrushDescriptor {
   tip: TipDescriptor;
   ink: InkDescriptor;
   dynamics: BrushDynamics;
+  jitter: BrushJitter;
 }
 
 export interface BrushPreset {

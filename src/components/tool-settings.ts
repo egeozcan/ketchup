@@ -5,7 +5,7 @@ import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import { storageBackendContext, projectServiceContext } from '../storage/storage-context.js';
 import type { StampEntry } from '../storage/types.js';
-import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushDynamics, BrushPreset } from '../engine/types.js';
+import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushDynamics, BrushJitter, BrushPreset } from '../engine/types.js';
 import { BRUSH_PRESETS, copyDescriptor } from '../engine/brush-presets.js';
 import { getDefaultTipDescriptor, getTipCapabilities } from '../engine/brush-capabilities.js';
 import { StampStrokeEngine, tiltStretch } from '../engine/stamp-stroke.js';
@@ -1112,6 +1112,7 @@ export class ToolSettings extends LitElement {
   @state() private _stampMessageError = false;
   @state() private _projectDropdownOpen = false;
   @state() private _advancedOpen = false;
+  @state() private _jitterOpen = false;
   @state() private _brushDropdownOpen = false;
   /** Which desktop settings panel (color or brush) is open, if any. */
   @state() private _openPanel: 'color' | 'brush' | null = null;
@@ -1589,7 +1590,8 @@ export class ToolSettings extends LitElement {
       strokeCtx.fillStyle = '#cccccc';
       strokeCtx.fillRect(0, 0, W, H);
     }
-    this._previewEngine.begin(d, '#cccccc', eraser, W, H);
+    // A fixed seed, so the preview changes only with the settings, not with a fresh roll of the jitter.
+    this._previewEngine.begin(d, '#cccccc', eraser, W, H, { seed: 1 });
 
     let timestamp = 0;
 
@@ -1910,6 +1912,24 @@ export class ToolSettings extends LitElement {
         </div>
       `;
     };
+    const jitterToggle = html`
+      <button
+        class="advanced-toggle"
+        aria-expanded=${this._jitterOpen ? 'true' : 'false'}
+        @click=${() => { this._jitterOpen = !this._jitterOpen; }}
+      >Jitter ${this._jitterOpen ? html`&#9650;` : html`&#9660;`}</button>
+    `;
+    const jitterControl = (label: string, key: keyof BrushJitter, hint: string) => {
+      const value = Math.round(brush.jitter[key] * 100);
+      return html`
+        <div class="section">
+          <label title=${hint}>${label}</label>
+          <input type="range" min="0" max="100" aria-label=${`${label} jitter`} .value=${String(value)}
+            @input=${(e: Event) => this.ctx.setBrushJitter({ [key]: Number((e.target as HTMLInputElement).value) / 100 })} />
+          <span class="size-value">${value}%</span>
+        </div>
+      `;
+    };
     return html`
         ${heading('Stroke')}
         <div class="section">
@@ -1979,6 +1999,14 @@ export class ToolSettings extends LitElement {
         ${heading('Dynamics')}
         ${speedControl('Size by speed', 'sizeVelocity', 'Positive: dabs grow the faster you draw. Negative: they shrink.')}
         ${speedControl('Flow by speed', 'flowVelocity', 'Positive: ink flows more the faster you draw. Negative: less.')}
+        <div class="section">${jitterToggle}</div>
+        ${this._jitterOpen ? html`
+          <div class="section advanced-group">
+            ${jitterControl('Size', 'size', 'How much smaller than the brush size each dab can randomly be.')}
+            ${jitterControl('Angle', 'angle', 'How far each dab can randomly turn, as a share of a full turn.')}
+            ${jitterControl('Roundness', 'roundness', 'How much each dab can randomly be squashed across its axis.')}
+          </div>
+        ` : nothing}
         <div class="section">${advancedToggle}</div>
         ${this._advancedOpen ? html`
           <div class="section advanced-group">

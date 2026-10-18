@@ -1,6 +1,6 @@
 // src/storage/types.ts
 import type { ToolType } from '../types.js';
-import type { PressureCurveName, TipDescriptor, InkDescriptor, BrushDynamics } from '../engine/types.js';
+import type { PressureCurveName, TipDescriptor, InkDescriptor, BrushDynamics, BrushJitter } from '../engine/types.js';
 
 // ---------------------------------------------------------------------------
 // BlobRef — branded string, opaque to consumers
@@ -33,6 +33,7 @@ export interface ToolSettings {
   tip?: TipDescriptor;
   ink?: InkDescriptor;
   dynamics?: Partial<BrushDynamics>;
+  jitter?: Partial<BrushJitter>;
   activePreset?: string;
   isPresetModified?: boolean;
   cropAspectRatio?: string;

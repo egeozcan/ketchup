@@ -46,6 +46,8 @@ describe('ToolSettings brush previews', () => {
       true,
       160,
       48,
+      // Seeded, so jitter doesn't reroll the thumbnail on every change.
+      { seed: 1 },
     );
   });
 });
