@@ -19,6 +19,21 @@ export interface InkDescriptor {
   wetness: number;
 }
 
+/** How pen pressure and the stroke's speed shape each dab. */
+export interface BrushDynamics {
+  /**
+   * How speed scales dab size and flow, as -1..1: positive grows it with
+   * speed (from 1 - c of its value at rest), negative shrinks it (to 1 + c
+   * at full speed), 0 leaves it alone.
+   */
+  sizeVelocity: number;
+  flowVelocity: number;
+  /** With stylus size, the share (0..1) of the size the lightest touch draws at. */
+  minSize: number;
+  /** How far (0..1) a leaning pen stretches each dab along its lean. */
+  tilt: number;
+}
+
 export interface BrushDescriptor {
   size: number;
   opacity: number;
@@ -30,6 +45,7 @@ export interface BrushDescriptor {
   pressureCurve: PressureCurveName;
   tip: TipDescriptor;
   ink: InkDescriptor;
+  dynamics: BrushDynamics;
 }
 
 export interface BrushPreset {
@@ -49,7 +65,16 @@ export interface InkState {
   prevRotation: number;
 }
 
-export interface StampPoint {
+/** Values a stroke carries along its path besides pressure, interpolated between samples. */
+export interface PathChannels {
+  /** Smoothed screen speed as a share (0..1) of the speed dynamics take full effect at. */
+  velocity: number;
+  /** Pen tilt in degrees (-90..90), as Pointer Events report it; 0, 0 is upright. */
+  tiltX: number;
+  tiltY: number;
+}
+
+export interface StampPoint extends PathChannels {
   x: number;
   y: number;
   pressure: number;

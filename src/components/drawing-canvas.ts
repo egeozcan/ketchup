@@ -5,11 +5,12 @@ import { drawingContext, type DrawingContextValue } from '../contexts/drawing-co
 import type { Point, HistoryEntry, Layer, LayerSnapshot } from '../types.js';
 import { drawShapePreview, isShapeTool, shapeBounds } from '../tools/shapes.js';
 import { StampStrokeEngine } from '../engine/stamp-stroke.js';
+import { stabilizerTimeConstant } from '../engine/stabilizer.js';
 import { blendModeToCompositeOp } from '../engine/types.js';
 import type { BrushDescriptor } from '../engine/types.js';
 import { tintAlphaMask } from '../engine/canvas-pool.js';
 import { createThrottledScheduler } from '../utils/raf-throttle.js';
-import { normalizePointerPressure } from '../utils/pointer-pressure.js';
+import { normalizePointerPressure, pointerTilt } from '../utils/pointer-pressure.js';
 import { getDefaultDescriptor } from '../engine/brush-presets.js';
 import { floodFill } from '../tools/fill.js';
 import { drawSelectionRect } from '../tools/select.js';
@@ -52,6 +53,12 @@ function releasedAt(e: PointerEvent, clientX: number, clientY: number): PointerE
     timeStamp: e.timeStamp, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey,
     preventDefault: () => e.preventDefault(),
   } as PointerEvent;
+}
+
+/** The samples a pointermove stands for, oldest first: its coalesced events where the browser reports them. */
+function coalescedSamples(e: PointerEvent): PointerEvent[] {
+  const samples = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
+  return samples.length > 0 ? samples : [e];
 }
 
 @customElement('drawing-canvas')
@@ -538,8 +545,6 @@ export class DrawingCanvas extends LitElement {
     return {
       ...fallback,
       size: state.brushSize ?? fallback.size,
-      tip: { ...fallback.tip },
-      ink: { ...fallback.ink },
     };
   }
 
@@ -2639,13 +2644,17 @@ export class DrawingCanvas extends LitElement {
       const desc = this._brushDescriptor;
       const color = this.ctx.state.strokeColor;
       const eraser = this.ctx.state.activeTool === 'eraser';
-      this._engine.begin(desc, color, eraser, this._docWidth, this._docHeight);
+      this._engine.begin(desc, color, eraser, this._docWidth, this._docHeight, {
+        stabilizerMs: stabilizerTimeConstant(this.ctx.state.stabilizer),
+        // Client (screen) pixels per document pixel, through a host's CSS zoom too.
+        viewScale: this._zoom / this._clientScale(this._getCanvasRect()).x,
+      });
       // The tint scratch canvas is only cleared inside the previous stroke's bounds,
       // so wipe it once per stroke before reusing it.
       this._strokeTintNeedsClear = true;
       this._tintPreviewNeedsCopy = true;
       const layerCtx = desc.ink.wetness > 0 ? this._getActiveLayerCtx() ?? undefined : undefined;
-      this._engine.stroke(p.x, p.y, normalizePointerPressure(e), layerCtx, e.timeStamp);
+      this._engine.stroke(p.x, p.y, normalizePointerPressure(e), layerCtx, e.timeStamp, pointerTilt(e));
       this.composite();
     }
   }
@@ -2803,7 +2812,14 @@ export class DrawingCanvas extends LitElement {
     if (activeTool === 'pencil' || activeTool === 'eraser') {
       const desc = this._brushDescriptor;
       const layerCtx = desc.ink.wetness > 0 ? this._getActiveLayerCtx() ?? undefined : undefined;
-      this._engine.stroke(p.x, p.y, normalizePointerPressure(e), layerCtx, e.timeStamp);
+      // A fast pen reports several samples per frame; feed the brush each one
+      // rather than letting the spline guess the curve between frames.
+      // Samples that don't move still count: their time lets the stabilizer
+      // catch up, and their pressure may be a lift.
+      for (const sample of coalescedSamples(e)) {
+        const sp = sample === e ? p : this._getDocPoint(sample);
+        this._engine.stroke(sp.x, sp.y, normalizePointerPressure(sample), layerCtx, sample.timeStamp, pointerTilt(sample));
+      }
       this._lastPoint = p;
       // The stroke stays in the engine's buffer until pointerup; the layer is unchanged.
       this.scheduleComposite(false);

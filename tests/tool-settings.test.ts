@@ -7,8 +7,9 @@ import { makeState } from './helpers.ts';
 function renderBrushSettings(
   shape: TipShape,
   activeTool: 'pencil' | 'eraser' = 'pencil',
-  brushOverrides: { flow?: number; pressureOpacity?: boolean } = {},
+  brushOverrides: { flow?: number; pressureOpacity?: boolean; pressureSize?: boolean; dynamics?: { flowVelocity?: number; minSize?: number; tilt?: number } } = {},
   setBrushTip = vi.fn(),
+  setBrushDynamics = vi.fn(),
 ): HTMLElement {
   const settings = new ToolSettings();
   (settings as any)._advancedOpen = true;
@@ -21,6 +22,7 @@ function renderBrushSettings(
       setBrush: vi.fn(),
       setBrushTip,
       setBrushInk: vi.fn(),
+      setBrushDynamics,
       selectPreset: vi.fn(),
     },
   };
@@ -115,9 +117,48 @@ describe('ToolSettings brush controls', () => {
     const lowerFlow = renderBrushSettings('round', 'pencil', { flow: 0.5 }).textContent ?? '';
     const pressureFlow = renderBrushSettings('round', 'pencil', { pressureOpacity: true }).textContent ?? '';
 
+    const speedFlow = renderBrushSettings('round', 'pencil', { dynamics: { flowVelocity: -0.5 } }).textContent ?? '';
+
     expect(saturated).not.toContain('Buildup');
     expect(lowerFlow).toContain('Buildup');
     expect(pressureFlow).toContain('Buildup');
+    expect(speedFlow).toContain('Buildup');
+  });
+
+  it('sets speed dynamics from their sliders, as -1..1', () => {
+    const setBrushDynamics = vi.fn();
+    const controls = renderBrushSettings('round', 'pencil', { dynamics: { flowVelocity: -0.5 } }, vi.fn(), setBrushDynamics);
+    const size = controls.querySelector<HTMLInputElement>('input[aria-label="Size by speed"]')!;
+    const flow = controls.querySelector<HTMLInputElement>('input[aria-label="Flow by speed"]')!;
+    expect(flow.value).toBe('-50');
+    expect(controls.textContent).toContain('-50%');
+
+    size.value = '30';
+    size.dispatchEvent(new Event('input'));
+
+    expect(setBrushDynamics).toHaveBeenCalledWith({ sizeVelocity: 0.3 });
+  });
+
+  it('offers a minimum size only with stylus size, and sets it as a share', () => {
+    expect(renderBrushSettings('round', 'pencil', { pressureSize: false }).querySelector('input[aria-label="Minimum size"]')).toBeNull();
+
+    const setBrushDynamics = vi.fn();
+    const controls = renderBrushSettings('round', 'pencil', { pressureSize: true, dynamics: { minSize: 0.25 } }, vi.fn(), setBrushDynamics);
+    const min = controls.querySelector<HTMLInputElement>('input[aria-label="Minimum size"]')!;
+    expect(min.value).toBe('25');
+    min.value = '40';
+    min.dispatchEvent(new Event('input'));
+    expect(setBrushDynamics).toHaveBeenCalledWith({ minSize: 0.4 });
+  });
+
+  it('sets tilt dynamics from the Stylus Tilt slider', () => {
+    const setBrushDynamics = vi.fn();
+    const controls = renderBrushSettings('round', 'pencil', { dynamics: { tilt: 0.6 } }, vi.fn(), setBrushDynamics);
+    const tilt = controls.querySelector<HTMLInputElement>('input[aria-label="Stylus tilt"]')!;
+    expect(tilt.value).toBe('60');
+    tilt.value = '25';
+    tilt.dispatchEvent(new Event('input'));
+    expect(setBrushDynamics).toHaveBeenCalledWith({ tilt: 0.25 });
   });
 
   it('does not reset custom tip values when the active shape is clicked again', () => {

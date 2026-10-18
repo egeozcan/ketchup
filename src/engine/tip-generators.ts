@@ -79,7 +79,10 @@ export function generateChiselTip(diameter: number, hardness: number, tip: TipDe
   const canvas = createOffscreenCanvas(w, h);
   const ctx = get2dContext(canvas);
 
-  const shear = h / 3;
+  // A third of the bar's thickness at its own aspect, not of the canvas's
+  // height (rounded up to whole pixels), so the slant is the same share of
+  // its length at any size, as barGauge in stamp-stroke.ts reckons it.
+  const shear = w / Math.max(1, tip.aspect) / 3;
   ctx.beginPath();
   ctx.moveTo(shear, 0);
   ctx.lineTo(w, 0);
@@ -109,10 +112,13 @@ export function generateChiselTip(diameter: number, hardness: number, tip: TipDe
 }
 
 export function generateCalligraphyTip(diameter: number, hardness: number, tip: TipDescriptor): AnyCanvas {
-  const rx = Math.max(1, diameter / 2);
-  const ry = Math.max(1, (diameter / Math.max(1, tip.aspect)) / 2);
   const w = Math.max(1, diameter);
-  const h = Math.max(1, Math.ceil(ry * 2));
+  const h = Math.max(2, Math.ceil(diameter / Math.max(1, tip.aspect)));
+  // The ellipse fills its canvas, which is drawn stretched to the dab's exact
+  // footprint: one left short of a rounded-up height would draw thinner than
+  // the size asks, and jump thinner as the size grows past a cached one.
+  const rx = w / 2;
+  const ry = h / 2;
   const canvas = createOffscreenCanvas(w, h);
   const ctx = get2dContext(canvas);
   const cx = w / 2, cy = h / 2;
@@ -233,6 +239,26 @@ export const tipGenerators: Record<TipShape, TipGeneratorFn> = {
   fan: generateFanTip,
   splatter: generateSplatterTip,
 };
+
+/**
+ * The footprint a dab of `size` covers, unrounded: the generators' own
+ * proportions and minimums, without the whole-pixel canvas sizes of a tip
+ * cached at a quantized diameter. Keep in step with the generators above.
+ */
+export function tipFootprint(size: number, tip: TipDescriptor): { w: number; h: number } {
+  const w = Math.max(1, size);
+  const aspect = Math.max(1, tip.aspect);
+  switch (tip.shape) {
+    case 'flat':
+    case 'chisel':
+      return { w, h: Math.max(1, size / aspect) };
+    case 'calligraphy':
+      // Its ellipse keeps a radius of at least 1px across.
+      return { w, h: Math.max(2, size / aspect) };
+    default:
+      return { w, h: w };
+  }
+}
 
 /** Number of cached variants per shape (for visual variety) */
 export const TIP_VARIANT_COUNTS: Partial<Record<TipShape, number>> = {

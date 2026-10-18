@@ -1,12 +1,128 @@
 import { BrushTipCache } from './brush-tip-cache.js';
 import { StrokeBufferPool } from './stroke-buffer-pool.js';
 import { PathSmoother } from './path-smoother.js';
+import { Stabilizer, type StabilizedPoint } from './stabilizer.js';
 import { get2dContext, drawImageSafe, tintAlphaMask, createOffscreenCanvas, type AnyCanvas } from './canvas-pool.js';
 import { PRESSURE_CURVES, quantizeDiameter, type BrushDescriptor, type TipDescriptor, type StampPoint, type InkState } from './types.js';
-import { TIP_VARIANT_COUNTS } from './tip-generators.js';
+import { TIP_VARIANT_COUNTS, tipFootprint } from './tip-generators.js';
+import { copyDescriptor } from './brush-presets.js';
 import { initInkState, applyDepletion, applyBuildup, applyPickup } from './ink-model.js';
 
 const MIN_DIRECTION_DIST_SQ = 0.25;
+/** How quickly the speed that drives dynamics follows the pointer's, in ms. */
+const VELOCITY_SMOOTHING_MS = 40;
+/** Screen speed (CSS px per ms) at which speed dynamics reach their full effect. */
+const FULL_VELOCITY_PX_PER_MS = 2;
+/** How much longer than wide a dab gets from a pen lying flat at full tilt dynamics. */
+const MAX_TILT_STRETCH = 2;
+/** Tilt short of flat, so its tangent stays finite. */
+const MAX_TILT_DEG = 89.9;
+/** Screen (CSS) pixels a hand may tremble without the stabilizer counting it as way gone. */
+const STABILIZER_SLACK_PX = 1;
+
+export interface StrokeOptions {
+  /** How far, in time, the stroke trails the pointer (0 = off); needs increasing stroke() timestamps. */
+  stabilizerMs?: number;
+  /** Screen pixels per document pixel, so speed dynamics and the stabilizer feel the same at any zoom. */
+  viewScale?: number;
+}
+
+export interface PenTilt {
+  /** Degrees (-90..90), as Pointer Events report them; 0, 0 is upright. */
+  tiltX: number;
+  tiltY: number;
+}
+
+const UPRIGHT: PenTilt = { tiltX: 0, tiltY: 0 };
+
+function clampTilt(deg: number): number {
+  return Number.isFinite(deg) ? Math.max(-MAX_TILT_DEG, Math.min(MAX_TILT_DEG, deg)) : 0;
+}
+
+interface DabStretch {
+  /** The direction the pen leans toward, in radians. */
+  azimuth: number;
+  /** Length along `azimuth` over width (1 = round as the tip is). */
+  stretch: number;
+}
+
+const NO_STRETCH: DabStretch = { azimuth: 0, stretch: 1 };
+
+/**
+ * A leaning pen's dab is stretched along its lean, as a tilted pencil's
+ * contact is: more the further the pen is from upright, scaled by `amount`.
+ */
+export function tiltStretch(tiltX: number, tiltY: number, amount: number): DabStretch {
+  if (!(amount > 0) || (tiltX === 0 && tiltY === 0)) return NO_STRETCH;
+  const tx = Math.tan(clampTilt(tiltX) * Math.PI / 180);
+  const ty = Math.tan(clampTilt(tiltY) * Math.PI / 180);
+  const fromUpright = Math.atan(Math.hypot(tx, ty)) / (Math.PI / 2);
+  return { azimuth: Math.atan2(ty, tx), stretch: 1 + amount * MAX_TILT_STRETCH * fromUpright };
+}
+
+/**
+ * Set up `ctx` so a dab drawn centred on the origin lands at (x, y), turned
+ * by `rotation` and then stretched by the pen's lean; false (and nothing
+ * set up) when an untransformed draw at (x, y) will do. Restore after.
+ */
+function transformDab(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, x: number, y: number, rotation: number, lean: DabStretch): boolean {
+  if (rotation === 0 && lean.stretch === 1) return false;
+  ctx.save();
+  ctx.translate(x, y);
+  if (lean.stretch !== 1) {
+    ctx.rotate(lean.azimuth);
+    ctx.scale(lean.stretch, 1);
+    ctx.rotate(rotation - lean.azimuth);
+  } else {
+    ctx.rotate(rotation);
+  }
+  return true;
+}
+
+/**
+ * Tips whose footprint is a long 1 × 1/aspect bar: a rectangle, a chisel's
+ * parallelogram (its top and bottom edges shifted a third of its thickness
+ * apart, as generateChiselTip draws it) or calligraphy's ellipse.
+ */
+const BAR_TIPS = new Set(['flat', 'chisel', 'calligraphy']);
+
+/** Headings tried for a dab with none yet, the first of a stroke. */
+const ANY_HEADING = Array.from({ length: 8 }, (_, i) => i * Math.PI / 8);
+
+/**
+ * How many times over two copies of a bar footprint (in its own frame, 1
+ * long) must be pushed apart by (qx, qy) to no longer touch: the gauge of
+ * the footprint doubled, which for these symmetric shapes is every offset
+ * at which two copies still touch.
+ */
+function barGauge(shape: string, aspect: number, qx: number, qy: number): number {
+  const across = Math.abs(qy) * aspect;
+  if (shape === 'calligraphy') return Math.hypot(qx, across);
+  if (shape === 'chisel') {
+    // Rows run 1 - shear long, shifted along the bar by shear = thickness / 3.
+    return Math.max(across, Math.abs(qx + qy / 3) / (1 - 1 / (3 * aspect)));
+  }
+  return Math.max(Math.abs(qx), across);
+}
+
+/**
+ * How far apart two bar dabs (1 long, turned by `rotation` and stretched by
+ * `lean`) can sit along `heading` and still touch.
+ */
+function barReach(shape: string, aspect: number, rotation: number, lean: DabStretch, heading: number): number {
+  // The heading back in the dab's own frame: R(az - rot) S⁻¹ R(-az).
+  const a = heading - lean.azimuth;
+  const ux = Math.cos(a) / lean.stretch, uy = Math.sin(a);
+  const b = lean.azimuth - rotation;
+  const qx = ux * Math.cos(b) - uy * Math.sin(b);
+  const qy = ux * Math.sin(b) + uy * Math.cos(b);
+  return 1 / Math.max(barGauge(shape, aspect, qx, qy), 1e-9);
+}
+
+/** A dynamics factor: `control` (-1..1) applied at a speed `v` (0..1). */
+function speedFactor(control: number, v: number): number {
+  return control >= 0 ? 1 - control + control * v : 1 + control * v;
+}
 
 function computeStampRotation(
   stamp: StampPoint,
@@ -31,13 +147,20 @@ export class StampStrokeEngine {
   private _tipCache = new BrushTipCache();
   private _bufferPool = new StrokeBufferPool();
   private _smoother = new PathSmoother();
+  private _stabilizer = new Stabilizer();
+  private _viewScale = 1;
+  /** Smoothed pointer speed, in screen px per ms. */
+  private _velocity = 0;
+  /** The last sample's position and the time of the last that moved time on. */
+  private _velocityLast: { x: number; y: number; t: number } | null = null;
+  /** The way gone since time last moved on. */
+  private _velocityDist = 0;
   private _descriptor: BrushDescriptor | null = null;
   private _color = '';
   private _eraser = false;
   private _colorMode = false;
   private _docWidth = 0;
   private _docHeight = 0;
-  private _lastMappedPressure = 0.5;
   private _inkState: InkState | null = null;
   private _prevStamp: StampPoint | null = null;
   private _variantCounter = 0;
@@ -57,8 +180,10 @@ export class StampStrokeEngine {
   private _dirtyMaxX = -Infinity;
   private _dirtyMaxY = -Infinity;
 
-  begin(descriptor: BrushDescriptor, color: string, eraser: boolean, docWidth: number, docHeight: number) {
-    this._descriptor = { ...descriptor, tip: { ...descriptor.tip }, ink: { ...descriptor.ink } };
+  begin(descriptor: BrushDescriptor, color: string, eraser: boolean, docWidth: number, docHeight: number, options: StrokeOptions = {}) {
+    this._descriptor = copyDescriptor(descriptor);
+    this._viewScale = options.viewScale && options.viewScale > 0 ? options.viewScale : 1;
+    this._resetMotion();
     this._color = eraser ? '' : (color.length === 9 ? color.slice(0, 7) : color);
     this._eraser = eraser;
     this._colorMode = !eraser && descriptor.ink.wetness > 0;
@@ -66,6 +191,7 @@ export class StampStrokeEngine {
     this._docHeight = docHeight;
     this._bufferPool.acquire(docWidth, docHeight, this._rawDirtyRect());
     this._smoother.reset();
+    this._stabilizer.reset(options.stabilizerMs ?? 0, STABILIZER_SLACK_PX / this._viewScale);
     this._prevStamp = null;
     this._variantCounter = 0;
     this._snapshotCaptured = false;
@@ -76,13 +202,18 @@ export class StampStrokeEngine {
     this._inkState = initInkState(this._color, null);
   }
 
-  stroke(x: number, y: number, pressure: number, layerCtx?: CanvasRenderingContext2D, timestamp = 0) {
+  stroke(x: number, y: number, pressure: number, layerCtx?: CanvasRenderingContext2D, timestamp = 0, tilt: PenTilt = UPRIGHT) {
     if (!this._descriptor || !this._inkState) return;
     const d = this._descriptor;
     let inputPressure = pressure;
     if (!Number.isFinite(pressure) || pressure <= 0) {
       if (d.pressureSize || d.pressureOpacity) {
+        // A lift ends this part of the stroke where the pen was, then the
+        // next contact starts afresh.
+        this._finishSegment();
         this._smoother.reset();
+        this._stabilizer.reset();
+        this._resetMotion();
         this._prevStamp = null;
         return;
       }
@@ -95,14 +226,16 @@ export class StampStrokeEngine {
     }
 
     const curveFn = PRESSURE_CURVES[d.pressureCurve];
-    const mappedPressure = curveFn(inputPressure);
-    this._lastMappedPressure = mappedPressure;
+    const at = this._stabilizer.add(x, y, curveFn(inputPressure), timestamp, clampTilt(tilt.tiltX), clampTilt(tilt.tiltY));
+    this._stampPoints(this._feed({ ...at, timestamp }));
+  }
 
-    const effectiveSize = d.pressureSize ? Math.max(1, d.size * mappedPressure) : d.size;
-    const effectiveSpacing = Math.max(1, d.spacing * effectiveSize);
-    const stamps = this._smoother.addPoint(x, y, mappedPressure, effectiveSpacing, timestamp);
-
-    this._stampPoints(stamps);
+  /** Feed a (stabilized) sample to the spline, returning the dabs it lays. */
+  private _feed(p: StabilizedPoint): StampPoint[] {
+    // Speed and heading are measured along the stabilized path, the one the dabs follow.
+    const v = this._trackVelocity(p.x, p.y, p.timestamp);
+    return this._smoother.addPoint(p.x, p.y, p.pressure, this._dabSpacing, p.timestamp,
+      { velocity: v, tiltX: p.tiltX, tiltY: p.tiltY });
   }
 
   private _stampPoints(stamps: StampPoint[]) {
@@ -133,10 +266,11 @@ export class StampStrokeEngine {
         continue;
       }
 
-      const baseFlow = d.pressureOpacity ? d.flow * stamp.pressure : d.flow;
+      const baseFlow = (d.pressureOpacity ? d.flow * stamp.pressure : d.flow) *
+        speedFactor(d.dynamics.flowVelocity, stamp.velocity);
       const effectiveFlow = applyBuildup(ink, baseFlow, stamp.speedPxPerMs);
 
-      const stampSize = d.pressureSize ? Math.max(1, d.size * stamp.pressure) : d.size;
+      const stampSize = this._sizeAt(stamp.pressure, stamp.velocity);
       applyPickup(ink, state, stamp.x, stamp.y, stampSize / 2);
       const diam = quantizeDiameter(stampSize);
 
@@ -156,10 +290,15 @@ export class StampStrokeEngine {
 
       const tipW = tip.width;
       const tipH = tip.height;
+      // Tips are cached at an even diameter; draw them stretched to the exact
+      // footprint, at the exact (subpixel) position, so thin strokes and
+      // pressure tapers don't step in whole pixels.
+      const { w: drawW, h: drawH } = tipFootprint(stampSize, d.tip);
+      const lean = tiltStretch(stamp.tiltX, stamp.tiltY, d.dynamics.tilt);
 
-      // Half-diagonal covers the tip footprint at any rotation; +1 absorbs the
-      // Math.round applied to the draw position below.
-      const reach = Math.sqrt(tipW * tipW + tipH * tipH) / 2 + 1;
+      // Half-diagonal covers the tip footprint at any rotation, times the
+      // lean's stretch; +1 absorbs resampling spill at the fractional edges.
+      const reach = Math.sqrt(drawW * drawW + drawH * drawH) / 2 * lean.stretch + 1;
       if (stamp.x - reach < this._dirtyMinX) this._dirtyMinX = stamp.x - reach;
       if (stamp.y - reach < this._dirtyMinY) this._dirtyMinY = stamp.y - reach;
       if (stamp.x + reach > this._dirtyMaxX) this._dirtyMaxX = stamp.x + reach;
@@ -188,26 +327,20 @@ export class StampStrokeEngine {
         const tint = this._tintCanvas as HTMLCanvasElement;
         ctx.globalAlpha = stampAlpha;
         ctx.globalCompositeOperation = 'source-over';
-        if (rotation !== 0) {
-          ctx.save();
-          ctx.translate(Math.round(stamp.x), Math.round(stamp.y));
-          ctx.rotate(rotation);
-          ctx.drawImage(tint, 0, 0, tipW, tipH, -tipW / 2, -tipH / 2, tipW, tipH);
+        if (transformDab(ctx, stamp.x, stamp.y, rotation, lean)) {
+          ctx.drawImage(tint, 0, 0, tipW, tipH, -drawW / 2, -drawH / 2, drawW, drawH);
           ctx.restore();
         } else {
-          ctx.drawImage(tint, 0, 0, tipW, tipH, Math.round(stamp.x - tipW / 2), Math.round(stamp.y - tipH / 2), tipW, tipH);
+          ctx.drawImage(tint, 0, 0, tipW, tipH, stamp.x - drawW / 2, stamp.y - drawH / 2, drawW, drawH);
         }
       } else {
         ctx.globalAlpha = stampAlpha;
         ctx.globalCompositeOperation = 'source-over';
-        if (rotation !== 0) {
-          ctx.save();
-          ctx.translate(Math.round(stamp.x), Math.round(stamp.y));
-          ctx.rotate(rotation);
-          drawImageSafe(ctx, tip, -tipW / 2, -tipH / 2, tipW, tipH);
+        if (transformDab(ctx, stamp.x, stamp.y, rotation, lean)) {
+          drawImageSafe(ctx, tip, -drawW / 2, -drawH / 2, drawW, drawH);
           ctx.restore();
         } else {
-          drawImageSafe(ctx, tip, Math.round(stamp.x - tipW / 2), Math.round(stamp.y - tipH / 2), tipW, tipH);
+          drawImageSafe(ctx, tip, stamp.x - drawW / 2, stamp.y - drawH / 2, drawW, drawH);
         }
       }
 
@@ -223,14 +356,7 @@ export class StampStrokeEngine {
   commit(target: CanvasRenderingContext2D): boolean {
     if (!this._descriptor) return false;
 
-    const lastSize = this._descriptor.pressureSize
-      ? Math.max(1, this._descriptor.size * this._lastMappedPressure)
-      : this._descriptor.size;
-    const flushSpacing = Math.max(1, this._descriptor.spacing * lastSize);
-    const remaining = this._smoother.flush(flushSpacing);
-    if (remaining.length > 0) {
-      this._stampPoints(remaining);
-    }
+    this._finishSegment();
 
     this._bufferPool.commit(
       target,
@@ -249,6 +375,93 @@ export class StampStrokeEngine {
     this._descriptor = null;
     this._inkState = null;
     this._smoother.reset();
+    this._stabilizer.reset();
+  }
+
+  /**
+   * Lay the rest of the stroke so far: up to where the pointer last was (the
+   * stabilizer trails it) and the spline's last, still unwalked segment.
+   */
+  private _finishSegment() {
+    if (!this._descriptor) return;
+    for (const p of this._stabilizer.catchUp()) {
+      this._stampPoints(this._feed(p));
+    }
+    const remaining = this._smoother.flush(this._dabSpacing);
+    if (remaining.length > 0) {
+      this._stampPoints(remaining);
+    }
+  }
+
+  /** A dab's diameter at a (curve-mapped) pressure and a normalized speed. */
+  private _sizeAt(mappedPressure: number, velocity: number): number {
+    const d = this._descriptor!;
+    const min = d.dynamics.minSize;
+    const size = d.pressureSize ? d.size * (min + (1 - min) * mappedPressure) : d.size;
+    return Math.max(1, size * speedFactor(d.dynamics.sizeVelocity, velocity));
+  }
+
+  /**
+   * The distance a dab at `at`, laid along `heading`, wants to the next,
+   * from its own size and lean (the spline lays a segment a sample late,
+   * so the newest sample's would be another dab's: a pause after a thin,
+   * fast run would gap it). The smoother lays the next dab where either
+   * dab's spacing runs out, so a steep taper stays joined.
+   */
+  private _dabSpacing = (at: StampPoint, heading: number | null): number => {
+    const d = this._descriptor!;
+    return Math.max(1, d.spacing * this._sizeAt(at.pressure, at.velocity) * this._leanSpacing(at, heading));
+  };
+
+  /**
+   * Stretching a bar along a lean across it shears it, which can pull
+   * neighbouring dabs apart: closes the spacing up by as much as the dabs'
+   * reach along the stroke shrank, so ones that touched upright still do.
+   * Round dabs only grow when stretched.
+   */
+  private _leanSpacing(tilt: PenTilt, heading: number | null): number {
+    const d = this._descriptor!;
+    const lean = tiltStretch(tilt.tiltX, tilt.tiltY, d.dynamics.tilt);
+    if (lean.stretch === 1 || !BAR_TIPS.has(d.tip.shape)) return 1;
+    const angle = d.tip.angle * Math.PI / 180;
+    const aspect = Math.max(1, d.tip.aspect);
+    const shape = d.tip.shape;
+    // As _stampPoints turns it: along the way from the dab before, or at
+    // the tip's own angle when there is none yet (and then any way on).
+    const shrink = (h: number) => {
+      const rotation = d.tip.orientation === 'fixed' || heading === null ? angle : h + angle;
+      return barReach(shape, aspect, rotation, lean, h) / barReach(shape, aspect, rotation, NO_STRETCH, h);
+    };
+    return Math.min(1, ...(heading === null ? ANY_HEADING : [heading]).map(shrink));
+  }
+
+  private _resetMotion() {
+    this._velocity = 0;
+    this._velocityLast = null;
+    this._velocityDist = 0;
+  }
+
+  /**
+   * Follow the pointer's speed over time, in screen pixels, and return it
+   * normalized. Samples at the same time add the way they went to the next
+   * one that moves time on.
+   */
+  private _trackVelocity(x: number, y: number, t: number): number {
+    const last = this._velocityLast;
+    this._velocityLast = { x, y, t: last && !(t > last.t) ? last.t : t };
+    if (!last) return this._normalizedVelocity();
+    this._velocityDist += Math.hypot(x - last.x, y - last.y);
+    const dt = t - last.t;
+    if (!(dt > 0)) return this._normalizedVelocity();
+    const speed = this._velocityDist * this._viewScale / dt;
+    this._velocity += (speed - this._velocity) * (1 - Math.exp(-dt / VELOCITY_SMOOTHING_MS));
+    this._velocityDist = 0;
+    return this._normalizedVelocity();
+  }
+
+  /** The smoothed speed as a share (0..1) of the speed dynamics take full effect at. */
+  private _normalizedVelocity(): number {
+    return Math.min(1, this._velocity / FULL_VELOCITY_PX_PER_MS);
   }
 
   /**

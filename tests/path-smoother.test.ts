@@ -20,3 +20,21 @@ describe('PathSmoother velocity', () => {
     expect(fast.every(point => point.speedPxPerMs === 1)).toBe(true);
   });
 });
+
+describe('PathSmoother spacing', () => {
+  it('lays stamps at a fixed spacing across segments', () => {
+    const smoother = new PathSmoother();
+    const xs = [0, 20, 40, 60, 80, 100].flatMap((x, i) => smoother.addPoint(x, 0, 1, 7, i * 10)).concat(smoother.flush(7)).map(p => p.x);
+    xs.forEach((x, i) => expect(x).toBeCloseTo(i * 7, 2));
+    expect(xs.length).toBe(15);
+  });
+
+  it('lays the next stamp at the first point a narrower one is due, not past a narrowing', () => {
+    const smoother = new PathSmoother();
+    // Stamps want 50 px, except in a narrow band where they want 2.
+    const spacing = (at: { x: number }) => (at.x >= 20 && at.x <= 22 ? 2 : 50);
+    const xs = [...smoother.addPoint(0, 0, 1, spacing, 0), ...smoother.addPoint(100, 0, 1, spacing, 100)].map(p => p.x);
+    expect(xs[0]).toBe(0);
+    expect(xs[1]).toBeCloseTo(20, 3);
+  });
+});

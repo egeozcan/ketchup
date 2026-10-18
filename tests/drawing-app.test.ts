@@ -579,6 +579,7 @@ describe('DrawingApp', () => {
         pressureCurve: 'heavy' as const,
         tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' as const },
         ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
+        dynamics: { sizeVelocity: -0.5, flowVelocity: 7, minSize: 0.2, tilt: 0.7 },
         activePreset: 'flat',
         isPresetModified: true,
         cropAspectRatio: '16:9',
@@ -587,6 +588,7 @@ describe('DrawingApp', () => {
         fontBold: true,
         fontItalic: true,
         eyedropperSampleAll: false,
+        stabilizer: 35,
       },
       canvasWidth: 100,
       canvasHeight: 100,
@@ -623,6 +625,8 @@ describe('DrawingApp', () => {
       pressureCurve: 'heavy',
       tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' },
       ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
+      // Out of range, so clamped.
+      dynamics: { sizeVelocity: -0.5, flowVelocity: 1, minSize: 0.2, tilt: 0.7 },
     });
     expect((app as any)._state.stampSize).toBe(320);
     expect((app as any)._state.activePreset).toBe('flat');
@@ -633,6 +637,7 @@ describe('DrawingApp', () => {
     expect((app as any)._state.fontBold).toBe(true);
     expect((app as any)._state.fontItalic).toBe(true);
     expect((app as any)._state.eyedropperSampleAll).toBe(false);
+    expect((app as any)._state.stabilizer).toBe(35);
 
     deserSpy.mockRestore();
   });
@@ -725,6 +730,7 @@ describe('DrawingApp', () => {
         pressureCurve: 'heavy',
         tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' },
         ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
+        dynamics: { sizeVelocity: 0.3, flowVelocity: -0.2, minSize: 0.15, tilt: 0.4 },
       },
       activePreset: 'flat',
       isPresetModified: true,
@@ -738,6 +744,7 @@ describe('DrawingApp', () => {
       fontBold: true,
       fontItalic: true,
       eyedropperSampleAll: false,
+      stabilizer: 35,
     });
     (app as any)._dirty = true;
     (app as any)._dirtyVersion = 1;
@@ -786,6 +793,7 @@ describe('DrawingApp', () => {
       pressureCurve: 'heavy',
       tip: { shape: 'flat', aspect: 2, angle: 15, orientation: 'direction' },
       ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
+      dynamics: { sizeVelocity: 0.3, flowVelocity: -0.2, minSize: 0.15, tilt: 0.4 },
       activePreset: 'flat',
       isPresetModified: true,
       cropAspectRatio: '16:9',
@@ -794,6 +802,7 @@ describe('DrawingApp', () => {
       fontBold: true,
       fontItalic: true,
       eyedropperSampleAll: false,
+      stabilizer: 35,
     });
 
     serSpy.mockRestore();

@@ -2,8 +2,8 @@ import { LitElement, html, css, type PropertyValues } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import { blendModeToCompositeOp, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor } from '../engine/types.js';
-import { getDefaultDescriptor, getPresetById } from '../engine/brush-presets.js';
+import { blendModeToCompositeOp, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics } from '../engine/types.js';
+import { copyDescriptor, getDefaultDescriptor, getPresetById, normalizeDynamics } from '../engine/brush-presets.js';
 import type { DrawingState, HistoryEntry, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
 import { IndexedDBBackend, MemoryBackend, ProjectService, StorageQuotaError, StorageNotFoundError, StorageClosedError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
@@ -17,6 +17,7 @@ import {
 } from '../utils/storage-serialization.js';
 import { toolForShortcut, CHILD_TOOL_SET } from './tool-icons.js';
 import { DEFAULT_STAMP_SIZE, normalizeStampSize } from '../tools/stamp-size.js';
+import { normalizeStabilizer } from '../engine/stabilizer.js';
 import './app-toolbar.js';
 import './tool-settings.js';
 import { generateUUID } from '../utils/uuid.js';
@@ -509,6 +510,7 @@ export class DrawingApp extends LitElement {
       fontBold: false,
       fontItalic: false,
       eyedropperSampleAll: true,
+      stabilizer: 0,
       childMode: false,
     };
     this._provider = new ContextProvider(this, {
@@ -1828,6 +1830,7 @@ export class DrawingApp extends LitElement {
             pressureCurve: this._state.brush.pressureCurve,
             tip: { ...this._state.brush.tip },
             ink: { ...this._state.brush.ink },
+            dynamics: { ...this._state.brush.dynamics },
             activePreset: this._state.activePreset,
             isPresetModified: this._state.isPresetModified,
             cropAspectRatio: this._state.cropAspectRatio,
@@ -1836,6 +1839,7 @@ export class DrawingApp extends LitElement {
             fontBold: this._state.fontBold,
             fontItalic: this._state.fontItalic,
             eyedropperSampleAll: this._state.eyedropperSampleAll,
+            stabilizer: this._state.stabilizer,
             childMode: this._state.childMode,
           };
           const snapshotWidth = this._state.documentWidth;
@@ -2515,6 +2519,7 @@ export class DrawingApp extends LitElement {
       fontBold: false,
       fontItalic: false,
       eyedropperSampleAll: true,
+      stabilizer: 0,
       childMode: false,
     };
     // Child mode, which kept the compact layout at any width, is off now.
@@ -2662,6 +2667,7 @@ export class DrawingApp extends LitElement {
         pressureCurve: ts.pressureCurve ?? defaultDesc.pressureCurve,
         tip: { ...defaultDesc.tip, ...(ts.tip ?? {}) },
         ink: { ...defaultDesc.ink, ...(ts.ink ?? {}) },
+        dynamics: normalizeDynamics(ts.dynamics),
       };
       this._state = {
         activeTool: ts.activeTool === 'marker' as string ? 'pencil' : ts.activeTool,
@@ -2685,6 +2691,7 @@ export class DrawingApp extends LitElement {
         fontBold: ts.fontBold ?? false,
         fontItalic: ts.fontItalic ?? false,
         eyedropperSampleAll: ts.eyedropperSampleAll ?? true,
+        stabilizer: normalizeStabilizer(ts.stabilizer),
         childMode: ts.childMode ?? false,
       };
       // The layout the view is restored into: the size observer may not have
@@ -3078,19 +3085,26 @@ export class DrawingApp extends LitElement {
       setBrushInk: (ink: Partial<InkDescriptor>) => {
         this._updateBrush({ ink: { ...this._state.brush.ink, ...ink } });
       },
+      setBrushDynamics: (dynamics: Partial<BrushDynamics>) => {
+        this._updateBrush({ dynamics: { ...this._state.brush.dynamics, ...dynamics } });
+      },
       selectPreset: (presetId: string) => {
         const preset = getPresetById(presetId);
         if (!preset) return;
         const desc = preset.descriptor;
         this._state = {
           ...this._state,
-          brush: { ...desc, tip: { ...desc.tip }, ink: { ...desc.ink } },
+          brush: copyDescriptor(desc),
           activePreset: presetId,
           isPresetModified: false,
         };
         this._markDirty('setting');
       },
       setEyedropperSampleAll: (v: boolean) => { this._state = { ...this._state, eyedropperSampleAll: v }; this._markDirty('setting'); },
+      setStabilizer: (percent: number) => {
+        this._state = { ...this._state, stabilizer: normalizeStabilizer(percent, this._state.stabilizer) };
+        this._markDirty('setting');
+      },
       confirm: (options: ConfirmOptions) => this._confirm(options),
       canUndo: this._canUndo,
       canRedo: this._canRedo,

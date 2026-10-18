@@ -84,6 +84,8 @@ export interface DrawingState {
   fontBold: boolean;
   fontItalic: boolean;
   eyedropperSampleAll: boolean;
+  /** How far the brush trails the pointer to steady it, 0–100 % (0 = off). */
+  stabilizer: number;
   childMode: boolean;
 }
 

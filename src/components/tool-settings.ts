@@ -5,15 +5,18 @@ import { ContextConsumer } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
 import { storageBackendContext, projectServiceContext } from '../storage/storage-context.js';
 import type { StampEntry } from '../storage/types.js';
-import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushPreset } from '../engine/types.js';
-import { BRUSH_PRESETS } from '../engine/brush-presets.js';
+import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushDynamics, BrushPreset } from '../engine/types.js';
+import { BRUSH_PRESETS, copyDescriptor } from '../engine/brush-presets.js';
 import { getDefaultTipDescriptor, getTipCapabilities } from '../engine/brush-capabilities.js';
-import { StampStrokeEngine } from '../engine/stamp-stroke.js';
+import { StampStrokeEngine, tiltStretch } from '../engine/stamp-stroke.js';
 import { getStampThumbnailUrl, removeStampThumbnail } from '../utils/stamp-thumbnail-cache.js';
 import { MAX_STAMP_SIZE, MIN_STAMP_SIZE } from '../tools/stamp-size.js';
 import { SHAPE_TOOLS, isShapeTool } from '../tools/shapes.js';
 import { toolIcons, toolLabels, toolShortcuts } from './tool-icons.js';
 import { focusEditor, keyIsForEditorOf } from '../utils/focus-editor.js';
+
+/** How the brush preview's imagined pen leans: toward the viewer, across the mostly level stroke, so tilt shows. */
+const PREVIEW_TILT = { tiltX: 0, tiltY: 50 };
 
 /** Icons for the project dropdown's per-row actions. */
 const projectActionIcons = {
@@ -1550,17 +1553,13 @@ export class ToolSettings extends LitElement {
     ctx.fillRect(0, 0, W, H);
 
     const previewSize = Math.max(2, Math.min(18, 2 + Math.log2(Math.max(1, descriptor.size)) * 2.5));
-    const d: BrushDescriptor = {
-      ...descriptor,
-      size: previewSize,
-      tip: { ...descriptor.tip },
-      ink: { ...descriptor.ink },
-    };
+    const d: BrushDescriptor = { ...copyDescriptor(descriptor), size: previewSize };
 
     // Generate S-curve points — keep amplitude small enough that
     // the largest stamp (previewSize) stays fully within the canvas
     const padX = 8;
-    const maxTipR = previewSize / 2 + 2; // half the largest stamp + margin
+    // Half the largest stamp, as long as the preview's lean stretches it, + margin.
+    const maxTipR = previewSize / 2 * tiltStretch(PREVIEW_TILT.tiltX, PREVIEW_TILT.tiltY, d.dynamics.tilt).stretch + 2;
     const amplitude = Math.max(2, (H / 2 - maxTipR) * 0.8);
     const cy = H / 2;
     const totalLen = W - padX * 2;
@@ -1602,7 +1601,7 @@ export class ToolSettings extends LitElement {
       // respond to while preserving the same geometric path.
       timestamp += t > 0.35 && t < 0.65 ? 4 : 1;
       const layerCtx = !eraser && d.ink.wetness > 0 ? sampleCtx : undefined;
-      this._previewEngine.stroke(x, y, pressure, layerCtx, timestamp);
+      this._previewEngine.stroke(x, y, pressure, layerCtx, timestamp, PREVIEW_TILT);
     }
     this._previewEngine.commit(strokeCtx);
 
@@ -1888,7 +1887,7 @@ export class ToolSettings extends LitElement {
    * panel so the bar stays one row; the mobile sheet shows them inline.
    */
   private _renderBrushDetails() {
-    const { brush, activeTool } = this.ctx.state;
+    const { brush, activeTool, stabilizer } = this.ctx.state;
     const tipCapabilities = getTipCapabilities(brush.tip.shape);
     const tipDefaults = getDefaultTipDescriptor(brush.tip.shape);
     const inPanel = !this.ctx.isMobile;
@@ -1900,6 +1899,17 @@ export class ToolSettings extends LitElement {
         @click=${() => { this._advancedOpen = !this._advancedOpen; }}
       >Advanced ${this._advancedOpen ? html`&#9650;` : html`&#9660;`}</button>
     `;
+    const speedControl = (label: string, key: keyof BrushDynamics, hint: string) => {
+      const value = Math.round(brush.dynamics[key] * 100);
+      return html`
+        <div class="section">
+          <label title=${hint}>${label}</label>
+          <input type="range" min="-100" max="100" aria-label=${label} .value=${String(value)}
+            @input=${(e: Event) => this.ctx.setBrushDynamics({ [key]: Number((e.target as HTMLInputElement).value) / 100 })} />
+          <span class="size-value">${value > 0 ? '+' : ''}${value}%</span>
+        </div>
+      `;
+    };
     return html`
         ${heading('Stroke')}
         <div class="section">
@@ -1920,6 +1930,12 @@ export class ToolSettings extends LitElement {
             @input=${(e: Event) => this.ctx.setBrush({ spacing: Number((e.target as HTMLInputElement).value) / 100 })} />
           <span class="size-value">${Math.round(brush.spacing * 100)}%</span>
         </div>
+        <div class="section">
+          <label title="Steadies the line: it trails the pointer, more so the higher this is.">Stabilizer</label>
+          <input type="range" min="0" max="100" aria-label="Stabilizer" .value=${String(Math.round(stabilizer))}
+            @input=${(e: Event) => this.ctx.setStabilizer(Number((e.target as HTMLInputElement).value))} />
+          <span class="size-value">${Math.round(stabilizer)}%</span>
+        </div>
         ${heading('Stylus')}
         <div class="section">
           <label class="checkbox-label" title="Affects pressure-sensitive pen or stylus input; mouse input uses full pressure.">
@@ -1928,12 +1944,26 @@ export class ToolSettings extends LitElement {
             Stylus Size
           </label>
         </div>
+        ${brush.pressureSize ? html`
+        <div class="section">
+          <label title="How thick the lightest touch draws, as a share of the size.">Minimum Size</label>
+          <input type="range" min="0" max="100" aria-label="Minimum size" .value=${String(Math.round(brush.dynamics.minSize * 100))}
+            @input=${(e: Event) => this.ctx.setBrushDynamics({ minSize: Number((e.target as HTMLInputElement).value) / 100 })} />
+          <span class="size-value">${Math.round(brush.dynamics.minSize * 100)}%</span>
+        </div>
+        ` : nothing}
         <div class="section">
           <label class="checkbox-label" title="Affects pressure-sensitive pen or stylus input; mouse input uses full pressure.">
             <input type="checkbox" .checked=${brush.pressureOpacity}
               @change=${(e: Event) => this.ctx.setBrush({ pressureOpacity: (e.target as HTMLInputElement).checked })} />
             Stylus Opacity
           </label>
+        </div>
+        <div class="section">
+          <label title="Stretches dabs along the way a tilting pen or stylus leans; upright, mouse and touch input are unaffected.">Stylus Tilt</label>
+          <input type="range" min="0" max="100" aria-label="Stylus tilt" .value=${String(Math.round(brush.dynamics.tilt * 100))}
+            @input=${(e: Event) => this.ctx.setBrushDynamics({ tilt: Number((e.target as HTMLInputElement).value) / 100 })} />
+          <span class="size-value">${Math.round(brush.dynamics.tilt * 100)}%</span>
         </div>
         ${(brush.pressureSize || brush.pressureOpacity) ? html`
         <div class="section">
@@ -1946,6 +1976,9 @@ export class ToolSettings extends LitElement {
           </select>
         </div>
         ` : nothing}
+        ${heading('Dynamics')}
+        ${speedControl('Size by speed', 'sizeVelocity', 'Positive: dabs grow the faster you draw. Negative: they shrink.')}
+        ${speedControl('Flow by speed', 'flowVelocity', 'Positive: ink flows more the faster you draw. Negative: less.')}
         <div class="section">${advancedToggle}</div>
         ${this._advancedOpen ? html`
           <div class="section advanced-group">
@@ -2021,7 +2054,7 @@ export class ToolSettings extends LitElement {
                 <span class="size-value">${brush.ink.depletionLength}px</span>
               </div>
             ` : nothing}
-            ${(brush.flow < 1 || brush.pressureOpacity) ? html`
+            ${(brush.flow < 1 || brush.pressureOpacity || brush.dynamics.flowVelocity !== 0) ? html`
             <div class="section">
               <label>Buildup</label>
               <input type="range" min="0" max="100" .value=${String(Math.round(brush.ink.buildup * 100))}
