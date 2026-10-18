@@ -1922,6 +1922,17 @@ export class ToolSettings extends LitElement {
         </div>
       `;
     };
+    const fadeControl = (label: string, key: 'taperStart' | 'sizeLength', max: number, hint: string) => {
+      const value = Math.round(brush.fade[key]);
+      return html`
+        <div class="section">
+          <label title=${hint}>${label}</label>
+          <input type="range" min="0" max=${max} step="5" aria-label=${label} .value=${String(Math.min(max, value))}
+            @input=${(e: Event) => this.ctx.setBrushFade({ [key]: Number((e.target as HTMLInputElement).value) })} />
+          <span class="size-value">${value > 0 ? `${value}px` : 'Off'}</span>
+        </div>
+      `;
+    };
     const jitterToggle = html`
       <button
         class="advanced-toggle"
@@ -2037,9 +2048,9 @@ export class ToolSettings extends LitElement {
             Stylus Size
           </label>
         </div>
-        ${brush.pressureSize ? html`
+        ${brush.pressureSize || brush.fade.sizeLength > 0 || brush.fade.taperStart > 0 ? html`
         <div class="section">
-          <label title="How thick the lightest touch draws, as a share of the size.">Minimum Size</label>
+          <label title="How thick the lightest touch draws, as a share of the size; also the smallest size the taper and size fade reach.">Minimum Size</label>
           <input type="range" min="0" max="100" aria-label="Minimum size" .value=${String(Math.round(brush.dynamics.minSize * 100))}
             @input=${(e: Event) => this.ctx.setBrushDynamics({ minSize: Number((e.target as HTMLInputElement).value) / 100 })} />
           <span class="size-value">${Math.round(brush.dynamics.minSize * 100)}%</span>
@@ -2072,6 +2083,8 @@ export class ToolSettings extends LitElement {
         ${heading('Dynamics')}
         ${speedControl('Size by speed', 'sizeVelocity', 'Positive: dabs grow the faster you draw. Negative: they shrink.')}
         ${speedControl('Flow by speed', 'flowVelocity', 'Positive: ink flows more the faster you draw. Negative: less.')}
+        ${fadeControl('Taper start', 'taperStart', 500, 'The dab grows from its smallest size to full over this distance at the start of each stroke, to a point. The smallest size is set by Minimum Size.')}
+        ${fadeControl('Size fade', 'sizeLength', 2000, 'The dab shrinks along the stroke, reaching its smallest size at this distance. Flow fades with Depletion under Ink.')}
         <div class="section">${jitterToggle}</div>
         ${this._jitterOpen ? html`
           <div class="section advanced-group">
@@ -2176,7 +2189,7 @@ export class ToolSettings extends LitElement {
               </div>
             ` : nothing}
             <div class="section">
-              <label>Depletion</label>
+              <label title="Fades the flow along the stroke (Photoshop's flow fade); at 100% it reaches nothing at the length below.">Depletion</label>
               <input type="range" min="0" max="100" .value=${String(Math.round(brush.ink.depletion * 100))}
                 @input=${(e: Event) => this.ctx.setBrushInk({ depletion: Number((e.target as HTMLInputElement).value) / 100 })} />
               <span class="size-value">${Math.round(brush.ink.depletion * 100)}%</span>

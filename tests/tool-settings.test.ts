@@ -401,3 +401,39 @@ describe('ToolSettings airbrush', () => {
     expect(render_(false, 20, 'eraser').container.querySelector('input[aria-label="Airbrush"]')).not.toBeNull();
   });
 });
+
+describe('ToolSettings fades', () => {
+  function render_(fade = {}) {
+    const setBrushFade = vi.fn();
+    const settings = new ToolSettings();
+    (settings as any)._ctx = {
+      value: {
+        state: makeState({ activeTool: 'pencil', brush: { fade, pressureSize: false } }),
+        isMobile: true,
+        setBrush: vi.fn(), setBrushTip: vi.fn(), setBrushInk: vi.fn(), setBrushDynamics: vi.fn(), setBrushJitter: vi.fn(), setBrushFade, selectPreset: vi.fn(),
+      },
+    };
+    const container = document.createElement('div');
+    render(settings.render(), container);
+    return { container, setBrushFade };
+  }
+
+  it('sets the taper and size fade lengths, in pixels', () => {
+    const { container, setBrushFade } = render_({ taperStart: 30, sizeLength: 0 });
+    const taper = container.querySelector<HTMLInputElement>('input[aria-label="Taper start"]')!;
+    const fade = container.querySelector<HTMLInputElement>('input[aria-label="Size fade"]')!;
+    expect(taper.value).toBe('30');
+    expect(fade.value).toBe('0');
+    fade.value = '400';
+    fade.dispatchEvent(new Event('input'));
+    expect(setBrushFade).toHaveBeenLastCalledWith({ sizeLength: 400 });
+    taper.value = '0';
+    taper.dispatchEvent(new Event('input'));
+    expect(setBrushFade).toHaveBeenLastCalledWith({ taperStart: 0 });
+  });
+
+  it('shows the minimum size they shrink toward even without stylus size', () => {
+    expect(render_().container.querySelector('input[aria-label="Minimum size"]')).toBeNull();
+    expect(render_({ taperStart: 20 }).container.querySelector('input[aria-label="Minimum size"]')).not.toBeNull();
+  });
+});

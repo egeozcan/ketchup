@@ -2,8 +2,8 @@ import { LitElement, html, css, type PropertyValues } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { ContextProvider } from '@lit/context';
 import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
-import { blendModeToCompositeOp, isBrushBlendMode, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics, type BrushJitter, type BrushScatter, type BrushColorDynamics } from '../engine/types.js';
-import { copyDescriptor, getDefaultDescriptor, getPresetById, normalizeDynamics, normalizeJitter, normalizeScatter, normalizeColorDynamics, normalizeAirbrushRate } from '../engine/brush-presets.js';
+import { blendModeToCompositeOp, isBrushBlendMode, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics, type BrushJitter, type BrushScatter, type BrushColorDynamics, type BrushFade } from '../engine/types.js';
+import { copyDescriptor, getDefaultDescriptor, getPresetById, normalizeDynamics, normalizeJitter, normalizeScatter, normalizeColorDynamics, normalizeFade, normalizeAirbrushRate } from '../engine/brush-presets.js';
 import type { DrawingState, HistoryEntry, Layer, LayerSnapshot, ToolType } from '../types.js';
 import type { DrawingCanvas } from './drawing-canvas.js';
 import { IndexedDBBackend, MemoryBackend, ProjectService, StorageQuotaError, StorageNotFoundError, StorageClosedError, collectBlobRefsFromEntry, storageBackendContext, projectServiceContext } from '../storage/index.js';
@@ -1836,6 +1836,7 @@ export class DrawingApp extends LitElement {
             jitter: { ...this._state.brush.jitter },
             scatter: { ...this._state.brush.scatter },
             color: { ...this._state.brush.color },
+            fade: { ...this._state.brush.fade },
             blendMode: this._state.brush.blendMode,
             airbrush: this._state.brush.airbrush,
             airbrushRate: this._state.brush.airbrushRate,
@@ -2679,6 +2680,7 @@ export class DrawingApp extends LitElement {
         jitter: normalizeJitter(ts.jitter),
         scatter: normalizeScatter(ts.scatter),
         color: normalizeColorDynamics(ts.color),
+        fade: normalizeFade(ts.fade),
         blendMode: isBrushBlendMode(ts.blendMode) ? ts.blendMode : 'normal',
         airbrush: ts.airbrush === true,
         airbrushRate: normalizeAirbrushRate(ts.airbrushRate),
@@ -3122,6 +3124,9 @@ export class DrawingApp extends LitElement {
       },
       setBrushColorDynamics: (color: Partial<BrushColorDynamics>) => {
         this._updateBrush({ color: { ...this._state.brush.color, ...color } });
+      },
+      setBrushFade: (fade: Partial<BrushFade>) => {
+        this._updateBrush({ fade: { ...this._state.brush.fade, ...fade } });
       },
       selectPreset: (presetId: string) => {
         const preset = getPresetById(presetId);

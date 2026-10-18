@@ -249,6 +249,8 @@ export class StampStrokeEngine {
   private _docHeight = 0;
   private _inkState: InkState | null = null;
   private _prevStamp: StampPoint | null = null;
+  /** Path length of the segments of this stroke before the current one (a pressure lift starts a new segment), so size fade runs on over the stroke while the taper restarts. */
+  private _distBase = 0;
   private _variantCounter = 0;
   private _rng = new Rng(0);
   private _flowRng = new Rng(0);
@@ -316,6 +318,7 @@ export class StampStrokeEngine {
     this._smoother.reset();
     this._stabilizer.reset(options.stabilizerMs ?? 0, STABILIZER_SLACK_PX / this._viewScale);
     this._prevStamp = null;
+    this._distBase = 0;
     this._heading = null;
     this._airClock = null;
     this._lastFeedStep = 0;
@@ -344,10 +347,12 @@ export class StampStrokeEngine {
     let inputPressure = pressure;
     if (!Number.isFinite(pressure) || pressure <= 0) {
       // A pressure that drives the fill mix is a pressure dynamic like the others.
-      if (d.pressureSize || d.pressureOpacity || (this._dynamicColor && d.color.fgBgPressure && d.color.fgBg > 0)) {
+      // A start taper needs the lift too, for the new contact to taper in.
+      if (d.pressureSize || d.pressureOpacity || d.fade.taperStart > 0 || (this._dynamicColor && d.color.fgBgPressure && d.color.fgBg > 0)) {
         // A lift ends this part of the stroke where the pen was, then the
         // next contact starts afresh.
         this._finishSegment();
+        this._distBase += this._smoother.pathLength();
         this._smoother.reset();
         this._stabilizer.reset();
         this._resetMotion();
@@ -584,7 +589,7 @@ export class StampStrokeEngine {
         speedFactor(d.dynamics.flowVelocity, stamp.velocity);
       const effectiveFlow = applyBuildup(ink, baseFlow, stamp.speedPxPerMs);
 
-      const nominal = this._sizeAt(stamp.pressure, stamp.velocity);
+      const nominal = this._sizeAt(stamp);
       const baseRotation = computeStampRotation(stamp, this._prevStamp, state.prevRotation, d.tip);
       // Direction following reads prevRotation, so neither jitter nor scatter touches it.
       state.prevRotation = baseRotation;
@@ -856,12 +861,38 @@ export class StampStrokeEngine {
     }
   }
 
-  /** A dab's diameter at a (curve-mapped) pressure and a normalized speed. */
-  private _sizeAt(mappedPressure: number, velocity: number): number {
+  /**
+   * A dab's diameter at a point of the path: pressure, speed and the fades
+   * multiply, then it is held to at least a pixel. Spacing asks this at points
+   * the walk is only trying, so it must read nothing but the point.
+   */
+  private _sizeAt(at: StampPoint): number {
     const d = this._descriptor!;
     const min = d.dynamics.minSize;
-    const size = d.pressureSize ? d.size * (min + (1 - min) * mappedPressure) : d.size;
-    return Math.max(1, size * speedFactor(d.dynamics.sizeVelocity, velocity));
+    const size = d.pressureSize ? d.size * (min + (1 - min) * at.pressure) : d.size;
+    return Math.max(1, size * speedFactor(d.dynamics.sizeVelocity, at.velocity) * this._fadeFactor(at));
+  }
+
+  /**
+   * How much the fades leave of a dab's size at a point: the size fade runs
+   * over the whole stroke's path, falling linearly to `minSize`, and the start
+   * taper rises from `minSize` to 1 over the segment's first `taperStart` px,
+   * eased by smoothstep so the tip comes to a point instead of a cone with a
+   * kink where it ends. There is no end taper: that needs the stroke's end,
+   * which isn't known while the dabs are laid.
+   */
+  private _fadeFactor(at: StampPoint): number {
+    const { sizeLength, taperStart } = this._descriptor!.fade;
+    let factor = 1;
+    if (sizeLength > 0 || taperStart > 0) {
+      const min = this._descriptor!.dynamics.minSize;
+      if (sizeLength > 0) factor *= 1 - Math.min(1, (this._distBase + at.pathDist) / sizeLength) * (1 - min);
+      if (taperStart > 0) {
+        const t = Math.min(1, at.pathDist / taperStart);
+        factor *= min + (1 - min) * t * t * (3 - 2 * t);
+      }
+    }
+    return factor;
   }
 
   /**
@@ -873,7 +904,7 @@ export class StampStrokeEngine {
    */
   private _dabSpacing = (at: StampPoint, heading: number | null): number => {
     const d = this._descriptor!;
-    return Math.max(1, d.spacing * this._sizeAt(at.pressure, at.velocity) * this._leanSpacing(at, heading));
+    return Math.max(1, d.spacing * this._sizeAt(at) * this._leanSpacing(at, heading));
   };
 
   /**

@@ -30,6 +30,7 @@ export type PathTarget = PathChannels & { pressure: number };
  * must not change anything.
  */
 export type Spacing = number | ((at: StampPoint, heading: number | null) => number);
+// A stamp's `pathDist` is the path length from the path's start (the smoother's reset) to it.
 
 /** Shortest spacing honoured, so a careless one can't stall a walk. */
 const MIN_SPACING = 1e-3;
@@ -65,6 +66,8 @@ export class PathSmoother {
   private _heading: number | null = null;
   /** How far the path has gone since the last stamp, up to the end of the segments walked. */
   private _since = 0;
+  /** The last stamp's path length from the start of the path, which `_since` adds to. */
+  private _lastDist = 0;
   /** The unwalked last segment was laid by settle(); the next point's walk would lay it again. */
   private _tailLaid = false;
 
@@ -75,7 +78,13 @@ export class PathSmoother {
     this._lastSpacing = 0;
     this._heading = null;
     this._since = 0;
+    this._lastDist = 0;
     this._tailLaid = false;
+  }
+
+  /** The path's length so far, up to the end of the segments walked. */
+  pathLength(): number {
+    return this._lastDist + this._since;
   }
 
   /**
@@ -109,7 +118,7 @@ export class PathSmoother {
 
     // Single point (stroke start dot)
     if (n === 1) {
-      const stamp: StampPoint = { x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, velocity: pt.velocity, tiltX: pt.tiltX, tiltY: pt.tiltY, twist: pt.twist };
+      const stamp: StampPoint = { x, y, pressure, speedPxPerMs: DEFAULT_SPEED_PX_PER_MS, pathDist: 0, velocity: pt.velocity, tiltX: pt.tiltX, tiltY: pt.tiltY, twist: pt.twist };
       this._lay(stamp, spacing);
       return [stamp];
     }
@@ -202,6 +211,7 @@ export class PathSmoother {
         y: from.y + dy * t,
         pressure: from.pressure + (to.pressure - from.pressure) * t,
         speedPxPerMs,
+        pathDist: 0,
         ...lerpChannels(from, to, t),
       };
     });
@@ -247,6 +257,7 @@ export class PathSmoother {
         y: catmullRom(p0.y, p1.y, p2.y, p3.y, t),
         pressure: p1.pressure + (p2.pressure - p1.pressure) * t,
         speedPxPerMs,
+        pathDist: 0,
         ...lerpChannels(p1, p2, t),
       };
     });
@@ -271,6 +282,7 @@ export class PathSmoother {
       } else {
         const due = (d: number) => {
           const p = pointAt(d);
+          p.pathDist = this._lastDist + since + (d - start);
           return since + (d - start) >= Math.min(this._lastSpacing, spacingOf(spacing, p, this._headingTo(p)));
         };
         const end = Math.min(length, latest);
@@ -303,6 +315,7 @@ export class PathSmoother {
         return stamps;
       }
       const stamp = pointAt(at);
+      stamp.pathDist = this._lastDist + since + (at - start);
       this._lay(stamp, spacing);
       stamps.push(stamp);
       start = at;
@@ -320,6 +333,7 @@ export class PathSmoother {
   private _lay(stamp: StampPoint, spacing: Spacing) {
     this._heading = this._headingTo(stamp);
     this._last = stamp;
+    this._lastDist = stamp.pathDist;
     this._lastSpacing = spacingOf(spacing, stamp, this._heading);
     this._since = 0;
   }

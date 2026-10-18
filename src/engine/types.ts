@@ -69,6 +69,26 @@ export interface BrushScatter {
 }
 
 /**
+ * Size over distance along the path, in document pixels; 0 is off. It is its
+ * own block rather than part of BrushDynamics: those are -1..1 shares driven
+ * by pressure and speed, these are lengths. The flow fade Photoshop has beside
+ * them is `ink.depletion` (over `ink.depletionLength`), which already scales
+ * each dab's flow down by distance, so there is no second one here. Both fades
+ * shrink toward `dynamics.minSize` of the brush size (at least 1px).
+ */
+export interface BrushFade {
+  /** The dab shrinks linearly with the stroke's distance, reaching its smallest size at this length. */
+  sizeLength: number;
+  /**
+   * The dab grows from its smallest size to full over this distance at the
+   * start of each segment of the stroke (a segment starts at each contact
+   * after a pressure lift), eased so the tip is pointed. There is no end
+   * taper: it would need to know where the stroke ends before laying the dabs.
+   */
+  taperStart: number;
+}
+
+/**
  * Photoshop's Color Dynamics: the colour each dab is painted in varies around
  * the stroke colour, in OKLCh so a hue step looks as large in every hue. A
  * stroke where all of it is off paints as it always did.
@@ -148,6 +168,7 @@ export interface BrushDescriptor {
   jitter: BrushJitter;
   scatter: BrushScatter;
   color: BrushColorDynamics;
+  fade: BrushFade;
   /**
    * How the stroke combines with the layer, defaulting to 'normal'. It lives
    * on the descriptor, not beside it in the tool state, so presets can carry
@@ -202,6 +223,8 @@ export interface StampPoint extends PathChannels {
   y: number;
   pressure: number;
   speedPxPerMs: number;
+  /** Path length from the start of the current segment of the stroke (the first contact, or the first after a pressure lift) to this point. */
+  pathDist: number;
 }
 
 export type BlendMode =
