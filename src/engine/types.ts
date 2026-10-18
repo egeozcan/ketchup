@@ -46,6 +46,23 @@ export interface BrushJitter {
   flow: number;
 }
 
+/**
+ * Scatter lays several dabs around each spot of the path. It is its own block
+ * rather than part of BrushJitter: jitter varies a dab's own look from 0 to 1,
+ * while scatter changes where and how many dabs go down, with units (dab
+ * diameters, a count, a switch) of its own.
+ */
+export interface BrushScatter {
+  /** How far (0..5, in dab diameters) a dab can land from the path, to either side; 0 is off. */
+  amount: number;
+  /** Scatter along the stroke as well as across it. */
+  bothAxes: boolean;
+  /** Dabs laid per spot (1..16). */
+  count: number;
+  /** The share (0..1) of the count that can randomly be taken off a spot. */
+  countJitter: number;
+}
+
 export interface BrushDescriptor {
   size: number;
   opacity: number;
@@ -59,6 +76,7 @@ export interface BrushDescriptor {
   ink: InkDescriptor;
   dynamics: BrushDynamics;
   jitter: BrushJitter;
+  scatter: BrushScatter;
 }
 
 export interface BrushPreset {

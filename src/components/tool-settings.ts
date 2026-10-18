@@ -6,7 +6,7 @@ import { drawingContext, type DrawingContextValue } from '../contexts/drawing-co
 import { storageBackendContext, projectServiceContext } from '../storage/storage-context.js';
 import type { StampEntry } from '../storage/types.js';
 import type { PressureCurveName, TipShape, OrientationMode, BrushDescriptor, BrushDynamics, BrushJitter, BrushPreset } from '../engine/types.js';
-import { BRUSH_PRESETS, copyDescriptor } from '../engine/brush-presets.js';
+import { BRUSH_PRESETS, MAX_SCATTER, MAX_SCATTER_COUNT, copyDescriptor } from '../engine/brush-presets.js';
 import { getDefaultTipDescriptor, getTipCapabilities } from '../engine/brush-capabilities.js';
 import { StampStrokeEngine, tiltStretch } from '../engine/stamp-stroke.js';
 import { getStampThumbnailUrl, removeStampThumbnail } from '../utils/stamp-thumbnail-cache.js';
@@ -1113,6 +1113,7 @@ export class ToolSettings extends LitElement {
   @state() private _projectDropdownOpen = false;
   @state() private _advancedOpen = false;
   @state() private _jitterOpen = false;
+  @state() private _scatterOpen = false;
   @state() private _brushDropdownOpen = false;
   /** Which desktop settings panel (color or brush) is open, if any. */
   @state() private _openPanel: 'color' | 'brush' | null = null;
@@ -1553,7 +1554,10 @@ export class ToolSettings extends LitElement {
     ctx.fillStyle = '#2a2a2a';
     ctx.fillRect(0, 0, W, H);
 
-    const previewSize = Math.max(2, Math.min(18, 2 + Math.log2(Math.max(1, descriptor.size)) * 2.5));
+    // With scatter the dab shrinks to leave room for the spread, keeping the ratio the slider sets.
+    const scatterRoom = 12;
+    const fitted = Math.max(2, Math.min(18, 2 + Math.log2(Math.max(1, descriptor.size)) * 2.5));
+    const previewSize = descriptor.scatter.amount > 0 ? Math.max(2, Math.min(fitted, scatterRoom / descriptor.scatter.amount)) : fitted;
     const d: BrushDescriptor = { ...copyDescriptor(descriptor), size: previewSize };
 
     // Generate S-curve points — keep amplitude small enough that
@@ -1561,7 +1565,8 @@ export class ToolSettings extends LitElement {
     const padX = 8;
     // Half the largest stamp, as long as the preview's lean stretches it, + margin.
     const maxTipR = previewSize / 2 * tiltStretch(PREVIEW_TILT.tiltX, PREVIEW_TILT.tiltY, d.dynamics.tilt).stretch + 2;
-    const amplitude = Math.max(2, (H / 2 - maxTipR) * 0.8);
+    const room = Math.max(0, H / 2 - maxTipR);
+    const amplitude = Math.max(2, (room - d.scatter.amount * previewSize) * 0.8);
     const cy = H / 2;
     const totalLen = W - padX * 2;
 
@@ -1930,6 +1935,21 @@ export class ToolSettings extends LitElement {
         </div>
       `;
     };
+    const scatterToggle = html`
+      <button
+        class="advanced-toggle"
+        aria-expanded=${this._scatterOpen ? 'true' : 'false'}
+        @click=${() => { this._scatterOpen = !this._scatterOpen; }}
+      >Scatter ${this._scatterOpen ? html`&#9650;` : html`&#9660;`}</button>
+    `;
+    const scatterSlider = (label: string, key: 'amount' | 'count' | 'countJitter', hint: string, min: number, max: number, show: number, toValue: (v: number) => number) => html`
+      <div class="section">
+        <label title=${hint}>${label}</label>
+        <input type="range" min=${min} max=${max} aria-label=${`${label} scatter`} .value=${String(show)}
+          @input=${(e: Event) => this.ctx.setBrushScatter({ [key]: toValue(Number((e.target as HTMLInputElement).value)) })} />
+        <span class="size-value">${key === 'count' ? show : `${show}%`}</span>
+      </div>
+    `;
     return html`
         ${heading('Stroke')}
         <div class="section">
@@ -2006,6 +2026,21 @@ export class ToolSettings extends LitElement {
             ${jitterControl('Angle', 'angle', 'How far each dab can randomly turn, as a share of a full turn.')}
             ${jitterControl('Roundness', 'roundness', 'How much each dab can randomly be squashed across its axis.')}
             ${jitterControl('Flow', 'flow', 'How much fainter than the brush flow each dab can randomly be. The stroke opacity still caps the result.')}
+          </div>
+        ` : nothing}
+        <div class="section">${scatterToggle}</div>
+        ${this._scatterOpen ? html`
+          <div class="section advanced-group">
+            ${scatterSlider('Scatter', 'amount', 'How far dabs can land from the stroke, to either side, as a share of the brush size.', 0, MAX_SCATTER * 100, Math.round(brush.scatter.amount * 100), v => v / 100)}
+            <div class="section">
+              <label class="checkbox-label" title="Scatter along the stroke as well as across it.">
+                <input type="checkbox" aria-label="Both axes" .checked=${brush.scatter.bothAxes}
+                  @change=${(e: Event) => this.ctx.setBrushScatter({ bothAxes: (e.target as HTMLInputElement).checked })} />
+                Both axes
+              </label>
+            </div>
+            ${scatterSlider('Count', 'count', 'How many dabs are laid at each step of the stroke.', 1, MAX_SCATTER_COUNT, brush.scatter.count, v => v)}
+            ${scatterSlider('Count jitter', 'countJitter', 'How many dabs a step can randomly lose, as a share of the count.', 0, 100, Math.round(brush.scatter.countJitter * 100), v => v / 100)}
           </div>
         ` : nothing}
         <div class="section">${advancedToggle}</div>

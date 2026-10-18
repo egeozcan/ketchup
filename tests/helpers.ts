@@ -1,13 +1,14 @@
 import { vi } from 'vitest';
 import { getDefaultDescriptor } from '../src/engine/brush-presets.ts';
-import type { BrushDescriptor, BrushDynamics, BrushJitter, InkDescriptor, TipDescriptor } from '../src/engine/types.ts';
+import type { BrushDescriptor, BrushDynamics, BrushJitter, BrushScatter, InkDescriptor, TipDescriptor } from '../src/engine/types.ts';
 import type { DrawingState, Layer } from '../src/types.ts';
 
-type BrushOverrides = Omit<Partial<BrushDescriptor>, 'tip' | 'ink' | 'dynamics' | 'jitter'> & {
+type BrushOverrides = Omit<Partial<BrushDescriptor>, 'tip' | 'ink' | 'dynamics' | 'jitter' | 'scatter'> & {
   tip?: Partial<TipDescriptor>;
   ink?: Partial<InkDescriptor>;
   dynamics?: Partial<BrushDynamics>;
   jitter?: Partial<BrushJitter>;
+  scatter?: Partial<BrushScatter>;
 };
 
 export function makeBrush(overrides: BrushOverrides = {}): BrushDescriptor {
@@ -30,6 +31,10 @@ export function makeBrush(overrides: BrushOverrides = {}): BrushDescriptor {
     jitter: {
       ...base.jitter,
       ...(overrides.jitter ?? {}),
+    },
+    scatter: {
+      ...base.scatter,
+      ...(overrides.scatter ?? {}),
     },
   };
 }

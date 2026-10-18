@@ -1,9 +1,14 @@
-import type { BrushDescriptor, BrushDynamics, BrushJitter, BrushPreset } from './types.js';
+import type { BrushDescriptor, BrushDynamics, BrushJitter, BrushScatter, BrushPreset } from './types.js';
 import { getDefaultTipDescriptor } from './brush-capabilities.js';
 
 const NO_INK = { depletion: 0, depletionLength: 500, buildup: 0, wetness: 0 };
 export const NO_DYNAMICS: BrushDynamics = { sizeVelocity: 0, flowVelocity: 0, minSize: 0, tilt: 0 };
 export const NO_JITTER: BrushJitter = { size: 0, angle: 0, roundness: 0, flow: 0 };
+
+/** The ranges scatter's controls and stored values stay within. */
+export const MAX_SCATTER = 5;
+export const MAX_SCATTER_COUNT = 16;
+export const NO_SCATTER: BrushScatter = { amount: 0, bothAxes: false, count: 1, countJitter: 0 };
 
 export const BRUSH_PRESETS: BrushPreset[] = [
   {
@@ -17,6 +22,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       ink: { ...NO_INK },
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
+      scatter: { ...NO_SCATTER },
     },
   },
   {
@@ -30,6 +36,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       ink: { ...NO_INK },
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
+      scatter: { ...NO_SCATTER },
     },
   },
   {
@@ -43,6 +50,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       ink: { depletion: 0.3, depletionLength: 800, buildup: 0, wetness: 0 },
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
+      scatter: { ...NO_SCATTER },
     },
   },
   {
@@ -56,6 +64,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       ink: { depletion: 0.2, depletionLength: 600, buildup: 0.3, wetness: 0 },
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
+      scatter: { ...NO_SCATTER },
     },
   },
   {
@@ -69,6 +78,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       ink: { ...NO_INK },
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
+      scatter: { ...NO_SCATTER },
     },
   },
   {
@@ -82,6 +92,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       ink: { depletion: 0.5, depletionLength: 600, buildup: 0, wetness: 0 },
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
+      scatter: { ...NO_SCATTER },
     },
   },
   {
@@ -95,6 +106,21 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       ink: { depletion: 0.7, depletionLength: 400, buildup: 0, wetness: 0 },
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
+      scatter: { ...NO_SCATTER },
+    },
+  },
+  {
+    id: 'spray',
+    name: 'Spray',
+    category: 'effects',
+    descriptor: {
+      size: 12, opacity: 1, flow: 0.6, hardness: 0.5, spacing: 0.5,
+      pressureSize: false, pressureOpacity: false, pressureCurve: 'linear',
+      tip: getDefaultTipDescriptor('round'),
+      ink: { ...NO_INK },
+      dynamics: { ...NO_DYNAMICS },
+      jitter: { size: 0.6, angle: 0, roundness: 0, flow: 0.5 },
+      scatter: { amount: 2, bothAxes: true, count: 8, countJitter: 0.5 },
     },
   },
   {
@@ -108,6 +134,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       ink: { depletion: 0.8, depletionLength: 300, buildup: 0.4, wetness: 0 },
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
+      scatter: { ...NO_SCATTER },
     },
   },
   {
@@ -121,6 +148,7 @@ export const BRUSH_PRESETS: BrushPreset[] = [
       ink: { depletion: 0, depletionLength: 500, buildup: 0.2, wetness: 0.91 },
       dynamics: { ...NO_DYNAMICS },
       jitter: { ...NO_JITTER },
+      scatter: { ...NO_SCATTER },
     },
   },
 ];
@@ -135,7 +163,7 @@ export function getDefaultDescriptor(): BrushDescriptor {
 
 /** A descriptor that shares no nested object with `d`. */
 export function copyDescriptor(d: BrushDescriptor): BrushDescriptor {
-  return { ...d, tip: { ...d.tip }, ink: { ...d.ink }, dynamics: { ...d.dynamics }, jitter: { ...NO_JITTER, ...d.jitter } };
+  return { ...d, tip: { ...d.tip }, ink: { ...d.ink }, dynamics: { ...d.dynamics }, jitter: { ...NO_JITTER, ...d.jitter }, scatter: { ...NO_SCATTER, ...d.scatter } };
 }
 
 /** Stored dynamics over the defaults, each clamped to -1..1; a value that isn't a number keeps its default. */
@@ -163,5 +191,17 @@ export function normalizeJitter(stored: Partial<BrushJitter> | undefined): Brush
     const v = stored?.[key];
     if (typeof v === 'number' && Number.isFinite(v)) out[key] = Math.max(0, Math.min(1, v));
   }
+  return out;
+}
+
+/** Stored scatter over the defaults: amount 0..5, count a whole number 1..16, countJitter 0..1; anything else keeps its default. */
+export function normalizeScatter(stored: Partial<BrushScatter> | undefined): BrushScatter {
+  const out = { ...NO_SCATTER };
+  const num = (v: unknown, min: number, max: number, fallback: number) =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.max(min, Math.min(max, v)) : fallback;
+  out.amount = num(stored?.amount, 0, MAX_SCATTER, out.amount);
+  out.count = Math.round(num(stored?.count, 1, MAX_SCATTER_COUNT, out.count));
+  out.countJitter = num(stored?.countJitter, 0, 1, out.countJitter);
+  if (typeof stored?.bothAxes === 'boolean') out.bothAxes = stored.bothAxes;
   return out;
 }

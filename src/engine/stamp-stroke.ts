@@ -11,6 +11,8 @@ import { initInkState, applyDepletion, applyBuildup, applyPickup } from './ink-m
 
 /** Mixed into the stroke's seed for the flow jitter's own random stream. */
 const FLOW_STREAM = 0x9E3779B9;
+/** Mixed into the stroke's seed for scatter's own random stream. */
+const SCATTER_STREAM = 0x85EBCA6B;
 
 const MIN_DIRECTION_DIST_SQ = 0.25;
 /** How quickly the speed that drives dynamics follows the pointer's, in ms. */
@@ -174,6 +176,9 @@ export class StampStrokeEngine {
   private _variantCounter = 0;
   private _rng = new Rng(0);
   private _flowRng = new Rng(0);
+  private _scatterRng = new Rng(0);
+  /** The stroke's direction between the last two stamps (radians), for scatter across it; null before it has one. */
+  private _heading: number | null = null;
   private _snapshotCaptured = false;
   // Reusable tinting canvas for color mode — avoids per-stamp allocation
   private _tintCanvas: AnyCanvas | null = null;
@@ -203,10 +208,12 @@ export class StampStrokeEngine {
     this._smoother.reset();
     this._stabilizer.reset(options.stabilizerMs ?? 0, STABILIZER_SLACK_PX / this._viewScale);
     this._prevStamp = null;
+    this._heading = null;
     this._variantCounter = 0;
     const seed = options.seed ?? freshSeed();
     this._rng = new Rng(seed);
     this._flowRng = new Rng(seed ^ FLOW_STREAM);
+    this._scatterRng = new Rng(seed ^ SCATTER_STREAM);
     this._snapshotCaptured = false;
     this._dirtyMinX = Infinity;
     this._dirtyMinY = Infinity;
@@ -228,6 +235,7 @@ export class StampStrokeEngine {
         this._stabilizer.reset();
         this._resetMotion();
         this._prevStamp = null;
+        this._heading = null;
         return;
       }
       inputPressure = 1;
@@ -262,6 +270,8 @@ export class StampStrokeEngine {
     const ctx = get2dContext(buf);
 
     const variantCount = TIP_VARIANT_COUNTS[d.tip.shape] ?? 0;
+    const sc = d.scatter;
+    const scattering = sc.amount > 0 || sc.count > 1;
 
     for (const stamp of stamps) {
       let stampDist = 0;
@@ -270,6 +280,7 @@ export class StampStrokeEngine {
         const dy = stamp.y - this._prevStamp.y;
         stampDist = Math.sqrt(dx * dx + dy * dy);
         state.distanceTraveled += stampDist;
+        if (dx * dx + dy * dy >= MIN_DIRECTION_DIST_SQ) this._heading = Math.atan2(dy, dx);
       }
       state.stampCount++;
 
@@ -279,7 +290,8 @@ export class StampStrokeEngine {
       // doesn't reshuffle the others. Flow jitter takes its one value per dab,
       // at the same point, from a second stream (_flowRng) seeded from the
       // same seed, so adding it left the first stream's values where they were
-      // for every dab. Jitter added later draws from its own stream likewise.
+      // for every dab. Scatter does likewise with _scatterRng, and jitter added
+      // later draws from its own stream too.
       const rSize = this._rng.next();
       const rAngle = this._rng.next();
       const rRound = this._rng.next();
@@ -295,85 +307,124 @@ export class StampStrokeEngine {
         speedFactor(d.dynamics.flowVelocity, stamp.velocity);
       const effectiveFlow = applyBuildup(ink, baseFlow, stamp.speedPxPerMs);
 
-      // Jitter only ever takes size off, never below a pixel; spacing stays on
-      // the un-jittered size (_dabSpacing), as Photoshop does, so it stays even.
-      const stampSize = Math.max(1, this._sizeAt(stamp.pressure, stamp.velocity) * (1 - d.jitter.size * rSize));
-      applyPickup(ink, state, stamp.x, stamp.y, stampSize / 2);
-      const diam = quantizeDiameter(stampSize);
-
-      let tip: AnyCanvas;
-      if (variantCount > 0) {
-        const vi = this._variantCounter % variantCount;
-        tip = this._tipCache.getVariant(diam, d.hardness, d.tip, vi);
-        this._variantCounter++;
-      } else {
-        tip = this._tipCache.get(diam, d.hardness, d.tip);
-      }
-
+      const nominal = this._sizeAt(stamp.pressure, stamp.velocity);
       const baseRotation = computeStampRotation(stamp, this._prevStamp, state.prevRotation, d.tip);
-      // Direction following reads prevRotation, so the jitter stays out of it.
+      // Direction following reads prevRotation, so neither jitter nor scatter touches it.
       state.prevRotation = baseRotation;
-      const rotation = baseRotation + (rAngle - 0.5) * d.jitter.angle * 2 * Math.PI;
-      const squash = 1 - d.jitter.roundness * rRound;
-
-      // Each dab keeps between 1 - jitter.flow and all of its alpha. This is
-      // Photoshop's opacity jitter: the stroke buffer caps the opacity at
-      // commit, so the stroke-level opacity itself is never jittered.
-      const stampAlpha = Math.min(1, effectiveFlow * depletionMult) * (1 - d.jitter.flow * rFlow);
-
-      const tipW = tip.width;
-      const tipH = tip.height;
-      // Tips are cached at an even diameter; draw them stretched to the exact
-      // footprint, at the exact (subpixel) position, so thin strokes and
-      // pressure tapers don't step in whole pixels.
-      const { w: drawW, h: drawH } = tipFootprint(stampSize, d.tip);
       const lean = tiltStretch(stamp.tiltX, stamp.tiltY, d.dynamics.tilt);
 
-      // Half-diagonal covers the tip footprint at any rotation, times the
-      // lean's stretch (the squash only shortens a dab); +1 absorbs resampling spill at the fractional edges.
-      const reach = Math.sqrt(drawW * drawW + drawH * drawH) / 2 * lean.stretch + 1;
-      if (stamp.x - reach < this._dirtyMinX) this._dirtyMinX = stamp.x - reach;
-      if (stamp.y - reach < this._dirtyMinY) this._dirtyMinY = stamp.y - reach;
-      if (stamp.x + reach > this._dirtyMaxX) this._dirtyMaxX = stamp.x + reach;
-      if (stamp.y + reach > this._dirtyMaxY) this._dirtyMaxY = stamp.y + reach;
+      // Scatter lays `count` dabs around the stamp's spot, each shifted by up to
+      // `amount` dab diameters. The extras are drawn on top of the stamp and
+      // touch nothing the path keeps (distance, rotation, previous stamp), so
+      // spacing, ink depletion and direction following run as without them.
+      // Everything random about them comes from _scatterRng, never the main
+      // streams, so a stroke without scatter is untouched.
+      let dabs = 1;
+      if (scattering) {
+        const rCount = this._scatterRng.next();
+        dabs = Math.max(1, Math.round(sc.count * (1 - sc.countJitter * rCount)));
+      }
+      const spread = sc.amount * nominal;
+      // Before the stroke has a heading, "across it" means nothing: scatter on both axes.
+      const bothAxes = sc.bothAxes || this._heading === null;
+      const headingCos = this._heading === null ? 1 : Math.cos(this._heading);
+      const headingSin = this._heading === null ? 0 : Math.sin(this._heading);
 
-      if (this._colorMode) {
-        // Reuse a single tinting canvas — grow only, never shrink
-        if (tipW > this._tintW || tipH > this._tintH) {
-          this._tintW = Math.max(this._tintW, tipW);
-          this._tintH = Math.max(this._tintH, tipH);
-          this._tintCanvas = createOffscreenCanvas(this._tintW, this._tintH);
-          this._tintedTip = null;
-        }
-        if (tip !== this._tintedTip || state.currentColor !== this._tintedColor) {
-          const tCtx = get2dContext(this._tintCanvas!);
-          tCtx.globalCompositeOperation = 'source-over';
-          tCtx.clearRect(0, 0, this._tintW, this._tintH);
-          drawImageSafe(tCtx, tip, 0, 0);
-          tintAlphaMask(tCtx, state.currentColor, tipW, tipH);
-          this._tintedTip = tip;
-          this._tintedColor = state.currentColor;
+      for (let k = 0; k < dabs; k++) {
+        // The first dab takes the stamp's own jitter values, extras fresh ones.
+        let jSize = rSize, jAngle = rAngle, jRound = rRound, jFlow = rFlow;
+        let px = stamp.x, py = stamp.y;
+        if (scattering) {
+          const across = (this._scatterRng.next() * 2 - 1) * spread;
+          const along = (this._scatterRng.next() * 2 - 1) * spread;
+          if (k > 0) {
+            jSize = this._scatterRng.next();
+            jAngle = this._scatterRng.next();
+            jRound = this._scatterRng.next();
+            jFlow = this._scatterRng.next();
+          }
+          const a = bothAxes ? along : 0;
+          px += headingCos * a - headingSin * across;
+          py += headingSin * a + headingCos * across;
         }
 
-        // The tint canvas only grows, so it can be larger than this tip: crop
-        // its top-left tipW×tipH rather than scaling the whole canvas down.
-        const tint = this._tintCanvas as HTMLCanvasElement;
-        ctx.globalAlpha = stampAlpha;
-        ctx.globalCompositeOperation = 'source-over';
-        if (transformDab(ctx, stamp.x, stamp.y, rotation, lean, squash)) {
-          ctx.drawImage(tint, 0, 0, tipW, tipH, -drawW / 2, -drawH / 2, drawW, drawH);
-          ctx.restore();
+        // Jitter only ever takes size off, never below a pixel; spacing stays on
+        // the un-jittered size (_dabSpacing), as Photoshop does, so it stays even.
+        const stampSize = Math.max(1, nominal * (1 - d.jitter.size * jSize));
+        // A colour is picked up along the path, once per stamp, not at each scattered dab.
+        if (k === 0) applyPickup(ink, state, stamp.x, stamp.y, stampSize / 2);
+        const diam = quantizeDiameter(stampSize);
+
+        let tip: AnyCanvas;
+        if (variantCount > 0) {
+          const vi = this._variantCounter % variantCount;
+          tip = this._tipCache.getVariant(diam, d.hardness, d.tip, vi);
+          this._variantCounter++;
         } else {
-          ctx.drawImage(tint, 0, 0, tipW, tipH, stamp.x - drawW / 2, stamp.y - drawH / 2, drawW, drawH);
+          tip = this._tipCache.get(diam, d.hardness, d.tip);
         }
-      } else {
-        ctx.globalAlpha = stampAlpha;
-        ctx.globalCompositeOperation = 'source-over';
-        if (transformDab(ctx, stamp.x, stamp.y, rotation, lean, squash)) {
-          drawImageSafe(ctx, tip, -drawW / 2, -drawH / 2, drawW, drawH);
-          ctx.restore();
+
+        const rotation = baseRotation + (jAngle - 0.5) * d.jitter.angle * 2 * Math.PI;
+        const squash = 1 - d.jitter.roundness * jRound;
+
+        // Each dab keeps between 1 - jitter.flow and all of its alpha. This is
+        // Photoshop's opacity jitter: the stroke buffer caps the opacity at
+        // commit, so the stroke-level opacity itself is never jittered.
+        const stampAlpha = Math.min(1, effectiveFlow * depletionMult) * (1 - d.jitter.flow * jFlow);
+
+        const tipW = tip.width;
+        const tipH = tip.height;
+        // Tips are cached at an even diameter; draw them stretched to the exact
+        // footprint, at the exact (subpixel) position, so thin strokes and
+        // pressure tapers don't step in whole pixels.
+        const { w: drawW, h: drawH } = tipFootprint(stampSize, d.tip);
+
+        // Half-diagonal covers the tip footprint at any rotation, times the
+        // lean's stretch (the squash only shortens a dab); +1 absorbs resampling spill at the fractional edges.
+        const reach = Math.sqrt(drawW * drawW + drawH * drawH) / 2 * lean.stretch + 1;
+        if (px - reach < this._dirtyMinX) this._dirtyMinX = px - reach;
+        if (py - reach < this._dirtyMinY) this._dirtyMinY = py - reach;
+        if (px + reach > this._dirtyMaxX) this._dirtyMaxX = px + reach;
+        if (py + reach > this._dirtyMaxY) this._dirtyMaxY = py + reach;
+
+        if (this._colorMode) {
+          // Reuse a single tinting canvas — grow only, never shrink
+          if (tipW > this._tintW || tipH > this._tintH) {
+            this._tintW = Math.max(this._tintW, tipW);
+            this._tintH = Math.max(this._tintH, tipH);
+            this._tintCanvas = createOffscreenCanvas(this._tintW, this._tintH);
+            this._tintedTip = null;
+          }
+          if (tip !== this._tintedTip || state.currentColor !== this._tintedColor) {
+            const tCtx = get2dContext(this._tintCanvas!);
+            tCtx.globalCompositeOperation = 'source-over';
+            tCtx.clearRect(0, 0, this._tintW, this._tintH);
+            drawImageSafe(tCtx, tip, 0, 0);
+            tintAlphaMask(tCtx, state.currentColor, tipW, tipH);
+            this._tintedTip = tip;
+            this._tintedColor = state.currentColor;
+          }
+
+          // The tint canvas only grows, so it can be larger than this tip: crop
+          // its top-left tipW×tipH rather than scaling the whole canvas down.
+          const tint = this._tintCanvas as HTMLCanvasElement;
+          ctx.globalAlpha = stampAlpha;
+          ctx.globalCompositeOperation = 'source-over';
+          if (transformDab(ctx, px, py, rotation, lean, squash)) {
+            ctx.drawImage(tint, 0, 0, tipW, tipH, -drawW / 2, -drawH / 2, drawW, drawH);
+            ctx.restore();
+          } else {
+            ctx.drawImage(tint, 0, 0, tipW, tipH, px - drawW / 2, py - drawH / 2, drawW, drawH);
+          }
         } else {
-          drawImageSafe(ctx, tip, stamp.x - drawW / 2, stamp.y - drawH / 2, drawW, drawH);
+          ctx.globalAlpha = stampAlpha;
+          ctx.globalCompositeOperation = 'source-over';
+          if (transformDab(ctx, px, py, rotation, lean, squash)) {
+            drawImageSafe(ctx, tip, -drawW / 2, -drawH / 2, drawW, drawH);
+            ctx.restore();
+          } else {
+            drawImageSafe(ctx, tip, px - drawW / 2, py - drawH / 2, drawW, drawH);
+          }
         }
       }
 

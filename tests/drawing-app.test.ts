@@ -581,6 +581,7 @@ describe('DrawingApp', () => {
         ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
         dynamics: { sizeVelocity: -0.5, flowVelocity: 7, minSize: 0.2, tilt: 0.7 },
         jitter: { size: 0.4, angle: 3, roundness: 0.1 },
+        scatter: { amount: 9, bothAxes: true, count: 4.4, countJitter: 0.3 },
         activePreset: 'flat',
         isPresetModified: true,
         cropAspectRatio: '16:9',
@@ -629,6 +630,8 @@ describe('DrawingApp', () => {
       // Out of range, so clamped.
       dynamics: { sizeVelocity: -0.5, flowVelocity: 1, minSize: 0.2, tilt: 0.7 },
       jitter: { size: 0.4, angle: 1, roundness: 0.1, flow: 0 },
+      // Out of range, so clamped.
+      scatter: { amount: 5, bothAxes: true, count: 4, countJitter: 0.3 },
     });
     expect((app as any)._state.stampSize).toBe(320);
     expect((app as any)._state.activePreset).toBe('flat');

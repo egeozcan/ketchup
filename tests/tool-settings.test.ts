@@ -68,6 +68,25 @@ describe('ToolSettings keyboard handling', () => {
 });
 
 describe('ToolSettings brush controls', () => {
+  it('sets scatter from its controls once the group is opened', () => {
+    const setBrushScatter = vi.fn();
+    const settings = new ToolSettings();
+    (settings as any)._scatterOpen = true;
+    (settings as any)._ctx = { value: { state: makeState({ activeTool: 'pencil' }), isMobile: true, setBrushScatter } };
+    const container = document.createElement('div');
+    render(settings.render(), container);
+    for (const [label, key, raw, value] of [['Scatter', 'amount', '250', 2.5], ['Count', 'count', '7', 7], ['Count jitter', 'countJitter', '40', 0.4]] as const) {
+      const input = container.querySelector(`input[aria-label="${label} scatter"]`) as HTMLInputElement;
+      input.value = raw;
+      input.dispatchEvent(new Event('input'));
+      expect(setBrushScatter).toHaveBeenLastCalledWith({ [key]: value });
+    }
+    const both = container.querySelector('input[aria-label="Both axes"]') as HTMLInputElement;
+    both.checked = true;
+    both.dispatchEvent(new Event('change'));
+    expect(setBrushScatter).toHaveBeenLastCalledWith({ bothAxes: true });
+  });
+
   it('sets jitter from its sliders once the group is opened', () => {
     const setBrushJitter = vi.fn();
     const settings = new ToolSettings();
