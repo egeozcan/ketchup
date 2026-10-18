@@ -75,7 +75,7 @@ describe('ToolSettings brush controls', () => {
     (settings as any)._ctx = { value: { state: makeState({ activeTool: 'pencil' }), isMobile: true, setBrushJitter } };
     const container = document.createElement('div');
     render(settings.render(), container);
-    for (const [label, key] of [['Size', 'size'], ['Angle', 'angle'], ['Roundness', 'roundness']]) {
+    for (const [label, key] of [['Size', 'size'], ['Angle', 'angle'], ['Roundness', 'roundness'], ['Flow', 'flow']]) {
       const input = container.querySelector(`input[aria-label="${label} jitter"]`) as HTMLInputElement;
       input.value = '40';
       input.dispatchEvent(new Event('input'));

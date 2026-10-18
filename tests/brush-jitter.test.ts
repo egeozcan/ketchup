@@ -5,22 +5,22 @@ import { NO_JITTER, copyDescriptor, normalizeJitter } from '../src/engine/brush-
 import type { BrushDescriptor } from '../src/engine/types.ts';
 import { makeBrush } from './helpers.ts';
 
-interface Dab { x: number; y: number; w: number; h: number; m: DOMMatrix }
+interface Dab { x: number; y: number; w: number; h: number; m: DOMMatrix; alpha: number }
 
 afterEach(() => vi.restoreAllMocks());
 
 /** The dabs of a straight stroke, as drawn (the stroke buffer going onto the layer is left out), and the stroke's dirty bounds. */
-function run(brush: Partial<Parameters<typeof makeBrush>[0]>, seed: number | undefined, tilt = { tiltX: 0, tiltY: 0 }) {
+function run(brush: Partial<Parameters<typeof makeBrush>[0]>, seed: number | undefined, tilt = { tiltX: 0, tiltY: 0 }, eraser = false) {
   const dabs: Dab[] = [];
   const spy = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage').mockImplementation(function (this: CanvasRenderingContext2D, ...args: unknown[]) {
     // A dry dab is drawn with 5 arguments, a wet-brush one (cropped from its tint canvas) with 9.
     if ((args.length !== 5 && args.length !== 9) || (args[0] as HTMLCanvasElement).width >= 200) return;
     const o = args.length === 9 ? 4 : 0;
     const m = this.getTransform();
-    dabs.push({ x: args[1 + o] as number, y: args[2 + o] as number, w: args[3 + o] as number, h: args[4 + o] as number, m });
+    dabs.push({ x: args[1 + o] as number, y: args[2 + o] as number, w: args[3 + o] as number, h: args[4 + o] as number, m, alpha: this.globalAlpha });
   });
   const engine = new StampStrokeEngine();
-  engine.begin(makeBrush({ size: 20, spacing: 0.25, flow: 1, pressureSize: false, pressureOpacity: false, ...brush }), '#000000', false, 400, 100, { seed });
+  engine.begin(makeBrush({ size: 20, spacing: 0.25, flow: 1, pressureSize: false, pressureOpacity: false, ...brush }), '#000000', eraser, 400, 100, { seed });
   for (let i = 0; i <= 20; i++) engine.stroke(20 + i * 15, 50, 1, undefined, i * 8, tilt);
   engine.commit(document.createElement('canvas').getContext('2d')!);
   // After the commit, which lays the stroke's last segment.
@@ -53,7 +53,7 @@ describe('Rng', () => {
 });
 
 describe('brush jitter', () => {
-  const jittered = { jitter: { size: 0.6, angle: 0.5, roundness: 0.7 } };
+  const jittered = { jitter: { size: 0.6, angle: 0.5, roundness: 0.7, flow: 0.8 } };
 
   it('draws the same stroke for the same seed and a different one otherwise', () => {
     const a = run(jittered, 7).dabs;
@@ -124,7 +124,7 @@ describe('brush jitter', () => {
       size: 30,
       tip: { shape: 'flat' as const, aspect: 4, angle: 0, orientation: 'fixed' as const },
       dynamics: { tilt: 1 },
-      jitter: { size: 0.3, angle: 1, roundness: 0.5 },
+      jitter: { size: 0.3, angle: 1, roundness: 0.5, flow: 0.5 },
     };
     for (const seed of [1, 2, 3]) {
       const { dabs, bounds } = run(brush, seed, { tiltX: 50, tiltY: 20 });
@@ -141,9 +141,46 @@ describe('brush jitter', () => {
   });
 });
 
+describe('flow jitter', () => {
+  const flowOf = (flow: number, base = 0.8, seed = 3, eraser = false) =>
+    run({ flow: base, jitter: { ...NO_JITTER, flow } }, seed, undefined, eraser).dabs;
+
+  it('scales each dab alpha by a factor in [1 - flow, 1]', () => {
+    const base = run({ flow: 0.8 }, 3).dabs;
+    const out = flowOf(0.5);
+    expect(out).toHaveLength(base.length);
+    out.forEach((d, i) => {
+      expect(d.alpha).toBeLessThanOrEqual(base[i].alpha + 1e-9);
+      expect(d.alpha).toBeGreaterThanOrEqual(base[i].alpha * 0.5 - 1e-9);
+    });
+    expect(new Set(out.map(d => d.alpha.toFixed(3))).size).toBeGreaterThan(5);
+  });
+
+  it('is deterministic per seed', () => {
+    expect(flowOf(0.7, 0.8, 5).map(d => d.alpha)).toEqual(flowOf(0.7, 0.8, 5).map(d => d.alpha));
+    expect(flowOf(0.7, 0.8, 5).map(d => d.alpha)).not.toEqual(flowOf(0.7, 0.8, 6).map(d => d.alpha));
+  });
+
+  it('changes only alpha, and nothing at zero', () => {
+    const base = run({ flow: 0.8 }, 3);
+    expect(run({ flow: 0.8, jitter: { ...NO_JITTER, flow: 0 } }, 77)).toEqual(base);
+    const out = run({ flow: 0.8, jitter: { ...NO_JITTER, flow: 1 } }, 3);
+    expect(out.dabs.map(d => ({ ...d, alpha: 0 }))).toEqual(base.dabs.map(d => ({ ...d, alpha: 0 })));
+    expect(out.bounds).toEqual(base.bounds);
+  });
+
+  it('jitters the eraser like the pencil', () => {
+    const pen = run({ jitter: { size: 0.5, angle: 0.5, roundness: 0.5, flow: 0.5 } }, 4).dabs;
+    const eraser = run({ jitter: { size: 0.5, angle: 0.5, roundness: 0.5, flow: 0.5 } }, 4, undefined, true).dabs;
+    expect(eraser).toHaveLength(pen.length);
+    expect(eraser).toEqual(pen);
+    expect(new Set(eraser.map(d => d.alpha.toFixed(3))).size).toBeGreaterThan(5);
+  });
+});
+
 describe('wet brush jitter', () => {
   const wet = { ink: { wetness: 0.5 } };
-  const jitter = { size: 0.5, angle: 0.5, roundness: 0.6 };
+  const jitter = { size: 0.5, angle: 0.5, roundness: 0.6, flow: 0.5 };
 
   it('jitters size, angle and roundness like a dry dab', () => {
     const base = run(wet, 5).dabs;
@@ -162,7 +199,7 @@ describe('wet brush jitter', () => {
   });
 
   it('keeps the dirty bounds over the dabs', () => {
-    const { dabs, bounds } = run({ ...wet, size: 30, jitter: { size: 0.3, angle: 1, roundness: 0.5 } }, 2);
+    const { dabs, bounds } = run({ ...wet, size: 30, jitter: { size: 0.3, angle: 1, roundness: 0.5, flow: 0.5 } }, 2);
     for (const d of dabs) for (const raw of corners(d)) {
       expect(raw.x).toBeGreaterThanOrEqual(bounds!.x);
       expect(raw.x).toBeLessThanOrEqual(bounds!.x + bounds!.w);
@@ -171,14 +208,17 @@ describe('wet brush jitter', () => {
 });
 
 describe('jitter random stream', () => {
-  it('reads three values per dab, so one jitter does not shift another', () => {
-    const only = (key: 'size' | 'angle' | 'roundness') => run({ jitter: { ...NO_JITTER, [key]: 1 } }, 11).dabs;
-    const all = run({ jitter: { size: 1, angle: 1, roundness: 1 } }, 11).dabs;
+  it('reads three values per dab from the main stream and one from the flow stream, so one jitter does not shift another', () => {
+    const only = (key: 'size' | 'angle' | 'roundness' | 'flow') => run({ jitter: { ...NO_JITTER, [key]: 1 } }, 11).dabs;
+    const all = run({ jitter: { size: 1, angle: 1, roundness: 1, flow: 1 } }, 11).dabs;
     const rng = new Rng(11);
-    const draws = all.map(() => [rng.next(), rng.next(), rng.next()]);
+    const flowRng = new Rng((11 ^ 0x9E3779B9) >>> 0);
+    const draws = all.map(() => [rng.next(), rng.next(), rng.next(), flowRng.next()]);
     // Each channel alone matches the same channel with the others on, and the sample the RNG gives that dab.
     only('roundness').forEach((d, i) => expect(yScaleOf(d)).toBeCloseTo(yScaleOf(all[i])));
     only('roundness').forEach((d, i) => expect(yScaleOf(d)).toBeCloseTo(1 - draws[i][2]));
+    only('flow').forEach((a, i) => expect(a.alpha).toBeCloseTo(all[i].alpha));
+    only('flow').forEach((a, i) => expect(a.alpha).toBeCloseTo(1 - draws[i][3]));
     only('size').forEach((d, i) => expect(d.w).toBeCloseTo(all[i].w));
     only('size').forEach((d, i) => expect(d.w).toBeCloseTo(Math.max(1, 20 * (1 - draws[i][0]))));
     only('angle').forEach((d, i) => expect(rotationOf(d)).toBeCloseTo((draws[i][1] - 0.5) * 2 * Math.PI - 2 * Math.PI * Math.round(((draws[i][1] - 0.5) * 2 * Math.PI) / (2 * Math.PI))));
@@ -188,8 +228,8 @@ describe('jitter random stream', () => {
 describe('jitter descriptors', () => {
   it('normalizes stored jitter onto the defaults', () => {
     expect(normalizeJitter(undefined)).toEqual(NO_JITTER);
-    expect(normalizeJitter({ size: 3, angle: -1, roundness: NaN })).toEqual({ size: 1, angle: 0, roundness: 0 });
-    expect(normalizeJitter({ angle: 0.4, size: 'x' as unknown as number })).toEqual({ size: 0, angle: 0.4, roundness: 0 });
+    expect(normalizeJitter({ size: 3, angle: -1, roundness: NaN, flow: 9 })).toEqual({ size: 1, angle: 0, roundness: 0, flow: 1 });
+    expect(normalizeJitter({ angle: 0.4, size: 'x' as unknown as number })).toEqual({ size: 0, angle: 0.4, roundness: 0, flow: 0 });
   });
 
   it('copies jitter deeply, and fills it in for a descriptor without any', () => {

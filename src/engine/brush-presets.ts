@@ -3,7 +3,7 @@ import { getDefaultTipDescriptor } from './brush-capabilities.js';
 
 const NO_INK = { depletion: 0, depletionLength: 500, buildup: 0, wetness: 0 };
 export const NO_DYNAMICS: BrushDynamics = { sizeVelocity: 0, flowVelocity: 0, minSize: 0, tilt: 0 };
-export const NO_JITTER: BrushJitter = { size: 0, angle: 0, roundness: 0 };
+export const NO_JITTER: BrushJitter = { size: 0, angle: 0, roundness: 0, flow: 0 };
 
 export const BRUSH_PRESETS: BrushPreset[] = [
   {

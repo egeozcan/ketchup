@@ -9,6 +9,9 @@ import { copyDescriptor } from './brush-presets.js';
 import { Rng, freshSeed } from './rng.js';
 import { initInkState, applyDepletion, applyBuildup, applyPickup } from './ink-model.js';
 
+/** Mixed into the stroke's seed for the flow jitter's own random stream. */
+const FLOW_STREAM = 0x9E3779B9;
+
 const MIN_DIRECTION_DIST_SQ = 0.25;
 /** How quickly the speed that drives dynamics follows the pointer's, in ms. */
 const VELOCITY_SMOOTHING_MS = 40;
@@ -170,6 +173,7 @@ export class StampStrokeEngine {
   private _prevStamp: StampPoint | null = null;
   private _variantCounter = 0;
   private _rng = new Rng(0);
+  private _flowRng = new Rng(0);
   private _snapshotCaptured = false;
   // Reusable tinting canvas for color mode — avoids per-stamp allocation
   private _tintCanvas: AnyCanvas | null = null;
@@ -200,7 +204,9 @@ export class StampStrokeEngine {
     this._stabilizer.reset(options.stabilizerMs ?? 0, STABILIZER_SLACK_PX / this._viewScale);
     this._prevStamp = null;
     this._variantCounter = 0;
-    this._rng = new Rng(options.seed ?? freshSeed());
+    const seed = options.seed ?? freshSeed();
+    this._rng = new Rng(seed);
+    this._flowRng = new Rng(seed ^ FLOW_STREAM);
     this._snapshotCaptured = false;
     this._dirtyMinX = Infinity;
     this._dirtyMinY = Infinity;
@@ -270,10 +276,14 @@ export class StampStrokeEngine {
       // The stroke's random stream is read in a fixed order, three values per
       // dab (size, angle, roundness) whether or not each jitter is on and
       // before anything can skip the dab, so turning one jitter on or off
-      // doesn't reshuffle the others. Jitter added later must draw after these.
+      // doesn't reshuffle the others. Flow jitter takes its one value per dab,
+      // at the same point, from a second stream (_flowRng) seeded from the
+      // same seed, so adding it left the first stream's values where they were
+      // for every dab. Jitter added later draws from its own stream likewise.
       const rSize = this._rng.next();
       const rAngle = this._rng.next();
       const rRound = this._rng.next();
+      const rFlow = this._flowRng.next();
 
       const depletionMult = applyDepletion(ink, state);
       if (depletionMult <= 0) {
@@ -306,7 +316,10 @@ export class StampStrokeEngine {
       const rotation = baseRotation + (rAngle - 0.5) * d.jitter.angle * 2 * Math.PI;
       const squash = 1 - d.jitter.roundness * rRound;
 
-      const stampAlpha = Math.min(1, effectiveFlow * depletionMult);
+      // Each dab keeps between 1 - jitter.flow and all of its alpha. This is
+      // Photoshop's opacity jitter: the stroke buffer caps the opacity at
+      // commit, so the stroke-level opacity itself is never jittered.
+      const stampAlpha = Math.min(1, effectiveFlow * depletionMult) * (1 - d.jitter.flow * rFlow);
 
       const tipW = tip.width;
       const tipH = tip.height;

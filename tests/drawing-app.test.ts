@@ -628,7 +628,7 @@ describe('DrawingApp', () => {
       ink: { depletion: 0.2, depletionLength: 777, buildup: 0.5, wetness: 0.1 },
       // Out of range, so clamped.
       dynamics: { sizeVelocity: -0.5, flowVelocity: 1, minSize: 0.2, tilt: 0.7 },
-      jitter: { size: 0.4, angle: 1, roundness: 0.1 },
+      jitter: { size: 0.4, angle: 1, roundness: 0.1, flow: 0 },
     });
     expect((app as any)._state.stampSize).toBe(320);
     expect((app as any)._state.activePreset).toBe('flat');

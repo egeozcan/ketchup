@@ -2005,6 +2005,7 @@ export class ToolSettings extends LitElement {
             ${jitterControl('Size', 'size', 'How much smaller than the brush size each dab can randomly be.')}
             ${jitterControl('Angle', 'angle', 'How far each dab can randomly turn, as a share of a full turn.')}
             ${jitterControl('Roundness', 'roundness', 'How much each dab can randomly be squashed across its axis.')}
+            ${jitterControl('Flow', 'flow', 'How much fainter than the brush flow each dab can randomly be. The stroke opacity still caps the result.')}
           </div>
         ` : nothing}
         <div class="section">${advancedToggle}</div>

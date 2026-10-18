@@ -42,6 +42,8 @@ export interface BrushJitter {
   angle: number;
   /** How far (0..1) a dab can be squashed across its axis: down to 1 - this of its height. */
   roundness: number;
+  /** The share (0..1) of each dab's flow that can randomly be taken off; the stroke's opacity cap is unchanged. */
+  flow: number;
 }
 
 export interface BrushDescriptor {
