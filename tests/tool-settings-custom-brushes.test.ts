@@ -18,7 +18,7 @@ const custom: BrushPreset = {
 
 function mount(over: Record<string, unknown> = {}, state: Parameters<typeof makeState>[0] = {}, dropdown = false) {
   const settings = new ToolSettings();
-  (settings as any)._advancedOpen = true;
+  (settings as any)._brushPage = 'tip';
   (settings as any)._brushDropdownOpen = dropdown;
   const ctx = {
     state: makeState({ activeTool: 'pencil', ...state }),
@@ -77,7 +77,9 @@ describe('custom brushes in tool settings', () => {
 
   it('lists custom presets under "Custom" in the picker, with delete, and selects them', () => {
     const { container, ctx } = mount({}, {}, true);
-    expect(container.querySelector('.brush-dropdown-heading')!.textContent).toBe('Custom');
+    const headings = [...container.querySelectorAll('.brush-dropdown-heading')].map(h => h.textContent!.trim());
+    // Built-in presets sit under their categories, the user's own after them.
+    expect(headings).toEqual(['Basic', 'Artistic', 'Effects', 'Custom']);
     const rows = [...container.querySelectorAll<HTMLElement>('.brush-dropdown-row')];
     expect(rows).toHaveLength(BRUSH_PRESETS.length + 1);
     // Only the custom one can be deleted.
@@ -86,6 +88,17 @@ describe('custom brushes in tool settings', () => {
     expect(ctx.selectPreset).toHaveBeenCalledWith('user-1');
     container.querySelector<HTMLButtonElement>('.brush-dropdown-delete')!.click();
     expect(ctx.deleteUserPreset).toHaveBeenCalledWith('user-1');
+  });
+
+  it('shows each preset\'s tip next to its stroke, the same image for the same tip', () => {
+    const { container } = mount({}, {}, true);
+    const rows = [...container.querySelectorAll<HTMLElement>('.brush-dropdown-row')];
+    const tips = rows.map(r => r.querySelector<HTMLImageElement>('img.tip-thumb'));
+    expect(tips.every(t => t && t.src.startsWith('data:image/png'))).toBe(true);
+    // Every row's tip thumbnail precedes its stroke preview.
+    expect(rows.every(r => r.querySelectorAll('img')[0].classList.contains('tip-thumb'))).toBe(true);
+    const again = mount({}, {}, true).container.querySelector<HTMLImageElement>('img.tip-thumb')!;
+    expect(again.src).toBe(tips[0]!.src);
   });
 
   it('names the active custom preset on the picker button', () => {

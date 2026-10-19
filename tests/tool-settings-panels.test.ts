@@ -49,11 +49,14 @@ describe('Desktop settings bar panels', () => {
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
     const flow = root.querySelector<HTMLInputElement>('.brush-panel input[aria-label="Brush flow"]')!;
     expect(flow).not.toBeNull();
-    expect(root.querySelector('.brush-panel')!.textContent).toContain('Stylus Size');
-
     flow.value = '40';
     flow.dispatchEvent(new Event('input', { bubbles: true }));
     expect(setBrush).toHaveBeenCalledWith({ flow: 0.4 });
+
+    // The rest sit on their own pages, one at a time.
+    expect(root.querySelector('.brush-panel')!.textContent).not.toContain('Stylus Size');
+    await click('.brush-panel #brush-tab-stylus');
+    expect(root.querySelector('.brush-panel')!.textContent).toContain('Stylus Size');
   });
 
   it('opens the color panel with presets and a custom picker', async () => {

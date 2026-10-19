@@ -65,4 +65,26 @@ describe('ToolSettings brush previews', () => {
     }
     expect(sizes[1]).toBeLessThan(sizes[0]);
   });
+
+  it('shows a sampled tip large enough to see its shape, smaller when it turns or scatters', () => {
+    const sizeFor = (brush: Record<string, unknown>) => {
+      engineCalls.begin.mockClear();
+      const settings = new ToolSettings();
+      (settings as any)._ctx = { value: { state: makeState({ activeTool: 'pencil', isPresetModified: true, brush: { size: 120, ...brush } }), isMobile: true } };
+      render(settings.render(), document.createElement('div'));
+      const call = engineCalls.begin.mock.calls.find(c => c[0].tip.shape === 'image');
+      expect(call).toBeDefined();
+      return call![0].size as number;
+    };
+    const image = { shape: 'image', imageId: 'tip-x', aspect: 1, angle: 0, orientation: 'fixed' };
+    const fixed = sizeFor({ tip: image });
+    const turning = sizeFor({ tip: { ...image, orientation: 'direction' } });
+    const scattered = sizeFor({ tip: image, scatter: { amount: 1 } });
+    // Drawn tips top out at 18px in the preview; a sampled one shows its shape well past that.
+    expect(fixed).toBeGreaterThan(18);
+    // Still inside the 48px-high preview, with the curve's swing left over.
+    expect(fixed).toBeLessThanOrEqual(48 - 2 * 8);
+    expect(turning).toBeLessThan(fixed);
+    expect(scattered).toBeLessThan(fixed);
+  });
 });

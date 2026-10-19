@@ -13,7 +13,6 @@ function renderBrushSettings(
   setBrushJitter = vi.fn(),
 ): HTMLElement {
   const settings = new ToolSettings();
-  (settings as any)._advancedOpen = true;
   (settings as any)._ctx = {
     value: {
       state: makeState({ activeTool, brush: { ...brushOverrides, tip: { shape } } }),
@@ -28,8 +27,14 @@ function renderBrushSettings(
       selectPreset: vi.fn(),
     },
   };
+  // Every page in turn, so a test sees the whole sheet as one.
   const container = document.createElement('div');
-  render(settings.render(), container);
+  for (const page of ['stroke', 'tip', 'stylus', 'shape', 'scatter', 'color', 'texture', 'ink']) {
+    (settings as any)._brushPage = page;
+    const part = document.createElement('div');
+    render(settings.render(), part);
+    container.append(part);
+  }
   return container;
 }
 
@@ -71,7 +76,7 @@ describe('ToolSettings brush controls', () => {
   it('sets scatter from its controls once the group is opened', () => {
     const setBrushScatter = vi.fn();
     const settings = new ToolSettings();
-    (settings as any)._scatterOpen = true;
+    (settings as any)._brushPage = 'scatter';
     (settings as any)._ctx = { value: { state: makeState({ activeTool: 'pencil' }), isMobile: true, setBrushScatter } };
     const container = document.createElement('div');
     render(settings.render(), container);
@@ -90,7 +95,7 @@ describe('ToolSettings brush controls', () => {
   it('sets colour dynamics from its controls once the group is opened, and hides the group from the eraser', () => {
     const setBrushColorDynamics = vi.fn();
     const settings = new ToolSettings();
-    (settings as any)._colorOpen = true;
+    (settings as any)._brushPage = 'color';
     (settings as any)._ctx = { value: { state: makeState({ activeTool: 'pencil' }), isMobile: true, setBrushColorDynamics } };
     const container = document.createElement('div');
     render(settings.render(), container);
@@ -121,7 +126,7 @@ describe('ToolSettings brush controls', () => {
   it('sets jitter from its sliders once the group is opened', () => {
     const setBrushJitter = vi.fn();
     const settings = new ToolSettings();
-    (settings as any)._jitterOpen = true;
+    (settings as any)._brushPage = 'shape';
     (settings as any)._ctx = { value: { state: makeState({ activeTool: 'pencil' }), isMobile: true, setBrushJitter } };
     const container = document.createElement('div');
     render(settings.render(), container);
@@ -406,6 +411,7 @@ describe('ToolSettings fades', () => {
   function render_(fade = {}) {
     const setBrushFade = vi.fn();
     const settings = new ToolSettings();
+    (settings as any)._brushPage = 'shape';
     (settings as any)._ctx = {
       value: {
         state: makeState({ activeTool: 'pencil', brush: { fade, pressureSize: false } }),
@@ -442,7 +448,7 @@ describe('ToolSettings texture', () => {
   function render_(texture = {}, activeTool: 'pencil' | 'eraser' = 'pencil') {
     const setBrushTexture = vi.fn();
     const settings = new ToolSettings();
-    (settings as any)._textureOpen = true;
+    (settings as any)._brushPage = 'texture';
     (settings as any)._ctx = {
       value: {
         state: makeState({ activeTool, brush: { texture } }),
@@ -483,5 +489,66 @@ describe('ToolSettings texture', () => {
     expect(render_({ perTip: false }).container.querySelector('input[aria-label="Depth by pressure texture"]')).toBeNull();
     expect(render_({ perTip: true }).container.querySelector('input[aria-label="Depth by pressure texture"]')).not.toBeNull();
     expect(render_({}, 'eraser').container.querySelector('select[aria-label="Texture pattern"]')).not.toBeNull();
+  });
+});
+
+describe('ToolSettings brush pages', () => {
+  function mount(activeTool: 'pencil' | 'eraser' = 'pencil', brush = {}) {
+    const settings = new ToolSettings();
+    (settings as any)._ctx = {
+      value: {
+        state: makeState({ activeTool, brush }),
+        isMobile: true,
+        setBrush: vi.fn(), setBrushTip: vi.fn(), setBrushInk: vi.fn(), setBrushDynamics: vi.fn(), setBrushJitter: vi.fn(), selectPreset: vi.fn(),
+      },
+    };
+    const container = document.createElement('div');
+    const draw = () => render(settings.render(), container);
+    draw();
+    return { settings, container, draw };
+  }
+  const tabs = (c: HTMLElement) => Array.from(c.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+
+  it('shows one page at a time, starting on Stroke', () => {
+    const { settings, container, draw } = mount();
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toContain('Stroke');
+    expect(container.querySelector('input[aria-label="Brush flow"]')).not.toBeNull();
+    expect(container.querySelector('input[aria-label="Spacing"]')).toBeNull();
+    tabs(container).find(t => t.textContent!.includes('Tip'))!.click();
+    expect((settings as any)._brushPage).toBe('tip');
+    draw();
+    expect(container.querySelector('input[aria-label="Spacing"]')).not.toBeNull();
+    expect(container.querySelector('input[aria-label="Brush flow"]')).toBeNull();
+  });
+
+  it('has no Color page for the eraser, and falls back to Stroke from it', () => {
+    const { settings, container, draw } = mount('eraser');
+    expect(tabs(container).map(t => t.textContent!.trim())).not.toContain('Color');
+    (settings as any)._brushPage = 'color';
+    draw();
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toContain('Stroke');
+  });
+
+  it('marks pages whose settings are in use', () => {
+    const { container } = mount('pencil', { scatter: { amount: 1, bothAxes: false, count: 1, countJitter: 0 } });
+    const dotted = tabs(container).filter(t => t.querySelector('.page-dot')).map(t => t.textContent!.trim());
+    expect(dotted).toContain('Scatter');
+    expect(dotted).not.toContain('Texture');
+    expect(dotted).not.toContain('Color');
+  });
+
+  it('moves between pages with the arrow keys, wrapping around', () => {
+    const { settings } = mount();
+    const ids = ['stroke', 'tip', 'stylus'];
+    const key = (k: string) => (settings as any)._onBrushTabKey(new KeyboardEvent('keydown', { key: k }), ids);
+    key('ArrowDown');
+    expect((settings as any)._brushPage).toBe('tip');
+    key('ArrowUp');
+    key('ArrowUp');
+    expect((settings as any)._brushPage).toBe('stylus');
+    key('Home');
+    expect((settings as any)._brushPage).toBe('stroke');
+    key('End');
+    expect((settings as any)._brushPage).toBe('stylus');
   });
 });

@@ -68,6 +68,8 @@ describe('Mobile tool settings access', () => {
     edit('Brush size', '24');
     edit('Brush opacity', '60');
     edit('Brush flow', '40');
+    settings.shadowRoot!.querySelector<HTMLButtonElement>('#brush-tab-tip')!.click();
+    await settings.updateComplete;
     edit('Brush hardness', '20');
     expect(setStrokeColor).toHaveBeenCalledWith('#0099ff');
     expect(setBrushSize).toHaveBeenCalledWith(24);
