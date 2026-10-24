@@ -178,8 +178,8 @@ export class LayersPanel extends LitElement {
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 22px;
-      height: 22px;
+      width: 24px;
+      height: 24px;
       border: none;
       border-radius: 4px;
       background: transparent;
@@ -208,8 +208,8 @@ export class LayersPanel extends LitElement {
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 22px;
-      height: 22px;
+      width: 24px;
+      height: 24px;
       border: none;
       border-radius: 4px;
       background: transparent;
@@ -267,6 +267,8 @@ export class LayersPanel extends LitElement {
     }
 
     /* ── Reorder buttons ───────────────────────── */
+    /* Every button in the row is at least 24px square (WCAG 2.5.8 target
+       size); no other spacing keeps two stacked arrows clear of each other. */
     .reorder-btns {
       display: flex;
       flex-direction: column;
@@ -278,8 +280,8 @@ export class LayersPanel extends LitElement {
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 16px;
-      height: 12px;
+      width: 24px;
+      height: 24px;
       border: none;
       border-radius: 3px;
       background: transparent;
