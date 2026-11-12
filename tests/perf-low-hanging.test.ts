@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DrawingCanvas } from '../src/components/drawing-canvas.ts';
 import { LayersPanel } from '../src/components/layers-panel.ts';
+import { DrawingApp } from '../src/components/drawing-app.ts';
 import { sampleSnapshot } from '../src/engine/ink-model.ts';
 import { TiledSnapshot, SNAPSHOT_TILE } from '../src/engine/tiled-snapshot.ts';
 import { HASH_WORKER_SOURCE, hashImageDataOffThread } from '../src/utils/hash-worker.ts';
 import { hashImageData } from '../src/utils/image-diff.ts';
-import { attachCanvasElements, makeLayer, makeState } from './helpers.ts';
+import { attachCanvasElements, makeAppCanvasStub, makeLayer, makeState } from './helpers.ts';
 
 function setupCanvas(layerOverrides: Record<string, unknown>[] = [{}, {}, {}, {}, {}], active = 2) {
   const canvas = new DrawingCanvas();
@@ -211,5 +212,25 @@ describe('hashing off the main thread', () => {
     const hashed = await hashImageDataOffThread(img);
     expect(hashed.hash).toBe(hashImageData(img));
     expect(hashed.imageData).toBe(img);
+  });
+});
+
+describe('pan and zoom reach the navigator without re-rendering the app', () => {
+  it('provides the viewport on its own context and leaves the drawing context alone', () => {
+    const app = new DrawingApp();
+    (app as any)._autosave = false;
+    Object.defineProperty(app, 'canvas', { configurable: true, value: makeAppCanvasStub({ getViewport: () => ({ zoom: 2, panX: 30, panY: -40 }), clientWidth: 640, clientHeight: 480 }) });
+    const provided = vi.spyOn((app as any)._viewportProvider, 'setValue');
+    const main = vi.spyOn((app as any)._provider, 'setValue');
+    const update = vi.spyOn(app, 'requestUpdate');
+
+    (app as any)._onViewportChange();
+    expect(provided).toHaveBeenCalledWith({ zoom: 2, panX: 30, panY: -40, viewportWidth: 640, viewportHeight: 480 });
+    // The same view again tells nobody.
+    (app as any)._onViewportChange();
+    expect(provided).toHaveBeenCalledTimes(1);
+    expect(main).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect('zoom' in (app as any)._buildContextValue()).toBe(false);
   });
 });

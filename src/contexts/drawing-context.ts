@@ -84,12 +84,6 @@ export interface DrawingContextValue {
   currentProject: ProjectMeta | null;
   projectList: ProjectMeta[];
   saving: boolean;
-  // Viewport state (read-only for consumers)
-  zoom: number;
-  panX: number;
-  panY: number;
-  viewportWidth: number;
-  viewportHeight: number;
   isMobile: boolean;
   switchProject: (id: string) => void;
   createProject: (name: string, width: number, height: number) => void;
@@ -105,3 +99,18 @@ export interface DrawingContextValue {
 }
 
 export const drawingContext = createContext<DrawingContextValue>('drawing-context');
+
+/**
+ * Where the document sits in the view. It changes on every frame of a pan or
+ * zoom, so it has a context of its own: only what shows the viewport (the
+ * navigator) re-renders then, not every consumer of the drawing context.
+ */
+export interface ViewportValue {
+  zoom: number;
+  panX: number;
+  panY: number;
+  viewportWidth: number;
+  viewportHeight: number;
+}
+
+export const viewportContext = createContext<ViewportValue>('drawing-viewport');

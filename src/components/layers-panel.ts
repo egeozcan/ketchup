@@ -1314,9 +1314,9 @@ export class LayersPanel extends LitElement {
     }
     this._restoreReorderFocus();
 
-    // Every viewport change (wheel zoom, pan, pinch) rebuilds the context value and
-    // re-renders this panel, so painting thumbnails on every update would redraw
-    // every layer once per wheel tick. Only a structural change — a row added,
+    // Most context changes (a tool, a colour, a brush setting) re-render this
+    // panel without touching a layer, so painting thumbnails on every update
+    // would downscale every layer for nothing. Only a structural change — a row added,
     // removed, reordered, or rendered for the first time — needs them here;
     // content changes come through the throttled `composited` path instead.
     const layers = this._ctx.value?.state.layers ?? null;

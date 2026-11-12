@@ -19,7 +19,7 @@ Browser-based drawing app built with **Lit 3 web components**, **Vite 6**, and *
 
 ### State Management
 
-Uses `@lit/context` with a single `DrawingContextValue` defined in `src/contexts/drawing-context.ts`. `drawing-app.ts` is the root component and sole `ContextProvider` — it owns all `DrawingState` and rebuilds the context value in `willUpdate()`. All other components (`app-toolbar`, `tool-settings`, `drawing-canvas`, `layers-panel`) are `ContextConsumer`s with `subscribe: true`.
+Uses `@lit/context` with a single `DrawingContextValue` defined in `src/contexts/drawing-context.ts`. `drawing-app.ts` is the root component and sole `ContextProvider` — it owns all `DrawingState` and rebuilds the context value in `willUpdate()`. All other components (`app-toolbar`, `tool-settings`, `drawing-canvas`, `layers-panel`) are `ContextConsumer`s with `subscribe: true`. Pan and zoom are not in it: they change every frame of a gesture, so `drawing-app` provides them on a second context (`viewportContext`, a `ViewportValue`) that only `navigator-panel` consumes, and a viewport change neither re-renders the app nor rebuilds the drawing context; anything else that needs the view should consume that context rather than put it back in `DrawingContextValue`.
 
 ### Tool System
 

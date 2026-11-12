@@ -200,7 +200,7 @@ export class DrawingCanvas extends LitElement {
   private _compositeScheduler = createThrottledScheduler(() => this._composite(this._compositeContentPending));
   /**
    * Wheel and pinch deliver many events per frame on some devices, and each
-   * viewport-change re-renders the whole app through the context; coalesce
+   * viewport-change re-renders the navigator and schedules a save; coalesce
    * them to one per frame.
    */
   private _viewportChangeScheduler = createThrottledScheduler(() => this._dispatchViewportChange());

@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { createThrottledScheduler } from '../utils/raf-throttle.js';
 import { customElement, state } from 'lit/decorators.js';
 import { ContextConsumer } from '@lit/context';
-import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
+import { drawingContext, viewportContext, type DrawingContextValue, type ViewportValue } from '../contexts/drawing-context.js';
 import { blendModeToCompositeOp } from '../engine/types.js';
 import { focusEditor } from '../utils/focus-editor.js';
 
@@ -149,6 +149,16 @@ export class NavigatorPanel extends LitElement {
     context: drawingContext,
     subscribe: true,
   });
+
+  /** Pan and zoom arrive here, apart from the drawing context, so they re-render only this panel. */
+  private _viewportCtx = new ContextConsumer(this, {
+    context: viewportContext,
+    subscribe: true,
+  });
+
+  private get _viewport(): ViewportValue {
+    return this._viewportCtx.value ?? { zoom: 1, panX: 0, panY: 0, viewportWidth: 800, viewportHeight: 600 };
+  }
 
   private _minimapCanvas = document.createElement('canvas');
 
@@ -326,7 +336,7 @@ export class NavigatorPanel extends LitElement {
     canvasW: number,
     canvasH: number,
   ) {
-    const { zoom, panX, panY, viewportWidth, viewportHeight } = this.ctx;
+    const { zoom, panX, panY, viewportWidth, viewportHeight } = this._viewport;
 
     const rectX = this._minimapOffsetX + (-panX / zoom) * scale;
     const rectY = this._minimapOffsetY + (-panY / zoom) * scale;
@@ -361,7 +371,7 @@ export class NavigatorPanel extends LitElement {
 
   /** Get the current viewport rect in minimap CSS coords */
   private _getViewportRectInMinimap(): { x: number; y: number; w: number; h: number } {
-    const { zoom, panX, panY, viewportWidth, viewportHeight } = this.ctx;
+    const { zoom, panX, panY, viewportWidth, viewportHeight } = this._viewport;
     const scale = this._minimapScale;
     return {
       x: this._minimapOffsetX + (-panX / zoom) * scale,
@@ -377,7 +387,7 @@ export class NavigatorPanel extends LitElement {
   }
 
   private _panToMinimapPoint(px: number, py: number) {
-    const { zoom, viewportWidth, viewportHeight } = this.ctx;
+    const { zoom, viewportWidth, viewportHeight } = this._viewport;
     const scale = this._minimapScale;
     const docX = (px - this._minimapOffsetX) / scale;
     const docY = (py - this._minimapOffsetY) / scale;
@@ -419,7 +429,7 @@ export class NavigatorPanel extends LitElement {
     const newRectX = pt.x - this._dragOffsetX;
     const newRectY = pt.y - this._dragOffsetY;
     // Convert back to pan coordinates
-    const { zoom } = this.ctx;
+    const { zoom } = this._viewport;
     const scale = this._minimapScale;
     const docX = (newRectX - this._minimapOffsetX) / scale;
     const docY = (newRectY - this._minimapOffsetY) / scale;
@@ -467,11 +477,11 @@ export class NavigatorPanel extends LitElement {
   };
 
   private _onZoomIn = () => {
-    this._dispatchZoom(this.ctx.zoom * NavigatorPanel.ZOOM_STEP);
+    this._dispatchZoom(this._viewport.zoom * NavigatorPanel.ZOOM_STEP);
   };
 
   private _onZoomOut = () => {
-    this._dispatchZoom(this.ctx.zoom / NavigatorPanel.ZOOM_STEP);
+    this._dispatchZoom(this._viewport.zoom / NavigatorPanel.ZOOM_STEP);
   };
 
   // --- Zoom input ---
@@ -481,7 +491,7 @@ export class NavigatorPanel extends LitElement {
 
   private _onZoomInputFocus = (e: FocusEvent) => {
     this._editingZoom = true;
-    this._zoomInputValue = Math.round(this.ctx.zoom * 100).toString();
+    this._zoomInputValue = Math.round(this._viewport.zoom * 100).toString();
     const input = e.target as HTMLInputElement;
     requestAnimationFrame(() => {
       // Not if Enter or Escape already ended the edit (or focus moved on).
@@ -531,7 +541,7 @@ export class NavigatorPanel extends LitElement {
 
     if (this.ctx.isMobile) return html``;
 
-    const zoom = this.ctx.zoom;
+    const zoom = this._viewport.zoom;
     const sliderValue = this._zoomToSlider(zoom);
     const zoomPercent = Math.round(zoom * 100);
     const displayValue = this._editingZoom

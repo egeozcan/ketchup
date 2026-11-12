@@ -1,7 +1,7 @@
 import { LitElement, html, css, type PropertyValues } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { ContextProvider } from '@lit/context';
-import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
+import { drawingContext, viewportContext, type DrawingContextValue, type ViewportValue } from '../contexts/drawing-context.js';
 import { blendModeToCompositeOp, isBrushBlendMode, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics, type BrushJitter, type BrushScatter, type BrushColorDynamics, type BrushFade, type BrushTexture } from '../engine/types.js';
 import { copyDescriptor, getDefaultDescriptor, getPresetById, normalizeBrushDescriptor } from '../engine/brush-presets.js';
 import { BrushLibrary, toBrushPreset } from '../engine/brush-library.js';
@@ -319,11 +319,9 @@ export class DrawingApp extends LitElement {
   @state() private _canUndo = false;
   @state() private _canRedo = false;
   @state() private _saving = false;
-  @state() private _viewportZoom = 1;
-  @state() private _viewportPanX = 0;
-  @state() private _viewportPanY = 0;
-  @state() private _viewportWidth = 800;
-  @state() private _viewportHeight = 600;
+  /** The view as last reported by the canvas; provided on its own context, so pan and zoom don't re-render the app. */
+  private _viewport: ViewportValue = { zoom: 1, panX: 0, panY: 0, viewportWidth: 800, viewportHeight: 600 };
+  private _viewportProvider!: ContextProvider<typeof viewportContext>;
   @state() private _currentProject: StorageProjectMeta | null = null;
   @state() private _projectList: StorageProjectMeta[] = [];
   @state() private _isMobile = false;
@@ -528,6 +526,10 @@ export class DrawingApp extends LitElement {
     this._provider = new ContextProvider(this, {
       context: drawingContext,
       initialValue: this._buildContextValue(),
+    });
+    this._viewportProvider = new ContextProvider(this, {
+      context: viewportContext,
+      initialValue: this._viewport,
     });
   }
 
@@ -3338,11 +3340,6 @@ export class DrawingApp extends LitElement {
       currentProject: this._currentProject,
       projectList: this._projectList,
       saving: this._saving,
-      zoom: this._viewportZoom,
-      panX: this._viewportPanX,
-      panY: this._viewportPanY,
-      viewportWidth: this._viewportWidth,
-      viewportHeight: this._viewportHeight,
       isMobile: this._isMobile,
       switchProject: (id: string) => {
         if (id === this._currentProject?.id) return;
@@ -3865,11 +3862,19 @@ export class DrawingApp extends LitElement {
   private _onViewportChange() {
     if (this.canvas) {
       const vp = this.canvas.getViewport();
-      this._viewportZoom = vp.zoom;
-      this._viewportPanX = vp.panX;
-      this._viewportPanY = vp.panY;
-      this._viewportWidth = this.canvas.clientWidth;
-      this._viewportHeight = this.canvas.clientHeight;
+      const next: ViewportValue = {
+        zoom: vp.zoom,
+        panX: vp.panX,
+        panY: vp.panY,
+        viewportWidth: this.canvas.clientWidth,
+        viewportHeight: this.canvas.clientHeight,
+      };
+      const prev = this._viewport;
+      if (next.zoom !== prev.zoom || next.panX !== prev.panX || next.panY !== prev.panY
+        || next.viewportWidth !== prev.viewportWidth || next.viewportHeight !== prev.viewportHeight) {
+        this._viewport = next;
+        this._viewportProvider?.setValue(next);
+      }
     }
     this._markDirty('viewport');
   }
