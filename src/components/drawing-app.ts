@@ -5,7 +5,6 @@ import { drawingContext, viewportContext, type DrawingContextValue, type Viewpor
 import { blendModeToCompositeOp, isBrushBlendMode, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics, type BrushJitter, type BrushScatter, type BrushColorDynamics, type BrushFade, type BrushTexture } from '../engine/types.js';
 import { copyDescriptor, getDefaultDescriptor, getPresetById, normalizeBrushDescriptor } from '../engine/brush-presets.js';
 import { BrushLibrary, toBrushPreset } from '../engine/brush-library.js';
-import { planAbrImport, logUnmapped } from '../engine/abr/to-brushes.js';
 import { AbrParseError } from '../engine/abr/errors.js';
 import type { TipMask } from '../engine/tip-mask.js';
 import { hasTipMask } from '../engine/tip-images.js';
@@ -811,6 +810,8 @@ export class DrawingApp extends LitElement {
     if (!library) return { ok: false, message: 'Custom brushes are not available here.' };
     if (file.size > MAX_ABR_FILE_BYTES) return { ok: false, message: 'That file is too large to import.' };
     try {
+      // Only an import needs the .abr reader, so it is loaded then, not with the app.
+      const { planAbrImport, logUnmapped } = await import('../engine/abr/to-brushes.js');
       const plan = await planAbrImport(await file.arrayBuffer(), { onProgress: onProgress && (f => onProgress(0.9 * f)) });
       const group = file.name.replace(/\.[^.]*$/, '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'Imported brushes';
       await library.importBrushes({ group, tips: plan.tips, brushes: plan.brushes, patterns: plan.patterns });
