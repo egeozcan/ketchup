@@ -1,4 +1,5 @@
 import type { BrushColorDynamics, InkDescriptor, InkState } from './types.js';
+import { TiledSnapshot } from './tiled-snapshot.js';
 
 // ── OKLab color space conversion ─────────────────────────────
 
@@ -102,7 +103,7 @@ export function lerpOklab(hexA: string, hexB: string, t: number): string {
 
 // ── Ink state management ─────────────────────────────────────
 
-export function initInkState(color: string, snapshot: ImageData | null): InkState {
+export function initInkState(color: string, snapshot: ImageData | TiledSnapshot | null): InkState {
   return {
     distanceTraveled: 0,
     remainingPaint: 1,
@@ -142,10 +143,12 @@ const MAX_SAMPLE_STEPS = 48;
 
 /** Sample averaged canvas color from a region around (x, y). Radius scales with
  *  brush size to produce smooth color transitions instead of per-pixel noise. */
-export function sampleSnapshot(snapshot: ImageData, x: number, y: number, radius = 6): { color: string; alpha: number } {
+export function sampleSnapshot(snapshot: ImageData | TiledSnapshot, x: number, y: number, radius = 6): { color: string; alpha: number } {
   const w = snapshot.width;
   const h = snapshot.height;
-  const data = snapshot.data;
+  // A tiled snapshot reads each tile from the layer the first time a sample lands in it.
+  const tiled = snapshot instanceof TiledSnapshot ? snapshot : null;
+  let data: Uint8ClampedArray = tiled ? null! : (snapshot as ImageData).data;
   const cx = Math.round(x);
   const cy = Math.round(y);
   const r = Math.max(1, Math.round(radius));
@@ -165,7 +168,13 @@ export function sampleSnapshot(snapshot: ImageData, x: number, y: number, radius
     for (let px = x0; px <= x1; px += step) {
       const dx = px - cx;
       if (dx * dx + dy * dy > r2) continue;
-      const i = (py * w + px) * 4;
+      let i: number;
+      if (tiled) {
+        data = tiled.tileAt(px, py);
+        i = TiledSnapshot.tileIndex(px, py);
+      } else {
+        i = (py * w + px) * 4;
+      }
       const a = data[i + 3];
       if (a < 2) continue; // skip fully transparent
       // Alpha-weighted accumulation so opaque pixels dominate

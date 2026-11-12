@@ -1,11 +1,10 @@
 import { LitElement, html, css, type PropertyValues } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { ContextProvider } from '@lit/context';
-import { drawingContext, type DrawingContextValue } from '../contexts/drawing-context.js';
+import { drawingContext, viewportContext, type DrawingContextValue, type ViewportValue } from '../contexts/drawing-context.js';
 import { blendModeToCompositeOp, isBrushBlendMode, type BlendMode, type BrushDescriptor, type TipDescriptor, type InkDescriptor, type BrushDynamics, type BrushJitter, type BrushScatter, type BrushColorDynamics, type BrushFade, type BrushTexture } from '../engine/types.js';
 import { copyDescriptor, getDefaultDescriptor, getPresetById, normalizeBrushDescriptor } from '../engine/brush-presets.js';
 import { BrushLibrary, toBrushPreset } from '../engine/brush-library.js';
-import { planAbrImport, logUnmapped } from '../engine/abr/to-brushes.js';
 import { AbrParseError } from '../engine/abr/errors.js';
 import type { TipMask } from '../engine/tip-mask.js';
 import { hasTipMask } from '../engine/tip-images.js';
@@ -17,6 +16,7 @@ import { IndexedDBBackend, MemoryBackend, ProjectService, StorageQuotaError, Sto
 import type { StorageBackend, BlobStore, BlobRef, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord, SerializedLayer, StampEntry } from '../storage/types.js';
 import { canvasToBlob, PixelDecodeError } from '../utils/canvas-helpers.js';
 import { hashImageData } from '../utils/image-diff.js';
+import { hashImageDataOffThread } from '../utils/hash-worker.js';
 import { historyByteBudget, serializedHistoryEntryBytes } from '../utils/history-size.js';
 import {
   serializeLayerFromImageData, deserializeLayer,
@@ -318,11 +318,9 @@ export class DrawingApp extends LitElement {
   @state() private _canUndo = false;
   @state() private _canRedo = false;
   @state() private _saving = false;
-  @state() private _viewportZoom = 1;
-  @state() private _viewportPanX = 0;
-  @state() private _viewportPanY = 0;
-  @state() private _viewportWidth = 800;
-  @state() private _viewportHeight = 600;
+  /** The view as last reported by the canvas; provided on its own context, so pan and zoom don't re-render the app. */
+  private _viewport: ViewportValue = { zoom: 1, panX: 0, panY: 0, viewportWidth: 800, viewportHeight: 600 };
+  private _viewportProvider!: ContextProvider<typeof viewportContext>;
   @state() private _currentProject: StorageProjectMeta | null = null;
   @state() private _projectList: StorageProjectMeta[] = [];
   @state() private _isMobile = false;
@@ -527,6 +525,10 @@ export class DrawingApp extends LitElement {
     this._provider = new ContextProvider(this, {
       context: drawingContext,
       initialValue: this._buildContextValue(),
+    });
+    this._viewportProvider = new ContextProvider(this, {
+      context: viewportContext,
+      initialValue: this._viewport,
     });
   }
 
@@ -808,6 +810,8 @@ export class DrawingApp extends LitElement {
     if (!library) return { ok: false, message: 'Custom brushes are not available here.' };
     if (file.size > MAX_ABR_FILE_BYTES) return { ok: false, message: 'That file is too large to import.' };
     try {
+      // Only an import needs the .abr reader, so it is loaded then, not with the app.
+      const { planAbrImport, logUnmapped } = await import('../engine/abr/to-brushes.js');
       const plan = await planAbrImport(await file.arrayBuffer(), { onProgress: onProgress && (f => onProgress(0.9 * f)) });
       const group = file.name.replace(/\.[^.]*$/, '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'Imported brushes';
       await library.importBrushes({ group, tips: plan.tips, brushes: plan.brushes, patterns: plan.patterns });
@@ -1989,8 +1993,21 @@ export class DrawingApp extends LitElement {
             const imageData = ctx.getImageData(0, 0, l.canvas.width, l.canvas.height);
             return { ...meta, imageData: imageData as ImageData | null };
           });
-          const layerHashes = layerSnapshots.map(snap =>
-            snap.imageData ? hashImageData(snap.imageData) : this._savedLayerBlobs.get(snap.id)!.hash);
+          // Hashing a large layer is a pause of its own, so outside a flush
+          // (which has no time for the trip) it goes to a worker while the
+          // stored state is read below. That takes the snapshot's pixels
+          // along (read back just above, so nothing else holds them): they are
+          // back in the snapshot by the time anything reads them.
+          const layerHashJobs = layerSnapshots.map((snap): Promise<string> | string => {
+            if (!snap.imageData) return this._savedLayerBlobs.get(snap.id)!.hash;
+            // The float's merged pixels belong to the canvas's cached preview of its commit: they stay here.
+            if (skipDelay || (floatKey && snap.id === floatKey.layerId)) return hashImageData(snap.imageData);
+            return hashImageDataOffThread(snap.imageData).then(hashed => {
+              snap.imageData = hashed.imageData;
+              return hashed.hash;
+            });
+          });
+          for (const job of layerHashJobs) if (typeof job !== 'string') job.catch(() => {});
           const viewport = this.canvas?.getViewport() ?? { zoom: 1, panX: 0, panY: 0 };
           const viewportSize = this.canvas?.getViewportSize() ?? null;
           // With a float, as its commit would leave the stack (redo entries
@@ -2040,6 +2057,7 @@ export class DrawingApp extends LitElement {
             break;
           }
 
+          const layerHashes = await Promise.all(layerHashJobs);
           const oldLayerRefs = oldState?.layers.map(l => l.imageBlobRef) ?? [];
           const oldThumbRef = oldProject.thumbnailRef ?? null;
 
@@ -3323,11 +3341,6 @@ export class DrawingApp extends LitElement {
       currentProject: this._currentProject,
       projectList: this._projectList,
       saving: this._saving,
-      zoom: this._viewportZoom,
-      panX: this._viewportPanX,
-      panY: this._viewportPanY,
-      viewportWidth: this._viewportWidth,
-      viewportHeight: this._viewportHeight,
       isMobile: this._isMobile,
       switchProject: (id: string) => {
         if (id === this._currentProject?.id) return;
@@ -3850,11 +3863,19 @@ export class DrawingApp extends LitElement {
   private _onViewportChange() {
     if (this.canvas) {
       const vp = this.canvas.getViewport();
-      this._viewportZoom = vp.zoom;
-      this._viewportPanX = vp.panX;
-      this._viewportPanY = vp.panY;
-      this._viewportWidth = this.canvas.clientWidth;
-      this._viewportHeight = this.canvas.clientHeight;
+      const next: ViewportValue = {
+        zoom: vp.zoom,
+        panX: vp.panX,
+        panY: vp.panY,
+        viewportWidth: this.canvas.clientWidth,
+        viewportHeight: this.canvas.clientHeight,
+      };
+      const prev = this._viewport;
+      if (next.zoom !== prev.zoom || next.panX !== prev.panX || next.panY !== prev.panY
+        || next.viewportWidth !== prev.viewportWidth || next.viewportHeight !== prev.viewportHeight) {
+        this._viewport = next;
+        this._viewportProvider?.setValue(next);
+      }
     }
     this._markDirty('viewport');
   }

@@ -1,3 +1,5 @@
+import type { TiledSnapshot } from './tiled-snapshot.js';
+
 export type PressureCurveName = 'linear' | 'light' | 'heavy';
 
 export type TipShape = 'round' | 'flat' | 'chisel' | 'calligraphy' | 'fan' | 'splatter' | 'image';
@@ -260,7 +262,8 @@ export interface InkState {
   originalColor: string;
   currentColor: string;
   stampCount: number;
-  layerSnapshot: ImageData | null;
+  /** The layer under the stroke, for pickup: read whole for a small document, tile by tile as the stroke reaches them for a large one. */
+  layerSnapshot: ImageData | TiledSnapshot | null;
   prevRotation: number;
   /** The canvas colour last picked up and how much of it the stamp takes (0 when there was none to pick up). */
   pickedColor: string;

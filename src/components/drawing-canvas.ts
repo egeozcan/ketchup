@@ -23,7 +23,7 @@ import { detectContentBounds } from '../transform/transform-math.js';
 import { diffBounds, cropImageData, type PixelRect } from '../utils/image-diff.js';
 import { historyEntryBytes, historyByteBudget } from '../utils/history-size.js';
 import { focusEditor } from '../utils/focus-editor.js';
-import { sizeViewCanvas, viewBackingSize, viewCanvasSize } from '../utils/view-canvas.js';
+import { OPAQUE_VIEW, sizeViewCanvas, viewBackingSize, viewCanvasSize } from '../utils/view-canvas.js';
 import './resize-dialog.js';
 import type { ResizeDialog } from './resize-dialog.js';
 
@@ -200,7 +200,7 @@ export class DrawingCanvas extends LitElement {
   private _compositeScheduler = createThrottledScheduler(() => this._composite(this._compositeContentPending));
   /**
    * Wheel and pinch deliver many events per frame on some devices, and each
-   * viewport-change re-renders the whole app through the context; coalesce
+   * viewport-change re-renders the navigator and schedules a save; coalesce
    * them to one per frame.
    */
   private _viewportChangeScheduler = createThrottledScheduler(() => this._dispatchViewportChange());
@@ -569,7 +569,7 @@ export class DrawingCanvas extends LitElement {
     if (!this.mainCanvas) return;
     this._compositeScheduler.cancel();
     this._compositeContentPending = false;
-    const displayCtx = this.mainCanvas.getContext('2d')!;
+    const displayCtx = this.mainCanvas.getContext('2d', OPAQUE_VIEW)!;
     const vw = this._vw;
     if (!this._transformManager && this._transformViewCanvas) {
       // Free the scratch canvas once the transform has ended.
@@ -601,8 +601,18 @@ export class DrawingCanvas extends LitElement {
     const layers = this._ctx.value?.state.layers ?? [];
     const activeLayerId = this._ctx.value?.state.activeLayerId ?? null;
     const hasBlend = layers.some(l => l.visible && l.blendMode !== 'normal');
-    for (const layer of layers) {
+    // The layers under and over the active one are drawn from flattened
+    // copies, so a frame costs the same however many layers there are. Every
+    // frame does, not only those of a gesture: scaling a flattened group is
+    // not quite scaling its layers one by one, and edges would shimmer if
+    // frames switched between the two.
+    const activeIndex = layers.findIndex(l => l.id === activeLayerId);
+    const stacks = this._layerStacks(layers, activeIndex);
+    if (stacks?.below) displayCtx.drawImage(stacks.below, 0, 0);
+    for (let i = 0; i < layers.length; i++) {
+      const layer = layers[i];
       if (!layer.visible) continue;
+      if (stacks && ((i < activeIndex && stacks.below) || (i > activeIndex && stacks.above))) continue;
       displayCtx.globalAlpha = layer.opacity;
       const transform = this._transformManager && layer.id === activeLayerId ? this._transformManager : null;
       // Commit merges the float onto its layer with source-over. Source-over is
@@ -715,6 +725,7 @@ export class DrawingCanvas extends LitElement {
       }
       displayCtx.globalAlpha = 1.0;
     }
+    if (stacks?.above) displayCtx.drawImage(stacks.above, 0, 0);
 
     // Document border
     displayCtx.strokeStyle = 'rgba(0,0,0,0.3)';
@@ -728,6 +739,78 @@ export class DrawingCanvas extends LitElement {
       detail: { contentChanged },
     }));
     if (contentChanged) this.invalidateSamplingBuffer();
+  }
+
+  private _layerStacksKey: { layers: readonly Layer[]; activeIndex: number; revisions: string } | null = null;
+  private _layerStackBelow: HTMLCanvasElement | null = null;
+  private _layerStackAbove: HTMLCanvasElement | null = null;
+
+  /**
+   * The visible layers under and over the active one, each group flattened
+   * into one document-size canvas. Source-over is associative, so drawing a
+   * flattened group gives what drawing its layers one by one does (up to
+   * rounding and resampling), but only for normally blended layers: a group
+   * holding a blend mode, or fewer than two visible layers, has no copy
+   * (null) and is drawn layer by layer.
+   *
+   * The copies are rebuilt when the layers array, the active layer, the
+   * document size or the pixel revision of a layer in them changes. Gestures
+   * draw on the active layer before history records anything, which is why
+   * it is never in a copy; any other layer's pixels change only with a
+   * revision bump (see getLayerRevision) or a new layers array.
+   */
+  private _layerStacks(
+    layers: readonly Layer[],
+    activeIndex: number,
+  ): { below: HTMLCanvasElement | null; above: HTMLCanvasElement | null } | null {
+    if (activeIndex < 0) {
+      this._releaseLayerStacks();
+      return null;
+    }
+    let revisions = `${this._docWidth}x${this._docHeight}`;
+    for (let i = 0; i < layers.length; i++) {
+      if (i !== activeIndex) revisions += `|${this.getLayerRevision(layers[i].id)}`;
+    }
+    const key = this._layerStacksKey;
+    if (!key || key.layers !== layers || key.activeIndex !== activeIndex || key.revisions !== revisions) {
+      this._layerStackBelow = this._flattenLayers(layers.slice(0, activeIndex), this._layerStackBelow);
+      this._layerStackAbove = this._flattenLayers(layers.slice(activeIndex + 1), this._layerStackAbove);
+      this._layerStacksKey = { layers, activeIndex, revisions };
+    }
+    return { below: this._layerStackBelow, above: this._layerStackAbove };
+  }
+
+  private _flattenLayers(group: readonly Layer[], reuse: HTMLCanvasElement | null): HTMLCanvasElement | null {
+    const visible = group.filter(l => l.visible);
+    if (visible.length < 2 || visible.some(l => l.blendMode !== 'normal')) {
+      if (reuse) reuse.width = reuse.height = 0;
+      return null;
+    }
+    let canvas = reuse;
+    if (!canvas || canvas.width !== this._docWidth || canvas.height !== this._docHeight) {
+      if (canvas) canvas.width = canvas.height = 0;
+      canvas = document.createElement('canvas');
+      canvas.width = this._docWidth;
+      canvas.height = this._docHeight;
+    }
+    const ctx = canvas.getContext('2d')!;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (const layer of visible) {
+      ctx.globalAlpha = layer.opacity;
+      ctx.drawImage(layer.canvas, 0, 0);
+    }
+    ctx.globalAlpha = 1;
+    return canvas;
+  }
+
+  private _releaseLayerStacks() {
+    for (const canvas of [this._layerStackBelow, this._layerStackAbove]) {
+      if (canvas) canvas.width = canvas.height = 0;
+    }
+    this._layerStackBelow = this._layerStackAbove = null;
+    this._layerStacksKey = null;
   }
 
   /**
@@ -914,7 +997,7 @@ export class DrawingCanvas extends LitElement {
 
   /** Sizes the display and preview canvases to the view, at device resolution. */
   private _sizeViewCanvases(width: number, height: number, scale: number) {
-    sizeViewCanvas(this.mainCanvas, width, height, scale);
+    sizeViewCanvas(this.mainCanvas, width, height, scale, true);
     sizeViewCanvas(this.previewCanvas, width, height, scale);
   }
 
@@ -2598,12 +2681,9 @@ export class DrawingCanvas extends LitElement {
       this._captureBeforeDraw();
       const layerCtx = this._getActiveLayerCtx();
       if (!layerCtx) return;
-      // Snapshot the entire active layer to a temp canvas
-      const tmp = document.createElement('canvas');
-      tmp.width = this._docWidth;
-      tmp.height = this._docHeight;
-      tmp.getContext('2d')!.drawImage(layerCtx.canvas, 0, 0);
-      this._moveTempCanvas = tmp;
+      // The layer as it was is what gets moved: the copy just captured for
+      // history, which nothing writes to until the move ends.
+      this._moveTempCanvas = this._beforeDrawCanvas;
       this._moveStartPoint = p;
       return;
     }
@@ -4379,6 +4459,7 @@ export class DrawingCanvas extends LitElement {
     this._unwatchDevicePixelRatio();
     this._stopAirbrush();
     this._compositeScheduler.cancel();
+    this._releaseLayerStacks();
     // drawing-app flushes a pending viewport change from its own disconnect,
     // before deciding whether to save; by now it would only re-arm a save.
     this._viewportChangeScheduler.cancel();
