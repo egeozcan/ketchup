@@ -23,7 +23,7 @@ import { detectContentBounds } from '../transform/transform-math.js';
 import { diffBounds, cropImageData, type PixelRect } from '../utils/image-diff.js';
 import { historyEntryBytes, historyByteBudget } from '../utils/history-size.js';
 import { focusEditor } from '../utils/focus-editor.js';
-import { sizeViewCanvas, viewBackingSize, viewCanvasSize } from '../utils/view-canvas.js';
+import { OPAQUE_VIEW, sizeViewCanvas, viewBackingSize, viewCanvasSize } from '../utils/view-canvas.js';
 import './resize-dialog.js';
 import type { ResizeDialog } from './resize-dialog.js';
 
@@ -569,7 +569,7 @@ export class DrawingCanvas extends LitElement {
     if (!this.mainCanvas) return;
     this._compositeScheduler.cancel();
     this._compositeContentPending = false;
-    const displayCtx = this.mainCanvas.getContext('2d')!;
+    const displayCtx = this.mainCanvas.getContext('2d', OPAQUE_VIEW)!;
     const vw = this._vw;
     if (!this._transformManager && this._transformViewCanvas) {
       // Free the scratch canvas once the transform has ended.
@@ -914,7 +914,7 @@ export class DrawingCanvas extends LitElement {
 
   /** Sizes the display and preview canvases to the view, at device resolution. */
   private _sizeViewCanvases(width: number, height: number, scale: number) {
-    sizeViewCanvas(this.mainCanvas, width, height, scale);
+    sizeViewCanvas(this.mainCanvas, width, height, scale, true);
     sizeViewCanvas(this.previewCanvas, width, height, scale);
   }
 

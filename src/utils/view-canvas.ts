@@ -36,15 +36,20 @@ export function viewBackingSize(width: number, height: number, scale: number): {
  * Lays `canvas` out at `width`×`height` CSS pixels with a bitmap `scale`
  * times as fine (see viewBackingSize), and sets its context's base
  * transform so drawing is in CSS pixels. Clears it, as any resize does.
+ * `opaque` asks for a context without an alpha channel (only the first
+ * getContext of a canvas decides that), for a canvas every frame covers
+ * completely: the browser then needn't blend it with the page behind.
  */
-export function sizeViewCanvas(canvas: HTMLCanvasElement, width: number, height: number, scale: number): void {
+export const OPAQUE_VIEW: CanvasRenderingContext2DSettings = { alpha: false };
+
+export function sizeViewCanvas(canvas: HTMLCanvasElement, width: number, height: number, scale: number, opaque = false): void {
   const backing = viewBackingSize(width, height, scale);
   canvas.width = backing.width;
   canvas.height = backing.height;
   canvas.style.width = `${width}px`;
   canvas.style.height = `${height}px`;
   sizings.set(canvas, { width, height, backingWidth: backing.width, backingHeight: backing.height });
-  canvas.getContext('2d')?.setTransform(backing.width / width, 0, 0, backing.height / height, 0, 0);
+  (opaque ? canvas.getContext('2d', OPAQUE_VIEW) : canvas.getContext('2d'))?.setTransform(backing.width / width, 0, 0, backing.height / height, 0, 0);
 }
 
 /**
