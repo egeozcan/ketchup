@@ -2598,12 +2598,9 @@ export class DrawingCanvas extends LitElement {
       this._captureBeforeDraw();
       const layerCtx = this._getActiveLayerCtx();
       if (!layerCtx) return;
-      // Snapshot the entire active layer to a temp canvas
-      const tmp = document.createElement('canvas');
-      tmp.width = this._docWidth;
-      tmp.height = this._docHeight;
-      tmp.getContext('2d')!.drawImage(layerCtx.canvas, 0, 0);
-      this._moveTempCanvas = tmp;
+      // The layer as it was is what gets moved: the copy just captured for
+      // history, which nothing writes to until the move ends.
+      this._moveTempCanvas = this._beforeDrawCanvas;
       this._moveStartPoint = p;
       return;
     }
