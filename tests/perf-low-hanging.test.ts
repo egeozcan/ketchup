@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DrawingCanvas } from '../src/components/drawing-canvas.ts';
 import { LayersPanel } from '../src/components/layers-panel.ts';
+import { sampleSnapshot } from '../src/engine/ink-model.ts';
+import { TiledSnapshot, SNAPSHOT_TILE } from '../src/engine/tiled-snapshot.ts';
 import { attachCanvasElements, makeLayer, makeState } from './helpers.ts';
 
 function setupCanvas(layerOverrides: Record<string, unknown>[] = [{}, {}, {}, {}, {}], active = 2) {
@@ -144,5 +146,46 @@ describe('layer thumbnails are redrawn only for layers that changed', () => {
     layers[0].opacity = 0.5;
     layers[2].canvas = document.createElement('canvas');
     expect(composited()).toEqual(['l0', 'l1', 'l2']);
+  });
+});
+
+describe('a wet brush reads a large layer tile by tile', () => {
+  function sourceOf(w: number, h: number) {
+    const px = (x: number, y: number) => [x % 251, y % 241, (x * 7 + y * 3) % 256, 255];
+    const whole = new ImageData(w, h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) whole.data.set(px(x, y), (y * w + x) * 4);
+    const getImageData = vi.fn((sx: number, sy: number, sw: number, sh: number) => {
+      const out = new ImageData(sw, sh);
+      for (let y = 0; y < sh; y++) {
+        for (let x = 0; x < sw; x++) {
+          if (sx + x < w && sy + y < h) out.data.set(px(sx + x, sy + y), (y * sw + x) * 4);
+        }
+      }
+      return out;
+    });
+    return { whole, getImageData };
+  }
+
+  it('samples the same colours as a whole-layer snapshot, across tile edges and at the document edge', () => {
+    const w = SNAPSHOT_TILE * 2 + 100;
+    const h = SNAPSHOT_TILE + 50;
+    const { whole, getImageData } = sourceOf(w, h);
+    const tiled = new TiledSnapshot({ getImageData } as any, w, h);
+    for (const [x, y, r] of [[10, 10, 6], [SNAPSHOT_TILE, SNAPSHOT_TILE, 40], [w - 1, h - 1, 30], [SNAPSHOT_TILE * 2 - 3, 20, 200], [-5, -5, 12]]) {
+      expect(sampleSnapshot(tiled, x, y, r)).toEqual(sampleSnapshot(whole, x, y, r));
+    }
+  });
+
+  it('reads only the tiles sampled, each once', () => {
+    const w = SNAPSHOT_TILE * 4;
+    const h = SNAPSHOT_TILE * 4;
+    const { getImageData } = sourceOf(w, h);
+    const tiled = new TiledSnapshot({ getImageData } as any, w, h);
+    sampleSnapshot(tiled, 20, 20, 8);
+    sampleSnapshot(tiled, 30, 30, 8);
+    expect(getImageData).toHaveBeenCalledTimes(1);
+    expect(getImageData).toHaveBeenCalledWith(0, 0, SNAPSHOT_TILE, SNAPSHOT_TILE);
+    sampleSnapshot(tiled, SNAPSHOT_TILE, SNAPSHOT_TILE * 3 + 5, 4);
+    expect(getImageData).toHaveBeenCalledTimes(3);
   });
 });

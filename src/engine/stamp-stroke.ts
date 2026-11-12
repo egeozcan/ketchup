@@ -10,6 +10,7 @@ import { copyDescriptor, colorDynamicsActive } from './brush-presets.js';
 import { Rng, freshSeed } from './rng.js';
 import { resolveGrain, applyGrain, type Grain } from './brush-texture.js';
 import { wrapDegrees } from './angle.js';
+import { TiledSnapshot, SNAPSHOT_WHOLE_PIXELS } from './tiled-snapshot.js';
 import { initInkState, applyDepletion, applyBuildup, applyPickup, lerpOklab, varyColor, type ColorRolls } from './ink-model.js';
 
 /** Mixed into the stroke's seed for the flow jitter's own random stream. */
@@ -395,7 +396,10 @@ export class StampStrokeEngine {
 
     // Only a wet brush reads the layer; varying colour alone never pays for a full-layer read.
     if (d.ink.wetness > 0 && this._colorMode && !this._snapshotCaptured && layerCtx) {
-      this._inkState.layerSnapshot = layerCtx.getImageData(0, 0, this._docWidth, this._docHeight);
+      // A large document isn't read back whole before the first dab: its tiles are read as the stroke reaches them.
+      this._inkState.layerSnapshot = this._docWidth * this._docHeight <= SNAPSHOT_WHOLE_PIXELS
+        ? layerCtx.getImageData(0, 0, this._docWidth, this._docHeight)
+        : new TiledSnapshot(layerCtx, this._docWidth, this._docHeight);
       this._snapshotCaptured = true;
     }
 
