@@ -548,8 +548,21 @@ export class LayersPanel extends LitElement {
   private _onComposited = (e: Event) => {
     // Pan, zoom and in-progress strokes recomposite without touching layer pixels.
     if ((e as CustomEvent<{ contentChanged?: boolean } | null>).detail?.contentChanged === false) return;
+    // What changed is the active layer (a gesture draws on it before history
+    // records anything) or a layer whose revision moved; the rest keep their
+    // thumbnails. A composite from something without revisions redraws all.
+    const source = e.target as { getLayerRevision?: (layerId: string) => string } | null;
+    this._revisionSource = typeof source?.getLayerRevision === 'function' ? source as { getLayerRevision(layerId: string): string } : null;
+    const activeId = this._ctx.value?.state.activeLayerId;
+    if (activeId) this._thumbTouched.add(activeId);
     this._thumbnailScheduler.schedule();
   };
+
+  private _revisionSource: { getLayerRevision(layerId: string): string } | null = null;
+  /** Layers that were active at a content change since their thumbnails were last drawn. */
+  private _thumbTouched = new Set<string>();
+  /** What each thumbnail canvas was last drawn from. */
+  private _thumbDrawn = new WeakMap<HTMLCanvasElement, { canvas: HTMLCanvasElement; key: string }>();
 
   private _onDocClick = () => {
     this._closeContextMenu();
@@ -1311,22 +1324,35 @@ export class LayersPanel extends LitElement {
     if (layers !== this._lastThumbLayers || rowCount !== this._lastThumbRowCount) {
       this._lastThumbLayers = layers;
       this._lastThumbRowCount = rowCount;
-      this._updateThumbnails();
+      this._updateThumbnails(true);
     }
   }
 
   private _lastThumbLayers: readonly unknown[] | null = null;
   private _lastThumbRowCount = -1;
 
-  private _updateThumbnails() {
+  /**
+   * Draws the layer thumbnails. Each is a downscale of a full-size layer, so
+   * unless `all` is set (the rows themselves changed) only those whose layer
+   * changed are redrawn: the ones active at a content change, and any whose
+   * canvas, size, opacity or pixel revision is not what was last drawn.
+   */
+  private _updateThumbnails(all = false) {
     const layers = this._ctx.value?.state.layers ?? [];
     const thumbnails = this.shadowRoot?.querySelectorAll<HTMLCanvasElement>('.layer-thumb');
     if (!thumbnails) return;
+    const revisions = this._revisionSource;
+    const touched = this._thumbTouched;
+    this._thumbTouched = new Set();
 
     const reversed = [...layers].reverse();
     thumbnails.forEach((thumb, i) => {
       const layer = reversed[i];
       if (!layer) return;
+      const key = `${layer.id}|${revisions?.getLayerRevision(layer.id) ?? ''}|${layer.opacity}|${layer.canvas.width}x${layer.canvas.height}|${thumb.width}x${thumb.height}`;
+      const drawn = this._thumbDrawn.get(thumb);
+      if (!all && revisions && !touched.has(layer.id) && drawn && drawn.canvas === layer.canvas && drawn.key === key) return;
+      this._thumbDrawn.set(thumb, { canvas: layer.canvas, key });
       const ctx = thumb.getContext('2d')!;
       ctx.clearRect(0, 0, thumb.width, thumb.height);
       // Mini checkerboard to show transparency
