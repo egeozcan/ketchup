@@ -17,6 +17,7 @@ import { IndexedDBBackend, MemoryBackend, ProjectService, StorageQuotaError, Sto
 import type { StorageBackend, BlobStore, BlobRef, ProjectMeta as StorageProjectMeta, ProjectHistoryRecord, SerializedLayer, StampEntry } from '../storage/types.js';
 import { canvasToBlob, PixelDecodeError } from '../utils/canvas-helpers.js';
 import { hashImageData } from '../utils/image-diff.js';
+import { hashImageDataOffThread } from '../utils/hash-worker.js';
 import { historyByteBudget, serializedHistoryEntryBytes } from '../utils/history-size.js';
 import {
   serializeLayerFromImageData, deserializeLayer,
@@ -1989,8 +1990,21 @@ export class DrawingApp extends LitElement {
             const imageData = ctx.getImageData(0, 0, l.canvas.width, l.canvas.height);
             return { ...meta, imageData: imageData as ImageData | null };
           });
-          const layerHashes = layerSnapshots.map(snap =>
-            snap.imageData ? hashImageData(snap.imageData) : this._savedLayerBlobs.get(snap.id)!.hash);
+          // Hashing a large layer is a pause of its own, so outside a flush
+          // (which has no time for the trip) it goes to a worker while the
+          // stored state is read below. That takes the snapshot's pixels
+          // along (read back just above, so nothing else holds them): they are
+          // back in the snapshot by the time anything reads them.
+          const layerHashJobs = layerSnapshots.map((snap): Promise<string> | string => {
+            if (!snap.imageData) return this._savedLayerBlobs.get(snap.id)!.hash;
+            // The float's merged pixels belong to the canvas's cached preview of its commit: they stay here.
+            if (skipDelay || (floatKey && snap.id === floatKey.layerId)) return hashImageData(snap.imageData);
+            return hashImageDataOffThread(snap.imageData).then(hashed => {
+              snap.imageData = hashed.imageData;
+              return hashed.hash;
+            });
+          });
+          for (const job of layerHashJobs) if (typeof job !== 'string') job.catch(() => {});
           const viewport = this.canvas?.getViewport() ?? { zoom: 1, panX: 0, panY: 0 };
           const viewportSize = this.canvas?.getViewportSize() ?? null;
           // With a float, as its commit would leave the stack (redo entries
@@ -2040,6 +2054,7 @@ export class DrawingApp extends LitElement {
             break;
           }
 
+          const layerHashes = await Promise.all(layerHashJobs);
           const oldLayerRefs = oldState?.layers.map(l => l.imageBlobRef) ?? [];
           const oldThumbRef = oldProject.thumbnailRef ?? null;
 

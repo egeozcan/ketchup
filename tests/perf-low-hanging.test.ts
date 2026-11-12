@@ -3,6 +3,8 @@ import { DrawingCanvas } from '../src/components/drawing-canvas.ts';
 import { LayersPanel } from '../src/components/layers-panel.ts';
 import { sampleSnapshot } from '../src/engine/ink-model.ts';
 import { TiledSnapshot, SNAPSHOT_TILE } from '../src/engine/tiled-snapshot.ts';
+import { HASH_WORKER_SOURCE, hashImageDataOffThread } from '../src/utils/hash-worker.ts';
+import { hashImageData } from '../src/utils/image-diff.ts';
 import { attachCanvasElements, makeLayer, makeState } from './helpers.ts';
 
 function setupCanvas(layerOverrides: Record<string, unknown>[] = [{}, {}, {}, {}, {}], active = 2) {
@@ -187,5 +189,27 @@ describe('a wet brush reads a large layer tile by tile', () => {
     expect(getImageData).toHaveBeenCalledWith(0, 0, SNAPSHOT_TILE, SNAPSHOT_TILE);
     sampleSnapshot(tiled, SNAPSHOT_TILE, SNAPSHOT_TILE * 3 + 5, 4);
     expect(getImageData).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('hashing off the main thread', () => {
+  it('runs the same hash in the worker as on the main thread', () => {
+    const img = new ImageData(37, 23);
+    for (let i = 0; i < img.data.length; i++) img.data[i] = (i * 2654435761) >>> 24;
+    let posted: { hash: string; buffer: ArrayBuffer } | null = null;
+    const self = { onmessage: null as null | ((e: unknown) => void), postMessage: (m: any) => { posted = m; } };
+    new Function('self', HASH_WORKER_SOURCE)(self);
+    const buffer = img.data.slice().buffer;
+    self.onmessage!({ data: { id: 5, width: img.width, height: img.height, buffer } });
+    expect(posted!.hash).toBe(hashImageData(img));
+    expect(posted!.buffer).toBe(buffer);
+  });
+
+  it('hashes where it is when there is no worker to use, handing back the same image', async () => {
+    const img = new ImageData(8, 8);
+    img.data[5] = 9;
+    const hashed = await hashImageDataOffThread(img);
+    expect(hashed.hash).toBe(hashImageData(img));
+    expect(hashed.imageData).toBe(img);
   });
 });
